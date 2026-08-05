@@ -10,7 +10,7 @@ use serde::Serialize;
 struct Cli {
     /// Select the SAP profile for this command.
     #[arg(long, global = true, env = "FRACTAL_PROFILE")]
-    profile: Option<String>,`
+    profile: Option<String>,
 
     /// Select the output format. Without this flag, TTY output is readable and non-TTY output is JSON.
     #[arg(long, value_enum, global = true)]
