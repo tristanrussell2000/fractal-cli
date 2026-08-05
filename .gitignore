@@ -6,6 +6,9 @@
 .env.*
 !.env.example
 
+# Local planning / working notes
+.fractal-plan.md
+
 # Fractal local configuration / development credentials
 config.local.toml
 credentials.local.toml
