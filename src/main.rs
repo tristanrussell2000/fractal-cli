@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use fractal::config;
 use serde::Serialize;
 
 #[derive(Debug, Parser)]
@@ -88,8 +89,8 @@ struct ProfileArgs {
 enum SystemCommand {
     /// List saved SAP environments.
     List,
-    /// Verify connectivity and authentication for a profile.
-    Test(ProfileArgs),
+    /// Verify connectivity and authentication for the selected profile.
+    Test,
 }
 
 #[derive(Debug, Subcommand)]
@@ -134,30 +135,165 @@ struct Placeholder {
     message: String,
 }
 
+#[derive(Debug, Serialize)]
+struct SystemListResult {
+    ok: bool,
+    config_path: String,
+    default_profile: Option<String>,
+    profiles: Vec<ProfileSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProfileSummary {
+    name: String,
+    base_url: String,
+    client: String,
+    username: String,
+    insecure_tls: bool,
+    customer_namespaces: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ErrorResult {
+    ok: bool,
+    error: String,
+}
+
 fn main() {
     let cli = Cli::parse();
-    let (command_name, message) = describe_command(&cli.command);
+    let output = cli.output.unwrap_or_else(default_output_format);
 
-    let result = Placeholder {
-        ok: false,
-        command: command_name.to_string(),
-        profile: cli.profile,
-        message: message.to_owned(),
+    let exit_code = match &cli.command {
+        Command::System {
+            command: SystemCommand::List,
+        } => match config::load() {
+            Ok(loaded) => {
+                let result = SystemListResult {
+                    ok: true,
+                    config_path: loaded.path.display().to_string(),
+                    default_profile: loaded.config.default_profile.clone(),
+                    profiles: loaded
+                        .config
+                        .profiles
+                        .iter()
+                        .map(|(name, profile)| ProfileSummary {
+                            name: name.clone(),
+                            base_url: profile.base_url.clone(),
+                            client: profile.client.clone(),
+                            username: profile.username.clone(),
+                            insecure_tls: profile.insecure_tls,
+                            customer_namespaces: profile.customer_namespaces.clone(),
+                        })
+                        .collect(),
+                };
+                print_system_list(&result, output);
+                0
+            }
+            Err(error) => {
+                print_error(error, output);
+                2
+            }
+        },
+        Command::System {
+            command: SystemCommand::Test,
+        } => match config::load().and_then(|loaded| {
+            let (name, profile) = config::resolve_profile(&loaded.config, cli.profile.as_deref())?;
+            Ok((name.to_owned(), profile.base_url.clone()))
+        }) {
+            Ok((name, base_url)) => {
+                let result = Placeholder {
+                    ok: false,
+                    command: "system test".to_owned(),
+                    profile: Some(name),
+                    message: format!(
+                        "Profile resolved successfully, but SAP connectivity is not implemented yet ({base_url})."
+                    ),
+                };
+                print_result(&result, output);
+                0
+            }
+            Err(error) => {
+                print_error(error, output);
+                2
+            }
+        },
+        _ => {
+            let (command_name, message) = describe_command(&cli.command);
+            let result = Placeholder {
+                ok: false,
+                command: command_name.to_owned(),
+                profile: cli.profile,
+                message: message.to_owned(),
+            };
+            print_result(&result, output);
+            0
+        }
     };
 
-    match cli.output.unwrap_or_else(default_output_format) {
+    if exit_code != 0 {
+        std::process::exit(exit_code);
+    }
+}
+
+fn print_result<T: Serialize>(result: &T, output: OutputFormat) {
+    match output {
         OutputFormat::Json => {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&result).expect("placeholder serializes")
+                serde_json::to_string_pretty(result).expect("result serializes")
             );
         }
         OutputFormat::Readable => {
-            println!("{}", result.message);
-            if let Some(profile) = result.profile {
-                println!("profile: {profile}");
-            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(result).expect("result serializes")
+            );
         }
+    }
+}
+
+fn print_system_list(result: &SystemListResult, output: OutputFormat) {
+    if matches!(output, OutputFormat::Json) {
+        print_result(result, output);
+        return;
+    }
+
+    println!("config: {}", result.config_path);
+    match &result.default_profile {
+        Some(profile) => println!("default profile: {profile}"),
+        None => println!("default profile: (none)"),
+    }
+
+    if result.profiles.is_empty() {
+        println!("profiles: (none)");
+        return;
+    }
+
+    println!("profiles:");
+    for profile in &result.profiles {
+        let marker = if result.default_profile.as_deref() == Some(profile.name.as_str()) {
+            "*"
+        } else {
+            " "
+        };
+        println!(
+            "  {marker} {} — {} client {} user {}",
+            profile.name, profile.base_url, profile.client, profile.username
+        );
+    }
+}
+
+fn print_error(error: config::ConfigError, output: OutputFormat) {
+    let result = ErrorResult {
+        ok: false,
+        error: error.to_string(),
+    };
+    match output {
+        OutputFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&result).expect("error serializes")
+        ),
+        OutputFormat::Readable => eprintln!("error: {}", result.error),
     }
 }
 
@@ -178,7 +314,7 @@ fn describe_command(command: &Command) -> (&'static str, &'static str) {
         },
         Command::System { command } => match command {
             SystemCommand::List => ("system list", "System listing is not implemented yet."),
-            SystemCommand::Test(_) => ("system test", "SAP connectivity is not implemented yet."),
+            SystemCommand::Test => ("system test", "SAP connectivity is not implemented yet."),
         },
         Command::Package { command } => match command {
             PackageCommand::Tree(_) => ("package tree", "Package browsing is not implemented yet."),
