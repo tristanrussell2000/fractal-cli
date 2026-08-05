@@ -1,0 +1,27 @@
+# Rust build output
+/target/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+
+# Fractal local configuration / development credentials
+config.local.toml
+credentials.local.toml
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor and IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS/editor temporary files
+*.tmp
+*.temp
