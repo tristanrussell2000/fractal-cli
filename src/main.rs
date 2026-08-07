@@ -1,9 +1,15 @@
-use std::{fmt::Display, future::Future, io::Read};
+mod output;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use std::io::Read;
+
+use clap::{Args, Parser, Subcommand};
 use fractal::{
     config, credentials,
     sap::client::{DiscoveryResult, SapClient},
+};
+use output::{
+    OutputFormat, default_output_format, print_result, run_and_print, run_and_print_async,
+    run_and_print_with,
 };
 use serde::Serialize;
 
@@ -24,12 +30,6 @@ struct Cli {
 
     #[command(subcommand)]
     command: Command,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum OutputFormat {
-    Json,
-    Readable,
 }
 
 #[derive(Debug, Subcommand)]
@@ -168,12 +168,6 @@ struct ProfileSummary {
 }
 
 #[derive(Debug, Serialize)]
-struct ErrorResult {
-    ok: bool,
-    error: String,
-}
-
-#[derive(Debug, Serialize)]
 struct AuthLoginResult {
     ok: bool,
     profile: String,
@@ -249,85 +243,6 @@ async fn main() {
     if exit_code != 0 {
         std::process::exit(exit_code);
     }
-}
-
-async fn run_and_print_async<T, E, F, Fut>(operation: F, output: OutputFormat) -> i32
-where
-    T: Serialize,
-    E: Display,
-    F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<T, E>>,
-{
-    run_and_print_with_async(operation, print_result, output).await
-}
-
-async fn run_and_print_with_async<T, E, F, Fut, P>(
-    operation: F,
-    print: P,
-    output: OutputFormat,
-) -> i32
-where
-    T: Serialize,
-    E: Display,
-    F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<T, E>>,
-    P: FnOnce(&T, OutputFormat),
-{
-    match operation().await {
-        Ok(result) => {
-            print(&result, output);
-            0
-        }
-        Err(error) => {
-            print_error_message(&error.to_string(), output);
-            2
-        }
-    }
-}
-
-fn run_and_print<T, E, F>(operation: F, output: OutputFormat) -> i32
-where
-    T: Serialize,
-    E: Display,
-    F: FnOnce() -> Result<T, E>,
-{
-    run_and_print_with(operation, print_result, output)
-}
-
-fn run_and_print_with<T, E, F, P>(operation: F, print: P, output: OutputFormat) -> i32
-where
-    T: Serialize,
-    E: Display,
-    F: FnOnce() -> Result<T, E>,
-    P: FnOnce(&T, OutputFormat),
-{
-    match operation() {
-        Ok(result) => {
-            print(&result, output);
-            0
-        }
-        Err(error) => {
-            print_error_message(&error.to_string(), output);
-            2
-        }
-    }
-}
-
-fn print_result<T: Serialize>(result: &T, output: OutputFormat) {
-    match output {
-        OutputFormat::Json => print_json(result),
-        OutputFormat::Readable => {
-            // Commands without a dedicated readable renderer use structured JSON for now.
-            print_json(result);
-        }
-    }
-}
-
-fn print_json<T: Serialize>(result: &T) {
-    println!(
-        "{}",
-        serde_json::to_string_pretty(result).expect("result serializes")
-    );
 }
 
 fn print_system_list(result: &SystemListResult, output: OutputFormat) {
@@ -421,20 +336,6 @@ fn system_test_result(
         status: discovery.status.as_u16(),
         csrf_token_received: discovery.csrf_token_received,
         message: "SAP ADT discovery endpoint is reachable and accepted the credentials.".to_owned(),
-    }
-}
-
-fn print_error_message(error: &str, output: OutputFormat) {
-    let result = ErrorResult {
-        ok: false,
-        error: error.to_owned(),
-    };
-    match output {
-        OutputFormat::Json => println!(
-            "{}",
-            serde_json::to_string_pretty(&result).expect("error serializes")
-        ),
-        OutputFormat::Readable => eprintln!("error: {error}"),
     }
 }
 
@@ -550,14 +451,6 @@ fn auth_login(args: &LoginArgs) -> Result<AuthLoginResult, String> {
             "Profile saved; the existing default profile was preserved.".to_owned()
         },
     })
-}
-
-fn default_output_format() -> OutputFormat {
-    if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
-        OutputFormat::Readable
-    } else {
-        OutputFormat::Json
-    }
 }
 
 fn describe_command(command: &Command) -> (&'static str, &'static str) {
