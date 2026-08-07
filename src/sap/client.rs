@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use reqwest::{Client, StatusCode, Url};
+use reqwest::{
+    Client, Response, StatusCode, Url,
+    header::{HeaderMap, HeaderValue},
+};
 use thiserror::Error;
 
 use crate::config::Profile;
@@ -66,21 +69,27 @@ impl SapClient {
     }
 
     pub async fn test_connection(&self) -> Result<DiscoveryResult, SapError> {
-        let mut url =
-            self.base_url
-                .join(DISCOVERY_PATH)
-                .map_err(|source| SapError::InvalidUrl {
-                    url: self.base_url.to_string(),
-                    source,
-                })?;
-        url.query_pairs_mut()
-            .append_pair("sap-client", &self.sap_client);
+        let mut headers = HeaderMap::new();
+        headers.insert("X-CSRF-Token", HeaderValue::from_static("Fetch"));
 
+        let (url, response) = self.get(DISCOVERY_PATH, headers).await?;
+        let csrf_token_received = response.headers().contains_key("x-csrf-token");
+        let status = response.status();
+
+        Ok(DiscoveryResult {
+            url,
+            status,
+            csrf_token_received,
+        })
+    }
+
+    async fn get(&self, path: &str, headers: HeaderMap) -> Result<(Url, Response), SapError> {
+        let url = self.request_url(path)?;
         let response = self
             .http
             .get(url.clone())
+            .headers(headers)
             .basic_auth(&self.username, Some(&self.password))
-            .header("X-CSRF-Token", "Fetch")
             .send()
             .await
             .map_err(|error| SapError::Network {
@@ -88,32 +97,44 @@ impl SapClient {
                 message: describe_network_error(&error),
             })?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let message = response
-                .text()
-                .await
-                .ok()
-                .and_then(|body| extract_sap_message(&body))
-                .unwrap_or_else(|| {
-                    status
-                        .canonical_reason()
-                        .unwrap_or("request failed")
-                        .to_owned()
-                });
-            return Err(SapError::Http {
-                status,
-                url: url.to_string(),
-                message,
-            });
+        if !response.status().is_success() {
+            return Err(http_error(url, response).await);
         }
 
-        let csrf_token_received = response.headers().contains_key("x-csrf-token");
-        Ok(DiscoveryResult {
-            url,
-            status,
-            csrf_token_received,
-        })
+        Ok((url, response))
+    }
+
+    fn request_url(&self, path: &str) -> Result<Url, SapError> {
+        let mut url = self
+            .base_url
+            .join(path)
+            .map_err(|source| SapError::InvalidUrl {
+                url: self.base_url.to_string(),
+                source,
+            })?;
+        url.query_pairs_mut()
+            .append_pair("sap-client", &self.sap_client);
+        Ok(url)
+    }
+}
+
+async fn http_error(url: Url, response: Response) -> SapError {
+    let status = response.status();
+    let message = response
+        .text()
+        .await
+        .ok()
+        .and_then(|body| extract_sap_message(&body))
+        .unwrap_or_else(|| {
+            status
+                .canonical_reason()
+                .unwrap_or("request failed")
+                .to_owned()
+        });
+    SapError::Http {
+        status,
+        url: url.to_string(),
+        message,
     }
 }
 
