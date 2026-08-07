@@ -1,7 +1,10 @@
-use std::{fmt::Display, io::Read};
+use std::{fmt::Display, future::Future, io::Read};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use fractal::{config, credentials};
+use fractal::{
+    config, credentials,
+    sap::client::{DiscoveryResult, SapClient},
+};
 use serde::Serialize;
 
 #[derive(Debug, Parser)]
@@ -209,7 +212,8 @@ struct AuthRemoveResult {
     message: String,
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let cli = Cli::parse();
     let output = cli.output.unwrap_or_else(default_output_format);
 
@@ -228,7 +232,7 @@ fn main() {
         } => run_and_print_with(system_list, print_system_list, output),
         Command::System {
             command: SystemCommand::Test,
-        } => run_and_print(|| system_test(cli.profile.as_deref()), output),
+        } => run_and_print_async(|| system_test(cli.profile.as_deref()), output).await,
         _ => {
             let (command_name, message) = describe_command(&cli.command);
             let result = Placeholder {
@@ -244,6 +248,40 @@ fn main() {
 
     if exit_code != 0 {
         std::process::exit(exit_code);
+    }
+}
+
+async fn run_and_print_async<T, E, F, Fut>(operation: F, output: OutputFormat) -> i32
+where
+    T: Serialize,
+    E: Display,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+{
+    run_and_print_with_async(operation, print_result, output).await
+}
+
+async fn run_and_print_with_async<T, E, F, Fut, P>(
+    operation: F,
+    print: P,
+    output: OutputFormat,
+) -> i32
+where
+    T: Serialize,
+    E: Display,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+    P: FnOnce(&T, OutputFormat),
+{
+    match operation().await {
+        Ok(result) => {
+            print(&result, output);
+            0
+        }
+        Err(error) => {
+            print_error_message(&error.to_string(), output);
+            2
+        }
     }
 }
 
@@ -347,19 +385,43 @@ fn system_list() -> Result<SystemListResult, config::ConfigError> {
     })
 }
 
-fn system_test(explicit_profile: Option<&str>) -> Result<Placeholder, config::ConfigError> {
-    let loaded = config::load()?;
-    let (name, profile) = config::resolve_profile(&loaded.config, explicit_profile)?;
+#[derive(Debug, Serialize)]
+struct SystemTestResult {
+    ok: bool,
+    profile: String,
+    base_url: String,
+    status: u16,
+    csrf_token_received: bool,
+    message: String,
+}
 
-    Ok(Placeholder {
-        ok: false,
-        command: "system test".to_owned(),
-        profile: Some(name.to_owned()),
-        message: format!(
-            "Profile resolved successfully, but SAP connectivity is not implemented yet ({}).",
-            profile.base_url
-        ),
-    })
+async fn system_test(explicit_profile: Option<&str>) -> Result<SystemTestResult, String> {
+    let loaded = config::load().map_err(|error| error.to_string())?;
+    let (name, profile) = config::resolve_profile(&loaded.config, explicit_profile)
+        .map_err(|error| error.to_string())?;
+    let password = credentials::get_password(name).map_err(|error| error.to_string())?;
+    let client = SapClient::new(profile, password).map_err(|error| error.to_string())?;
+    let discovery = client
+        .test_connection()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    Ok(system_test_result(name, profile, discovery))
+}
+
+fn system_test_result(
+    name: &str,
+    profile: &config::Profile,
+    discovery: DiscoveryResult,
+) -> SystemTestResult {
+    SystemTestResult {
+        ok: true,
+        profile: name.to_owned(),
+        base_url: profile.base_url.clone(),
+        status: discovery.status.as_u16(),
+        csrf_token_received: discovery.csrf_token_received,
+        message: "SAP ADT discovery endpoint is reachable and accepted the credentials.".to_owned(),
+    }
 }
 
 fn print_error_message(error: &str, output: OutputFormat) {
