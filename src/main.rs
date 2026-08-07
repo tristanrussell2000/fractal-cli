@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::{fmt::Display, io::Read};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use fractal::{config, credentials};
@@ -216,93 +216,19 @@ fn main() {
     let exit_code = match &cli.command {
         Command::Auth {
             command: AuthCommand::Login(args),
-        } => match auth_login(args) {
-            Ok(result) => {
-                print_result(&result, output);
-                0
-            }
-            Err(error) => {
-                print_error_message(&error, output);
-                2
-            }
-        },
+        } => run_and_print(|| auth_login(args), output),
         Command::Auth {
             command: AuthCommand::List,
-        } => match auth_list() {
-            Ok(result) => {
-                print_result(&result, output);
-                0
-            }
-            Err(error) => {
-                print_error_message(&error, output);
-                2
-            }
-        },
+        } => run_and_print(auth_list, output),
         Command::Auth {
             command: AuthCommand::Remove(args),
-        } => match auth_remove(args) {
-            Ok(result) => {
-                print_result(&result, output);
-                0
-            }
-            Err(error) => {
-                print_error_message(&error, output);
-                2
-            }
-        },
+        } => run_and_print(|| auth_remove(args), output),
         Command::System {
             command: SystemCommand::List,
-        } => match config::load() {
-            Ok(loaded) => {
-                let result = SystemListResult {
-                    ok: true,
-                    config_path: loaded.path.display().to_string(),
-                    default_profile: loaded.config.default_profile.clone(),
-                    profiles: loaded
-                        .config
-                        .profiles
-                        .iter()
-                        .map(|(name, profile)| ProfileSummary {
-                            name: name.clone(),
-                            base_url: profile.base_url.clone(),
-                            client: profile.client.clone(),
-                            username: profile.username.clone(),
-                            insecure_tls: profile.insecure_tls,
-                            customer_namespaces: profile.customer_namespaces.clone(),
-                        })
-                        .collect(),
-                };
-                print_system_list(&result, output);
-                0
-            }
-            Err(error) => {
-                print_error(error, output);
-                2
-            }
-        },
+        } => run_and_print_with(system_list, print_system_list, output),
         Command::System {
             command: SystemCommand::Test,
-        } => match config::load().and_then(|loaded| {
-            let (name, profile) = config::resolve_profile(&loaded.config, cli.profile.as_deref())?;
-            Ok((name.to_owned(), profile.base_url.clone()))
-        }) {
-            Ok((name, base_url)) => {
-                let result = Placeholder {
-                    ok: false,
-                    command: "system test".to_owned(),
-                    profile: Some(name),
-                    message: format!(
-                        "Profile resolved successfully, but SAP connectivity is not implemented yet ({base_url})."
-                    ),
-                };
-                print_result(&result, output);
-                0
-            }
-            Err(error) => {
-                print_error(error, output);
-                2
-            }
-        },
+        } => run_and_print(|| system_test(cli.profile.as_deref()), output),
         _ => {
             let (command_name, message) = describe_command(&cli.command);
             let result = Placeholder {
@@ -321,21 +247,49 @@ fn main() {
     }
 }
 
-fn print_result<T: Serialize>(result: &T, output: OutputFormat) {
-    match output {
-        OutputFormat::Json => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(result).expect("result serializes")
-            );
+fn run_and_print<T, E, F>(operation: F, output: OutputFormat) -> i32
+where
+    T: Serialize,
+    E: Display,
+    F: FnOnce() -> Result<T, E>,
+{
+    run_and_print_with(operation, print_result, output)
+}
+
+fn run_and_print_with<T, E, F, P>(operation: F, print: P, output: OutputFormat) -> i32
+where
+    T: Serialize,
+    E: Display,
+    F: FnOnce() -> Result<T, E>,
+    P: FnOnce(&T, OutputFormat),
+{
+    match operation() {
+        Ok(result) => {
+            print(&result, output);
+            0
         }
-        OutputFormat::Readable => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(result).expect("result serializes")
-            );
+        Err(error) => {
+            print_error_message(&error.to_string(), output);
+            2
         }
     }
+}
+
+fn print_result<T: Serialize>(result: &T, output: OutputFormat) {
+    match output {
+        OutputFormat::Json => print_json(result),
+        OutputFormat::Readable => {
+            // Commands without a dedicated readable renderer use structured JSON for now.
+            print_json(result);
+        }
+    }
+}
+
+fn print_json<T: Serialize>(result: &T) {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(result).expect("result serializes")
+    );
 }
 
 fn print_system_list(result: &SystemListResult, output: OutputFormat) {
@@ -369,8 +323,43 @@ fn print_system_list(result: &SystemListResult, output: OutputFormat) {
     }
 }
 
-fn print_error(error: config::ConfigError, output: OutputFormat) {
-    print_error_message(&error.to_string(), output);
+fn system_list() -> Result<SystemListResult, config::ConfigError> {
+    let loaded = config::load()?;
+    let profiles = loaded
+        .config
+        .profiles
+        .iter()
+        .map(|(name, profile)| ProfileSummary {
+            name: name.clone(),
+            base_url: profile.base_url.clone(),
+            client: profile.client.clone(),
+            username: profile.username.clone(),
+            insecure_tls: profile.insecure_tls,
+            customer_namespaces: profile.customer_namespaces.clone(),
+        })
+        .collect();
+
+    Ok(SystemListResult {
+        ok: true,
+        config_path: loaded.path.display().to_string(),
+        default_profile: loaded.config.default_profile,
+        profiles,
+    })
+}
+
+fn system_test(explicit_profile: Option<&str>) -> Result<Placeholder, config::ConfigError> {
+    let loaded = config::load()?;
+    let (name, profile) = config::resolve_profile(&loaded.config, explicit_profile)?;
+
+    Ok(Placeholder {
+        ok: false,
+        command: "system test".to_owned(),
+        profile: Some(name.to_owned()),
+        message: format!(
+            "Profile resolved successfully, but SAP connectivity is not implemented yet ({}).",
+            profile.base_url
+        ),
+    })
 }
 
 fn print_error_message(error: &str, output: OutputFormat) {
