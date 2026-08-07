@@ -179,6 +179,36 @@ struct AuthLoginResult {
     message: String,
 }
 
+#[derive(Debug, Serialize)]
+struct AuthListResult {
+    ok: bool,
+    config_path: String,
+    default_profile: Option<String>,
+    profiles: Vec<AuthProfileSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct AuthProfileSummary {
+    name: String,
+    base_url: String,
+    client: String,
+    username: String,
+    insecure_tls: bool,
+    customer_namespaces: Vec<String>,
+    credential: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credential_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AuthRemoveResult {
+    ok: bool,
+    profile: String,
+    config_path: String,
+    removed_default: bool,
+    message: String,
+}
+
 fn main() {
     let cli = Cli::parse();
     let output = cli.output.unwrap_or_else(default_output_format);
@@ -187,6 +217,30 @@ fn main() {
         Command::Auth {
             command: AuthCommand::Login(args),
         } => match auth_login(args) {
+            Ok(result) => {
+                print_result(&result, output);
+                0
+            }
+            Err(error) => {
+                print_error_message(&error, output);
+                2
+            }
+        },
+        Command::Auth {
+            command: AuthCommand::List,
+        } => match auth_list() {
+            Ok(result) => {
+                print_result(&result, output);
+                0
+            }
+            Err(error) => {
+                print_error_message(&error, output);
+                2
+            }
+        },
+        Command::Auth {
+            command: AuthCommand::Remove(args),
+        } => match auth_remove(args) {
             Ok(result) => {
                 print_result(&result, output);
                 0
@@ -333,6 +387,70 @@ fn print_error_message(error: &str, output: OutputFormat) {
     }
 }
 
+fn auth_list() -> Result<AuthListResult, String> {
+    let loaded = config::load().map_err(|error| error.to_string())?;
+    let profiles = loaded
+        .config
+        .profiles
+        .iter()
+        .map(|(name, profile)| {
+            let (credential, credential_error) = match credentials::get_password(name) {
+                Ok(_) => ("stored".to_owned(), None),
+                Err(error @ credentials::CredentialError::Missing(_)) => {
+                    ("missing".to_owned(), Some(error.to_string()))
+                }
+                Err(error) => ("unavailable".to_owned(), Some(error.to_string())),
+            };
+
+            AuthProfileSummary {
+                name: name.clone(),
+                base_url: profile.base_url.clone(),
+                client: profile.client.clone(),
+                username: profile.username.clone(),
+                insecure_tls: profile.insecure_tls,
+                customer_namespaces: profile.customer_namespaces.clone(),
+                credential,
+                credential_error,
+            }
+        })
+        .collect();
+
+    Ok(AuthListResult {
+        ok: true,
+        config_path: loaded.path.display().to_string(),
+        default_profile: loaded.config.default_profile,
+        profiles,
+    })
+}
+
+fn auth_remove(args: &ProfileArgs) -> Result<AuthRemoveResult, String> {
+    let mut loaded = config::load().map_err(|error| error.to_string())?;
+    if !loaded.config.profiles.contains_key(&args.name) {
+        return Err(format!("profile '{}' was not found", args.name));
+    }
+
+    let removed_default = loaded.config.default_profile.as_deref() == Some(args.name.as_str());
+    credentials::delete_password(&args.name).map_err(|error| error.to_string())?;
+    config::remove_profile(&mut loaded.config, &args.name);
+    let config_path = config::save(&loaded.config).map_err(|error| {
+        format!("credential removed, but profile config could not be saved: {error}")
+    })?;
+
+    let message = if removed_default {
+        "Profile removed. No default profile is set; pass --profile <name> for commands or set a new default with `fractal auth login <name> --default`.".to_owned()
+    } else {
+        "Profile and credential removed.".to_owned()
+    };
+
+    Ok(AuthRemoveResult {
+        ok: true,
+        profile: args.name.clone(),
+        config_path: config_path.display().to_string(),
+        removed_default,
+        message,
+    })
+}
+
 fn auth_login(args: &LoginArgs) -> Result<AuthLoginResult, String> {
     let password = if args.password_stdin {
         let mut password = String::new();
@@ -395,8 +513,8 @@ fn describe_command(command: &Command) -> (&'static str, &'static str) {
     match command {
         Command::Auth { command } => match command {
             AuthCommand::Login(_) => ("auth login", "Authentication is not implemented yet."),
-            AuthCommand::List => ("auth list", "Profile storage is not implemented yet."),
-            AuthCommand::Remove(_) => ("auth remove", "Profile storage is not implemented yet."),
+            AuthCommand::List => ("auth list", "Profile listing is not implemented yet."),
+            AuthCommand::Remove(_) => ("auth remove", "Profile removal is not implemented yet."),
         },
         Command::System { command } => match command {
             SystemCommand::List => ("system list", "System listing is not implemented yet."),

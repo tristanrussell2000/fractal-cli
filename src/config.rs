@@ -32,7 +32,7 @@ pub enum ConfigError {
     #[error("profile '{0}' was not found")]
     ProfileNotFound(String),
     #[error(
-        "no SAP profile was selected; pass --profile, set FRACTAL_PROFILE, or configure default_profile"
+        "no default SAP profile is configured; pass --profile <name> for this command, or set one with `fractal auth login <name> --default`"
     )]
     NoProfileSelected,
 }
@@ -132,6 +132,14 @@ pub fn resolve_profile<'a>(
         explicit,
         std::env::var("FRACTAL_PROFILE").ok().as_deref(),
     )
+}
+
+pub fn remove_profile(config: &mut Config, name: &str) -> bool {
+    let removed = config.profiles.remove(name).is_some();
+    if removed && config.default_profile.as_deref() == Some(name) {
+        config.default_profile = None;
+    }
+    removed
 }
 
 pub fn resolve_profile_with_environment<'a>(
@@ -242,6 +250,32 @@ mod tests {
         let became_default = update_profile(&mut config, "explicit".to_owned(), profile(), false);
 
         assert!(!became_default);
+        assert_eq!(config.default_profile.as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn removing_non_default_profile_preserves_default() {
+        let mut config = config();
+
+        assert!(remove_profile(&mut config, "explicit"));
+        assert!(!config.profiles.contains_key("explicit"));
+        assert_eq!(config.default_profile.as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn removing_default_profile_leaves_no_default() {
+        let mut config = config();
+
+        assert!(remove_profile(&mut config, "default"));
+        assert!(!config.profiles.contains_key("default"));
+        assert_eq!(config.default_profile, None);
+    }
+
+    #[test]
+    fn removing_unknown_profile_reports_no_change() {
+        let mut config = config();
+
+        assert!(!remove_profile(&mut config, "missing"));
         assert_eq!(config.default_profile.as_deref(), Some("default"));
     }
 }
