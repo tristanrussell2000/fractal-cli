@@ -106,6 +106,23 @@ pub fn save(config: &Config) -> Result<PathBuf, ConfigError> {
     Ok(path)
 }
 
+pub fn update_profile(
+    config: &mut Config,
+    name: String,
+    profile: Profile,
+    make_default: bool,
+) -> bool {
+    let is_first_profile = config.profiles.is_empty();
+    config.profiles.insert(name.clone(), profile);
+
+    if make_default || is_first_profile {
+        config.default_profile = Some(name);
+        true
+    } else {
+        false
+    }
+}
+
 pub fn resolve_profile<'a>(
     config: &'a Config,
     explicit: Option<&str>,

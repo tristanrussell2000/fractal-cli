@@ -13,6 +13,7 @@ toml = "0.8"
 directories = "6"
 thiserror = "2"
 keyring = "4"
+rpassword = "7"
 
 [dev-dependencies]
 keyring-core = "1"

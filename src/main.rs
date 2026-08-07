@@ -1,5 +1,7 @@
+use std::io::Read;
+
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use fractal::config;
+use fractal::{config, credentials};
 use serde::Serialize;
 
 #[derive(Debug, Parser)]
@@ -77,6 +79,15 @@ struct LoginArgs {
     /// Allow invalid TLS certificates. Use only for development systems.
     #[arg(long, default_value_t = false)]
     insecure_tls: bool,
+    /// Customer namespace patterns. Repeat for multiple patterns; defaults to Z* and Y*.
+    #[arg(long)]
+    namespace: Vec<String>,
+    /// Make this profile the default, replacing the current default.
+    #[arg(long, default_value_t = false)]
+    default: bool,
+    /// Read the password from standard input instead of prompting.
+    #[arg(long, default_value_t = false)]
+    password_stdin: bool,
 }
 
 #[derive(Debug, Args)]
@@ -159,11 +170,32 @@ struct ErrorResult {
     error: String,
 }
 
+#[derive(Debug, Serialize)]
+struct AuthLoginResult {
+    ok: bool,
+    profile: String,
+    config_path: String,
+    became_default: bool,
+    message: String,
+}
+
 fn main() {
     let cli = Cli::parse();
     let output = cli.output.unwrap_or_else(default_output_format);
 
     let exit_code = match &cli.command {
+        Command::Auth {
+            command: AuthCommand::Login(args),
+        } => match auth_login(args) {
+            Ok(result) => {
+                print_result(&result, output);
+                0
+            }
+            Err(error) => {
+                print_error_message(&error, output);
+                2
+            }
+        },
         Command::System {
             command: SystemCommand::List,
         } => match config::load() {
@@ -284,17 +316,71 @@ fn print_system_list(result: &SystemListResult, output: OutputFormat) {
 }
 
 fn print_error(error: config::ConfigError, output: OutputFormat) {
+    print_error_message(&error.to_string(), output);
+}
+
+fn print_error_message(error: &str, output: OutputFormat) {
     let result = ErrorResult {
         ok: false,
-        error: error.to_string(),
+        error: error.to_owned(),
     };
     match output {
         OutputFormat::Json => println!(
             "{}",
             serde_json::to_string_pretty(&result).expect("error serializes")
         ),
-        OutputFormat::Readable => eprintln!("error: {}", result.error),
+        OutputFormat::Readable => eprintln!("error: {error}"),
     }
+}
+
+fn auth_login(args: &LoginArgs) -> Result<AuthLoginResult, String> {
+    let password = if args.password_stdin {
+        let mut password = String::new();
+        std::io::stdin()
+            .read_to_string(&mut password)
+            .map_err(|error| format!("could not read password from stdin: {error}"))?;
+        password.trim_end_matches(['\r', '\n']).to_owned()
+    } else {
+        rpassword::prompt_password("Password: ")
+            .map_err(|error| format!("could not read password: {error}"))?
+    };
+
+    if password.is_empty() {
+        return Err("password cannot be empty".to_owned());
+    }
+
+    let mut loaded = config::load().map_err(|error| error.to_string())?;
+    let profile = config::Profile {
+        base_url: args.url.trim_end_matches('/').to_owned(),
+        client: args.client.clone(),
+        username: args.username.clone(),
+        insecure_tls: args.insecure_tls,
+        customer_namespaces: if args.namespace.is_empty() {
+            vec!["Z*".to_owned(), "Y*".to_owned()]
+        } else {
+            args.namespace.clone()
+        },
+    };
+    let became_default =
+        config::update_profile(&mut loaded.config, args.name.clone(), profile, args.default);
+
+    let config_path = config::save(&loaded.config)
+        .map_err(|error| format!("could not save profile config: {error}"))?;
+    credentials::save_password(&args.name, &password).map_err(|error| {
+        format!("profile config saved, but the credential could not be stored: {error}")
+    })?;
+
+    Ok(AuthLoginResult {
+        ok: true,
+        profile: args.name.clone(),
+        config_path: config_path.display().to_string(),
+        became_default,
+        message: if became_default {
+            "Profile saved and selected as the default profile.".to_owned()
+        } else {
+            "Profile saved; the existing default profile was preserved.".to_owned()
+        },
+    })
 }
 
 fn default_output_format() -> OutputFormat {
