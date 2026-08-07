@@ -1,7 +1,8 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use reqwest::{
-    Client, Response, StatusCode, Url,
+    Client, RequestBuilder, Response, StatusCode, Url,
+    cookie::Jar,
     header::{HeaderMap, HeaderValue},
 };
 use thiserror::Error;
@@ -43,6 +44,7 @@ pub struct SapClient {
     sap_client: String,
     username: String,
     password: String,
+    csrf_token: Option<String>,
 }
 
 impl SapClient {
@@ -53,7 +55,9 @@ impl SapClient {
                 source,
             }
         })?;
+        let cookie_jar = Arc::new(Jar::default());
         let http = Client::builder()
+            .cookie_provider(cookie_jar)
             .danger_accept_invalid_certs(profile.insecure_tls)
             .timeout(REQUEST_TIMEOUT)
             .build()
@@ -65,31 +69,41 @@ impl SapClient {
             sap_client: profile.client.clone(),
             username: profile.username.clone(),
             password,
+            csrf_token: None,
         })
     }
 
-    pub async fn test_connection(&self) -> Result<DiscoveryResult, SapError> {
+    pub async fn get_text(&mut self, path: &str) -> Result<String, SapError> {
+        let (_, response) = self.get(path, HeaderMap::new()).await?;
+        response.text().await.map_err(|error| SapError::Network {
+            url: self.base_url.to_string(),
+            message: format!("could not read SAP response body: {error}"),
+        })
+    }
+
+    pub async fn test_connection(&mut self) -> Result<DiscoveryResult, SapError> {
         let mut headers = HeaderMap::new();
         headers.insert("X-CSRF-Token", HeaderValue::from_static("Fetch"));
 
         let (url, response) = self.get(DISCOVERY_PATH, headers).await?;
-        let csrf_token_received = response.headers().contains_key("x-csrf-token");
         let status = response.status();
 
         Ok(DiscoveryResult {
             url,
             status,
-            csrf_token_received,
+            csrf_token_received: self.csrf_token.is_some(),
         })
     }
 
-    async fn get(&self, path: &str, headers: HeaderMap) -> Result<(Url, Response), SapError> {
+    async fn get(&mut self, path: &str, headers: HeaderMap) -> Result<(Url, Response), SapError> {
         let url = self.request_url(path)?;
-        let response = self
+        let request = self
             .http
             .get(url.clone())
             .headers(headers)
-            .basic_auth(&self.username, Some(&self.password))
+            .basic_auth(&self.username, Some(&self.password));
+        let response = self
+            .apply_session_headers(request, false)
             .send()
             .await
             .map_err(|error| SapError::Network {
@@ -101,7 +115,25 @@ impl SapClient {
             return Err(http_error(url, response).await);
         }
 
+        self.capture_csrf_token(&response);
         Ok((url, response))
+    }
+
+    fn apply_session_headers(&self, mut request: RequestBuilder, mutating: bool) -> RequestBuilder {
+        if mutating {
+            if let Some(token) = &self.csrf_token {
+                request = request.header("X-CSRF-Token", token);
+            }
+        }
+        request
+    }
+
+    fn capture_csrf_token(&mut self, response: &Response) {
+        if let Some(token) = response.headers().get("x-csrf-token") {
+            if let Ok(token) = token.to_str() {
+                self.csrf_token = Some(token.to_owned());
+            }
+        }
     }
 
     fn request_url(&self, path: &str) -> Result<Url, SapError> {

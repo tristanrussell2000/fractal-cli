@@ -25,16 +25,51 @@ async fn discovery_request_contains_sap_authentication_and_csrf_fetch_header() {
         .and(query_param("sap-client", "903"))
         .and(basic_auth("developer", "password"))
         .and(header("x-csrf-token", "Fetch"))
-        .respond_with(ResponseTemplate::new(200).insert_header("x-csrf-token", "mock-csrf-token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-csrf-token", "mock-csrf-token")
+                .insert_header("set-cookie", "SAP_SESSIONID=first; Path=/"),
+        )
         .expect(1)
         .mount(&server)
         .await;
 
-    let client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let result = client.test_connection().await.unwrap();
 
     assert_eq!(result.status.as_u16(), 200);
     assert!(result.csrf_token_received);
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn later_requests_reuse_the_session_cookie() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/core/discovery"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-csrf-token", "mock-csrf-token")
+                .insert_header("set-cookie", "SAP_SESSIONID=first; Path=/"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/test-endpoint"))
+        .and(header("cookie", "SAP_SESSIONID=first"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    client.test_connection().await.unwrap();
+    assert_eq!(
+        client.get_text("/sap/bc/adt/test-endpoint").await.unwrap(),
+        "ok"
+    );
+
     server.verify().await;
 }
 
@@ -49,7 +84,7 @@ async fn discovery_request_returns_sap_xml_error_message() {
         .mount(&server)
         .await;
 
-    let client = SapClient::new(&profile(server.uri()), "wrong-password".to_owned()).unwrap();
+    let mut client = SapClient::new(&profile(server.uri()), "wrong-password".to_owned()).unwrap();
     let error = client.test_connection().await.unwrap_err();
 
     match error {

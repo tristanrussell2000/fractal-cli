@@ -191,7 +191,7 @@ async fn system_test(explicit_profile: Option<&str>) -> Result<SystemTestResult,
     let (name, profile) = config::resolve_profile(&loaded.config, explicit_profile)
         .map_err(|error| error.to_string())?;
     let password = credentials::get_password(name).map_err(|error| error.to_string())?;
-    let client = SapClient::new(profile, password).map_err(|error| error.to_string())?;
+    let mut client = SapClient::new(profile, password).map_err(|error| error.to_string())?;
     let discovery = client
         .test_connection()
         .await
