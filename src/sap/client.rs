@@ -145,7 +145,15 @@ impl SapClient {
         path: &str,
         query: &[(&str, &str)],
     ) -> Result<String, SapError> {
-        let (_, response) = self.get(path, query, HeaderMap::new()).await?;
+        self.get_text_with_query_read_only(path, query).await
+    }
+
+    pub async fn get_text_with_query_read_only(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+    ) -> Result<String, SapError> {
+        let (_, response) = self.get_read_only(path, query, HeaderMap::new()).await?;
         response.text().await.map_err(|error| SapError::Network {
             url: self.base_url.to_string(),
             message: format!("could not read SAP response body: {error}"),
@@ -164,6 +172,34 @@ impl SapClient {
             status,
             csrf_token_received: self.csrf_token.is_some(),
         })
+    }
+
+    async fn get_read_only(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+        headers: HeaderMap,
+    ) -> Result<(Url, Response), SapError> {
+        let url = self.request_url(path, query)?;
+        let request = self
+            .http
+            .get(url.clone())
+            .headers(headers)
+            .basic_auth(&self.username, Some(&self.password));
+        let response = self
+            .apply_session_headers(request, false)
+            .send()
+            .await
+            .map_err(|error| SapError::Network {
+                url: url.to_string(),
+                message: describe_network_error(&error),
+            })?;
+
+        if !response.status().is_success() {
+            return Err(http_error(url, response).await);
+        }
+
+        Ok((url, response))
     }
 
     async fn get(

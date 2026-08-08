@@ -209,19 +209,25 @@ pub async fn search_objects(
         queries.push(combined);
     }
 
+    let query_results = futures::future::join_all(queries.iter().map(|search_query| async {
+        let query_params = [
+            ("operation", "quickSearch"),
+            ("query", search_query.as_str()),
+            ("maxResults", "500"),
+        ];
+        sap.get_text_with_query_read_only(SEARCH_PATH, &query_params)
+            .await
+    }))
+    .await;
+
     let mut by_uri = BTreeMap::new();
     let mut orphans = Vec::new();
     let mut first_error = None;
     let mut successful_queries = 0;
     let mut possibly_truncated_by_sap_cap = false;
 
-    for search_query in queries {
-        let query_params = [
-            ("operation", "quickSearch"),
-            ("query", search_query.as_str()),
-            ("maxResults", "500"),
-        ];
-        match sap.get_text_with_query(SEARCH_PATH, &query_params).await {
+    for result in query_results {
+        match result {
             Ok(xml) => {
                 successful_queries += 1;
                 let parsed_hits = parse_object_references(&xml)?;

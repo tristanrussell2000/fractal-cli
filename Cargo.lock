@@ -708,6 +708,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "directories",
+ "futures",
  "keyring",
  "keyring-core",
  "reqwest",

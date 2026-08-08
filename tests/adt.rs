@@ -5,6 +5,8 @@ use fractal::{
         client::SapClient,
     },
 };
+use std::time::{Duration, Instant};
+
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{basic_auth, method, path, query_param},
@@ -79,6 +81,44 @@ async fn search_objects_queries_adt_and_filters_deduplicates_and_pages() {
     assert_eq!(result.hits[0].name, "ZCL_VERSION");
     assert_eq!(result.hits[0].kind, RepositoryKind::Clas);
     assert!(!result.possibly_truncated_by_sap_cap);
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn search_requests_run_concurrently() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(SEARCH_PATH))
+        .and(query_param("operation", "quickSearch"))
+        .and(query_param("maxResults", "500"))
+        .and(basic_auth("developer", "password"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(
+                    r#"<r:objectReferences xmlns:r="urn:test"><r:objectReference name="ZOBJECT" type="CLAS/OC" packageName="ZAPP" uri="/sap/bc/adt/oo/classes/zobject"/></r:objectReferences>"#,
+                )
+                .set_delay(Duration::from_millis(150)),
+        )
+        .expect(3)
+        .mount(&server)
+        .await;
+
+    let profile = profile(server.uri());
+    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let started = Instant::now();
+    search_objects(
+        &mut client,
+        &profile,
+        "OBJECT",
+        ObjectSearchOptions {
+            limit: Some(10),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert!(started.elapsed() < Duration::from_millis(400));
     server.verify().await;
 }
 
