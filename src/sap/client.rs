@@ -5,12 +5,52 @@ use reqwest::{
     cookie::Jar,
     header::{HeaderMap, HeaderValue},
 };
+use serde::Serialize;
 use thiserror::Error;
 
 use crate::config::Profile;
 
 const DISCOVERY_PATH: &str = "/sap/bc/adt/core/discovery";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum SapErrorKind {
+    AuthenticationFailed,
+    Forbidden,
+    NotFound,
+    ServerError,
+    Other,
+}
+
+impl SapErrorKind {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::AuthenticationFailed => "authentication_failed",
+            Self::Forbidden => "forbidden",
+            Self::NotFound => "not_found",
+            Self::ServerError => "server_error",
+            Self::Other => "http_error",
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            Self::AuthenticationFailed => {
+                "Check the selected profile, SAP username, password, and client."
+            }
+            Self::Forbidden => {
+                "The credentials were understood but access was refused; check SAP permissions or CSRF/session state."
+            }
+            Self::NotFound => {
+                "Check the SAP endpoint or ADT object path and the selected environment."
+            }
+            Self::ServerError => {
+                "SAP reported a server-side failure; inspect the SAP message and retry if appropriate."
+            }
+            Self::Other => "Inspect the SAP message and HTTP status for the cause.",
+        }
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum SapError {
@@ -25,10 +65,33 @@ pub enum SapError {
     Network { url: String, message: String },
     #[error("SAP returned HTTP {status} from {url}: {message}")]
     Http {
+        kind: SapErrorKind,
         status: StatusCode,
         url: String,
         message: String,
     },
+}
+
+impl SapError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Client(_) => "client_error",
+            Self::InvalidUrl { .. } => "invalid_url",
+            Self::Network { .. } => "network_error",
+            Self::Http { kind, .. } => kind.code(),
+        }
+    }
+
+    pub fn hint(&self) -> &'static str {
+        match self {
+            Self::Client(_) => "The local HTTP client could not be initialized.",
+            Self::InvalidUrl { .. } => "Use a complete SAP URL including http:// or https://.",
+            Self::Network { .. } => {
+                "Check the VPN, hostname, port, and whether the SAP service is reachable."
+            }
+            Self::Http { kind, .. } => kind.hint(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -112,7 +175,7 @@ impl SapClient {
             })?;
 
         if !response.status().is_success() {
-            return Err(http_error(url, response).await);
+            return Err( http_error(url, response).await);
         }
 
         self.capture_csrf_token(&response);
@@ -150,6 +213,16 @@ impl SapClient {
     }
 }
 
+fn classify_http_status(status: StatusCode) -> SapErrorKind {
+    match status {
+        StatusCode::UNAUTHORIZED => SapErrorKind::AuthenticationFailed,
+        StatusCode::FORBIDDEN => SapErrorKind::Forbidden,
+        StatusCode::NOT_FOUND => SapErrorKind::NotFound,
+        status if status.is_server_error() => SapErrorKind::ServerError,
+        _ => SapErrorKind::Other,
+    }
+}
+
 async fn http_error(url: Url, response: Response) -> SapError {
     let status = response.status();
     let message = response
@@ -164,6 +237,7 @@ async fn http_error(url: Url, response: Response) -> SapError {
                 .to_owned()
         });
     SapError::Http {
+        kind: classify_http_status(status),
         status,
         url: url.to_string(),
         message,
@@ -219,7 +293,9 @@ fn decode_xml_entities(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_xml_entities, extract_sap_message};
+    use reqwest::StatusCode;
+
+    use super::{SapErrorKind, classify_http_status, decode_xml_entities, extract_sap_message};
 
     #[test]
     fn extracts_sap_message_from_xml() {
@@ -245,5 +321,38 @@ mod tests {
     #[test]
     fn decodes_xml_entities() {
         assert_eq!(decode_xml_entities("a &lt; b &amp; c"), "a < b & c");
+    }
+
+    #[test]
+    fn classifies_http_statuses_for_agents() {
+        assert_eq!(
+            classify_http_status(StatusCode::UNAUTHORIZED),
+            SapErrorKind::AuthenticationFailed
+        );
+        assert_eq!(
+            classify_http_status(StatusCode::FORBIDDEN),
+            SapErrorKind::Forbidden
+        );
+        assert_eq!(
+            classify_http_status(StatusCode::NOT_FOUND),
+            SapErrorKind::NotFound
+        );
+        assert_eq!(
+            classify_http_status(StatusCode::INTERNAL_SERVER_ERROR),
+            SapErrorKind::ServerError
+        );
+        assert_eq!(
+            classify_http_status(StatusCode::BAD_REQUEST),
+            SapErrorKind::Other
+        );
+    }
+
+    #[test]
+    fn error_kinds_have_stable_codes_and_hints() {
+        assert_eq!(
+            SapErrorKind::AuthenticationFailed.code(),
+            "authentication_failed"
+        );
+        assert!(!SapErrorKind::Forbidden.hint().is_empty());
     }
 }

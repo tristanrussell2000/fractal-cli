@@ -89,11 +89,48 @@ async fn discovery_request_returns_sap_xml_error_message() {
 
     match error {
         SapError::Http {
-            status, message, ..
+            kind,
+            status,
+            message,
+            ..
         } => {
+            assert_eq!(kind.code(), "authentication_failed");
             assert_eq!(status.as_u16(), 401);
             assert_eq!(message, "Invalid & expired credentials");
         }
         other => panic!("expected HTTP error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn discovery_http_statuses_are_classified() {
+    for (status, expected_code) in [
+        (401, "authentication_failed"),
+        (403, "forbidden"),
+        (404, "not_found"),
+        (500, "server_error"),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/sap/bc/adt/core/discovery"))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(&server)
+            .await;
+
+        let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+        let error = client.test_connection().await.unwrap_err();
+
+        match error {
+            SapError::Http {
+                kind,
+                status: actual,
+                ..
+            } => {
+                assert_eq!(actual.as_u16(), status);
+                assert_eq!(kind.code(), expected_code);
+                assert!(!kind.hint().is_empty());
+            }
+            other => panic!("expected HTTP error, got {other:?}"),
+        }
     }
 }
