@@ -236,18 +236,7 @@ async fn object_search(
     explicit_profile: Option<&str>,
     args: &SearchArgs,
 ) -> Result<ObjectSearchResultOutput, CommandError> {
-    let kind = args
-        .kind
-        .as_deref()
-        .map(RepositoryKind::parse)
-        .transpose()
-        .map_err(|error| {
-            CommandError::with_hint(
-                "invalid_repository_kind",
-                error.to_string(),
-                "Use a kind such as CLAS, INTF, TABL, PROG, DDLS, or OTHER.",
-            )
-        })?;
+    let kind = args.kind.as_deref().map(parse_search_kind).transpose()?;
     let loaded = config::load()?;
     let (profile_name, profile) = config::resolve_profile(&loaded.config, explicit_profile)?;
     let password = credentials::get_password(profile_name)?;
@@ -269,14 +258,40 @@ async fn object_search(
         },
     )
     .await?;
+    Ok(map_object_search_result(
+        profile_name,
+        &args.query,
+        args,
+        effective_patterns,
+        result,
+    ))
+}
+
+fn parse_search_kind(value: &str) -> Result<RepositoryKind, CommandError> {
+    RepositoryKind::parse(value).map_err(|error| {
+        CommandError::with_hint(
+            "invalid_repository_kind",
+            error.to_string(),
+            "Use a kind such as CLAS, INTF, TABL, PROG, DDLS, or OTHER.",
+        )
+    })
+}
+
+fn map_object_search_result(
+    profile_name: &str,
+    query: &str,
+    args: &SearchArgs,
+    package_patterns: Vec<String>,
+    result: fractal::sap::adt::ObjectSearchResult,
+) -> ObjectSearchResultOutput {
     let returned = result.hits.len();
     let next_offset = (args.offset + returned < result.total).then_some(args.offset + returned);
 
-    Ok(ObjectSearchResultOutput {
+    ObjectSearchResultOutput {
         ok: true,
         profile: profile_name.to_owned(),
-        query: args.query.clone(),
-        package_patterns: effective_patterns,
+        query: query.to_owned(),
+        package_patterns,
         package_patterns_source: if args.package_patterns.is_empty() {
             "default".to_owned()
         } else {
@@ -301,7 +316,7 @@ async fn object_search(
                 uri: hit.uri,
             })
             .collect(),
-    })
+    }
 }
 
 fn system_test_result(
@@ -483,5 +498,99 @@ fn describe_command(command: &Command) -> (&'static str, &'static str) {
             }
             ObjectCommand::Xml(_) => ("object xml", "Metadata retrieval is not implemented yet."),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    #[test]
+    fn parses_object_search_options_from_cli() {
+        let cli = Cli::try_parse_from([
+            "fractal",
+            "object",
+            "search",
+            "VERSION",
+            "--kind",
+            "clas",
+            "--package-pattern",
+            "ZAPP*",
+            "--package-pattern",
+            "YLIB*",
+            "--offset",
+            "2",
+            "--limit",
+            "5",
+        ])
+        .unwrap();
+
+        let Command::Object {
+            command: ObjectCommand::Search(args),
+        } = cli.command
+        else {
+            panic!("expected object search command");
+        };
+        assert_eq!(args.query, "VERSION");
+        assert_eq!(args.kind.as_deref(), Some("clas"));
+        assert_eq!(args.package_patterns, vec!["ZAPP*", "YLIB*"]);
+        assert_eq!(args.offset, 2);
+        assert_eq!(args.limit, 5);
+    }
+
+    #[test]
+    fn parses_search_kind_case_insensitively() {
+        assert_eq!(parse_search_kind("cLaS").unwrap(), RepositoryKind::Clas);
+    }
+
+    #[test]
+    fn invalid_search_kind_has_a_cli_hint() {
+        let error = parse_search_kind("NOPE").unwrap_err();
+        assert_eq!(error.code(), "invalid_repository_kind");
+        assert!(error.hint().unwrap().contains("CLAS"));
+    }
+
+    #[test]
+    fn maps_search_results_and_preserves_pagination_and_cap_warning() {
+        let args = SearchArgs {
+            query: "VERSION".to_owned(),
+            kind: Some("CLAS".to_owned()),
+            package_patterns: vec![],
+            offset: 10,
+            limit: 2,
+        };
+        let result = fractal::sap::adt::ObjectSearchResult {
+            total: 13,
+            sap_search_cap: 500,
+            possibly_truncated_by_sap_cap: true,
+            hits: vec![fractal::sap::adt::ObjectSearchHit {
+                name: "ZCL_VERSION".to_owned(),
+                object_type: "CLAS/OC".to_owned(),
+                kind: RepositoryKind::Clas,
+                package: Some("ZAPP".to_owned()),
+                description: Some("Version class".to_owned()),
+                uri: Some("/sap/bc/adt/oo/classes/zcl_version".to_owned()),
+            }],
+        };
+        let output = map_object_search_result(
+            "DE2_903",
+            "VERSION",
+            &args,
+            vec!["Z*".to_owned(), "Y*".to_owned()],
+            result,
+        );
+
+        assert_eq!(output.profile, "DE2_903");
+        assert_eq!(output.package_patterns_source, "default");
+        assert_eq!(output.total_matching, 13);
+        assert_eq!(output.returned, 1);
+        assert_eq!(output.offset, 10);
+        assert_eq!(output.limit, 2);
+        assert_eq!(output.next_offset, Some(11));
+        assert!(output.possibly_truncated_by_sap_cap);
+        assert_eq!(output.hits[0].kind, "CLAS");
+        assert_eq!(output.hits[0].name, "ZCL_VERSION");
     }
 }
