@@ -1,7 +1,9 @@
-use std::{fmt::Display, future::Future};
+use std::future::Future;
 
 use clap::ValueEnum;
 use serde::Serialize;
+
+use crate::command_error::CommandError;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub(crate) enum OutputFormat {
@@ -17,30 +19,27 @@ pub(crate) fn default_output_format() -> OutputFormat {
     }
 }
 
-pub(crate) fn run_and_print<T, E, F>(operation: F, output: OutputFormat) -> i32
+pub(crate) fn run_and_print<T, F>(operation: F, output: OutputFormat) -> i32
 where
     T: Serialize,
-    E: Display,
-    F: FnOnce() -> Result<T, E>,
+    F: FnOnce() -> Result<T, CommandError>,
 {
     run_and_print_with(operation, print_result, output)
 }
 
-pub(crate) async fn run_and_print_async<T, E, F, Fut>(operation: F, output: OutputFormat) -> i32
+pub(crate) async fn run_and_print_async<T, F, Fut>(operation: F, output: OutputFormat) -> i32
 where
     T: Serialize,
-    E: Display,
     F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<T, E>>,
+    Fut: Future<Output = Result<T, CommandError>>,
 {
     run_and_print_with_async(operation, print_result, output).await
 }
 
-pub(crate) fn run_and_print_with<T, E, F, P>(operation: F, print: P, output: OutputFormat) -> i32
+pub(crate) fn run_and_print_with<T, F, P>(operation: F, print: P, output: OutputFormat) -> i32
 where
     T: Serialize,
-    E: Display,
-    F: FnOnce() -> Result<T, E>,
+    F: FnOnce() -> Result<T, CommandError>,
     P: FnOnce(&T, OutputFormat),
 {
     match operation() {
@@ -49,22 +48,17 @@ where
             0
         }
         Err(error) => {
-            print_error_message(&error.to_string(), output);
+            print_error(&error, output);
             2
         }
     }
 }
 
-async fn run_and_print_with_async<T, E, F, Fut, P>(
-    operation: F,
-    print: P,
-    output: OutputFormat,
-) -> i32
+async fn run_and_print_with_async<T, F, Fut, P>(operation: F, print: P, output: OutputFormat) -> i32
 where
     T: Serialize,
-    E: Display,
     F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<T, E>>,
+    Fut: Future<Output = Result<T, CommandError>>,
     P: FnOnce(&T, OutputFormat),
 {
     match operation().await {
@@ -73,7 +67,7 @@ where
             0
         }
         Err(error) => {
-            print_error_message(&error.to_string(), output);
+            print_error(&error, output);
             2
         }
     }
@@ -96,19 +90,32 @@ fn print_json<T: Serialize>(result: &T) {
     );
 }
 
-pub(crate) fn print_error_message(error: &str, output: OutputFormat) {
+fn print_error(error: &CommandError, output: OutputFormat) {
     let result = ErrorResult {
         ok: false,
-        error: error.to_owned(),
+        code: error.code(),
+        status: error.status(),
+        message: error.message(),
+        hint: error.hint(),
     };
     match output {
         OutputFormat::Json => print_json(&result),
-        OutputFormat::Readable => eprintln!("error: {error}"),
+        OutputFormat::Readable => {
+            eprintln!("error [{}]: {}", result.code, result.message);
+            if let Some(hint) = result.hint {
+                eprintln!("hint: {hint}");
+            }
+        }
     }
 }
 
 #[derive(Debug, Serialize)]
 struct ErrorResult {
     ok: bool,
-    error: String,
+    code: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<u16>,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hint: Option<String>,
 }

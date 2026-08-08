@@ -1,4 +1,5 @@
 mod cli;
+mod command_error;
 mod output;
 
 use std::io::Read;
@@ -7,6 +8,7 @@ use clap::Parser;
 use cli::{
     AuthCommand, Cli, Command, LoginArgs, ObjectCommand, PackageCommand, ProfileArgs, SystemCommand,
 };
+use command_error::CommandError;
 use fractal::{
     config, credentials,
     sap::client::{DiscoveryResult, SapClient},
@@ -152,7 +154,7 @@ fn print_system_list(result: &SystemListResult, output: OutputFormat) {
     }
 }
 
-fn system_list() -> Result<SystemListResult, config::ConfigError> {
+fn system_list() -> Result<SystemListResult, CommandError> {
     let loaded = config::load()?;
     let profiles = loaded
         .config
@@ -186,16 +188,12 @@ struct SystemTestResult {
     message: String,
 }
 
-async fn system_test(explicit_profile: Option<&str>) -> Result<SystemTestResult, String> {
-    let loaded = config::load().map_err(|error| error.to_string())?;
-    let (name, profile) = config::resolve_profile(&loaded.config, explicit_profile)
-        .map_err(|error| error.to_string())?;
-    let password = credentials::get_password(name).map_err(|error| error.to_string())?;
-    let mut client = SapClient::new(profile, password).map_err(|error| error.to_string())?;
-    let discovery = client
-        .test_connection()
-        .await
-        .map_err(|error| error.to_string())?;
+async fn system_test(explicit_profile: Option<&str>) -> Result<SystemTestResult, CommandError> {
+    let loaded = config::load()?;
+    let (name, profile) = config::resolve_profile(&loaded.config, explicit_profile)?;
+    let password = credentials::get_password(name)?;
+    let mut client = SapClient::new(profile, password)?;
+    let discovery = client.test_connection().await?;
 
     Ok(system_test_result(name, profile, discovery))
 }
@@ -215,8 +213,8 @@ fn system_test_result(
     }
 }
 
-fn auth_list() -> Result<AuthListResult, String> {
-    let loaded = config::load().map_err(|error| error.to_string())?;
+fn auth_list() -> Result<AuthListResult, CommandError> {
+    let loaded = config::load()?;
     let profiles = loaded
         .config
         .profiles
@@ -251,17 +249,25 @@ fn auth_list() -> Result<AuthListResult, String> {
     })
 }
 
-fn auth_remove(args: &ProfileArgs) -> Result<AuthRemoveResult, String> {
-    let mut loaded = config::load().map_err(|error| error.to_string())?;
+fn auth_remove(args: &ProfileArgs) -> Result<AuthRemoveResult, CommandError> {
+    let mut loaded = config::load()?;
     if !loaded.config.profiles.contains_key(&args.name) {
-        return Err(format!("profile '{}' was not found", args.name));
+        return Err(CommandError::with_hint(
+            "profile_not_found",
+            format!("profile '{}' was not found", args.name),
+            "Run `fractal auth list` to see configured profiles.",
+        ));
     }
 
     let removed_default = loaded.config.default_profile.as_deref() == Some(args.name.as_str());
-    credentials::delete_password(&args.name).map_err(|error| error.to_string())?;
+    credentials::delete_password(&args.name)?;
     config::remove_profile(&mut loaded.config, &args.name);
     let config_path = config::save(&loaded.config).map_err(|error| {
-        format!("credential removed, but profile config could not be saved: {error}")
+        CommandError::with_hint(
+            "config_write_error_after_credential_removal",
+            format!("credential removed, but profile config could not be saved: {error}"),
+            "Retry `fractal auth remove` for this profile; credential deletion is idempotent.",
+        )
     })?;
 
     let message = if removed_default {
@@ -279,23 +285,32 @@ fn auth_remove(args: &ProfileArgs) -> Result<AuthRemoveResult, String> {
     })
 }
 
-fn auth_login(args: &LoginArgs) -> Result<AuthLoginResult, String> {
+fn auth_login(args: &LoginArgs) -> Result<AuthLoginResult, CommandError> {
     let password = if args.password_stdin {
         let mut password = String::new();
         std::io::stdin()
             .read_to_string(&mut password)
-            .map_err(|error| format!("could not read password from stdin: {error}"))?;
+            .map_err(|error| CommandError::with_hint(
+                "password_stdin_error",
+                format!("could not read password from stdin: {error}"),
+                "Provide the password through stdin or omit --password-stdin to use the secure prompt.",
+            ))?;
         password.trim_end_matches(['\r', '\n']).to_owned()
     } else {
-        rpassword::prompt_password("Password: ")
-            .map_err(|error| format!("could not read password: {error}"))?
+        rpassword::prompt_password("Password: ").map_err(|error| {
+            CommandError::from_message("password_prompt_error", error.to_string())
+        })?
     };
 
     if password.is_empty() {
-        return Err("password cannot be empty".to_owned());
+        return Err(CommandError::with_hint(
+            "empty_password",
+            "password cannot be empty",
+            "Provide a non-empty password through the secure prompt or --password-stdin.",
+        ));
     }
 
-    let mut loaded = config::load().map_err(|error| error.to_string())?;
+    let mut loaded = config::load()?;
     let profile = config::Profile {
         base_url: args.url.trim_end_matches('/').to_owned(),
         client: args.client.clone(),
@@ -310,10 +325,22 @@ fn auth_login(args: &LoginArgs) -> Result<AuthLoginResult, String> {
     let became_default =
         config::update_profile(&mut loaded.config, args.name.clone(), profile, args.default);
 
-    let config_path = config::save(&loaded.config)
-        .map_err(|error| format!("could not save profile config: {error}"))?;
+    let config_path = config::save(&loaded.config).map_err(|error| {
+        CommandError::with_hint(
+            "config_write_error",
+            format!("could not save profile config: {error}"),
+            "Check that Fractal's application config directory is writable.",
+        )
+    })?;
     credentials::save_password(&args.name, &password).map_err(|error| {
-        format!("profile config saved, but the credential could not be stored: {error}")
+        CommandError::with_hint(
+            "credential_store_error_after_config_save",
+            format!("profile config saved, but the credential could not be stored: {error}"),
+            format!(
+                "Run `fractal auth list` and retry `fractal auth login {}`.",
+                args.name
+            ),
+        )
     })?;
 
     Ok(AuthLoginResult {

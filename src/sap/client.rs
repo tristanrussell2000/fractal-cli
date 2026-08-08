@@ -175,7 +175,7 @@ impl SapClient {
             })?;
 
         if !response.status().is_success() {
-            return Err( http_error(url, response).await);
+            return Err(http_error(url, response).await);
         }
 
         self.capture_csrf_token(&response);
