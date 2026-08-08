@@ -8,6 +8,7 @@ use crate::config::Profile;
 
 const SEARCH_PATH: &str = "/sap/bc/adt/repository/informationsystem/search";
 const HARD_SEARCH_MAX: usize = 500;
+const SOURCE_SUFFIX: &str = "/source/main";
 
 #[derive(Debug, Error)]
 pub enum AdtError {
@@ -17,6 +18,12 @@ pub enum AdtError {
     InvalidQuery(String),
     #[error("could not parse ADT search response: {0}")]
     Parse(String),
+    #[error("invalid ADT object URI: {0}")]
+    InvalidUri(String),
+    #[error("the URI already includes a source suffix: {0}")]
+    DoubledSourceSuffix(String),
+    #[error("{kind} objects do not have an ABAP source view")]
+    NoSourceForKind { kind: String, uri: String },
 }
 
 impl AdtError {
@@ -25,6 +32,9 @@ impl AdtError {
             Self::Sap(error) => error.code(),
             Self::InvalidQuery(_) => "invalid_search_query",
             Self::Parse(_) => "adt_response_parse_error",
+            Self::InvalidUri(_) => "invalid_adt_uri",
+            Self::DoubledSourceSuffix(_) => "doubled_source_suffix",
+            Self::NoSourceForKind { .. } => "no_source_for_kind",
         }
     }
 
@@ -34,6 +44,16 @@ impl AdtError {
             Self::InvalidQuery(_) => Some("Provide a non-empty object search query.".to_owned()),
             Self::Parse(_) => {
                 Some("The SAP ADT response did not match the expected search format.".to_owned())
+            }
+            Self::InvalidUri(_) => Some(
+                "Use an object URI under /sap/bc/adt/. Discover it with `fractal object search`."
+                    .to_owned(),
+            ),
+            Self::DoubledSourceSuffix(_) => {
+                Some("Pass the object URI without /source/main; Fractal appends it.".to_owned())
+            }
+            Self::NoSourceForKind { .. } => {
+                Some("Use `fractal object xml` to retrieve metadata for this object.".to_owned())
             }
         }
     }
@@ -163,6 +183,61 @@ pub struct ObjectSearchResult {
     pub possibly_truncated_by_sap_cap: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct SourceOptions {
+    pub offset: usize,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SourceResult {
+    pub start_byte: usize,
+    pub end_byte: usize,
+    pub total_bytes: usize,
+    pub truncated: bool,
+    pub next_offset: Option<usize>,
+    pub source: String,
+}
+
+pub async fn get_source(
+    sap: &mut SapClient,
+    uri: &str,
+    options: SourceOptions,
+) -> Result<SourceResult, AdtError> {
+    validate_source_uri(uri)?;
+    let kind = no_source_kind(uri);
+    if let Some(kind) = kind {
+        return Err(AdtError::NoSourceForKind {
+            kind: kind.to_owned(),
+            uri: uri.to_owned(),
+        });
+    }
+
+    let source_uri = format!("{}{}", uri.trim_end_matches('/'), SOURCE_SUFFIX);
+    let source = sap.get_text(&source_uri).await?;
+    let bytes = source.as_bytes();
+    let total_bytes = bytes.len();
+    let start_byte = utf8_safe_start(bytes, options.offset.min(total_bytes));
+    let requested_end = options
+        .limit
+        .map(|limit| start_byte.saturating_add(limit).min(total_bytes))
+        .unwrap_or(total_bytes);
+    let end_byte = utf8_safe_end(bytes, requested_end).max(start_byte);
+    let source = std::str::from_utf8(&bytes[start_byte..end_byte])
+        .expect("UTF-8-safe source range must be valid")
+        .to_owned();
+    let truncated = end_byte < total_bytes;
+
+    Ok(SourceResult {
+        start_byte,
+        end_byte,
+        total_bytes,
+        truncated,
+        next_offset: truncated.then_some(end_byte),
+        source,
+    })
+}
+
 pub async fn search_objects(
     sap: &mut SapClient,
     profile: &Profile,
@@ -278,6 +353,52 @@ pub async fn search_objects(
         sap_search_cap: 500,
         possibly_truncated_by_sap_cap,
     })
+}
+
+fn validate_source_uri(uri: &str) -> Result<(), AdtError> {
+    if !uri.starts_with("/sap/bc/adt/") {
+        return Err(AdtError::InvalidUri(uri.to_owned()));
+    }
+    if uri.ends_with(SOURCE_SUFFIX) {
+        return Err(AdtError::DoubledSourceSuffix(uri.to_owned()));
+    }
+    Ok(())
+}
+
+fn no_source_kind(uri: &str) -> Option<&'static str> {
+    let uri = uri.to_ascii_lowercase();
+    if uri.contains("/ddic/dataelements/") {
+        Some("DTEL")
+    } else if uri.contains("/ddic/domains/") {
+        Some("DOMA")
+    } else if uri.contains("/ddic/tabletypes/") {
+        Some("TTYP")
+    } else if uri.contains("/messageclass/") || uri.contains("/messageclasses/") {
+        Some("MSAG")
+    } else {
+        None
+    }
+}
+
+#[inline]
+fn is_utf8_continuation_byte(byte: u8) -> bool {
+    (byte & 0b1100_0000) == 0b1000_0000
+}
+
+fn utf8_safe_start(bytes: &[u8], requested_start: usize) -> usize {
+    let mut start = requested_start.min(bytes.len());
+    while start < bytes.len() && is_utf8_continuation_byte(bytes[start]) {
+        start += 1;
+    }
+    start
+}
+
+fn utf8_safe_end(bytes: &[u8], requested_end: usize) -> usize {
+    let mut end = requested_end.min(bytes.len());
+    while end > 0 && end < bytes.len() && is_utf8_continuation_byte(bytes[end]) {
+        end -= 1;
+    }
+    end
 }
 
 fn parse_object_references(xml: &str) -> Result<Vec<ObjectSearchHit>, AdtError> {

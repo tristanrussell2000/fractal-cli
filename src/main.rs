@@ -7,7 +7,7 @@ use std::io::Read;
 use clap::Parser;
 use cli::{
     AuthCommand, Cli, Command, LoginArgs, ObjectCommand, PackageCommand, ProfileArgs, SearchArgs,
-    SystemCommand,
+    SourceArgs, SystemCommand,
 };
 use command_error::CommandError;
 use fractal::{
@@ -115,6 +115,19 @@ struct ObjectSearchHitOutput {
     uri: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct ObjectSourceResultOutput {
+    ok: bool,
+    profile: String,
+    uri: String,
+    start_byte: usize,
+    end_byte: usize,
+    total_bytes: usize,
+    truncated: bool,
+    next_offset: Option<usize>,
+    source: String,
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -139,6 +152,9 @@ async fn main() {
         Command::Object {
             command: ObjectCommand::Search(args),
         } => run_and_print_async(|| object_search(cli.profile.as_deref(), args), output).await,
+        Command::Object {
+            command: ObjectCommand::Source(args),
+        } => run_and_print_async(|| object_source(cli.profile.as_deref(), args), output).await,
         _ => {
             let (command_name, message) = describe_command(&cli.command);
             let result = Placeholder {
@@ -317,6 +333,37 @@ fn map_object_search_result(
             })
             .collect(),
     }
+}
+
+async fn object_source(
+    explicit_profile: Option<&str>,
+    args: &SourceArgs,
+) -> Result<ObjectSourceResultOutput, CommandError> {
+    let loaded = config::load()?;
+    let (profile_name, profile) = config::resolve_profile(&loaded.config, explicit_profile)?;
+    let password = credentials::get_password(profile_name)?;
+    let mut client = SapClient::new(profile, password)?;
+    let result = fractal::sap::adt::get_source(
+        &mut client,
+        &args.uri,
+        fractal::sap::adt::SourceOptions {
+            offset: args.offset,
+            limit: args.limit,
+        },
+    )
+    .await?;
+
+    Ok(ObjectSourceResultOutput {
+        ok: true,
+        profile: profile_name.to_owned(),
+        uri: args.uri.clone(),
+        start_byte: result.start_byte,
+        end_byte: result.end_byte,
+        total_bytes: result.total_bytes,
+        truncated: result.truncated,
+        next_offset: result.next_offset,
+        source: result.source,
+    })
 }
 
 fn system_test_result(

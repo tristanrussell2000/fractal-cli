@@ -107,7 +107,7 @@ pub(crate) enum ObjectCommand {
     /// Search for repository objects by name.
     Search(SearchArgs),
     /// Read source for an ADT object URI.
-    Source(UriArgs),
+    Source(SourceArgs),
     /// Read metadata XML for an ADT object URI.
     Xml(UriArgs),
 }
@@ -134,6 +134,18 @@ pub(crate) struct SearchArgs {
     /// Maximum number of results to return.
     #[arg(long, default_value_t = 100)]
     pub(crate) limit: usize,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct SourceArgs {
+    /// ADT object URI, without a source suffix.
+    pub(crate) uri: String,
+    /// Byte offset to start returning from.
+    #[arg(long, default_value_t = 0)]
+    pub(crate) offset: usize,
+    /// Maximum bytes to return. Omit to return the complete source.
+    #[arg(long)]
+    pub(crate) limit: Option<usize>,
 }
 
 #[derive(Debug, Args)]
