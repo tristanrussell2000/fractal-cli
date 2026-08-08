@@ -122,6 +122,18 @@ pub(crate) struct NameArgs {
 pub(crate) struct SearchArgs {
     /// Name substring or SAP-style pattern.
     pub(crate) query: String,
+    /// Restrict results to a repository kind, such as CLAS or PROG.
+    #[arg(long)]
+    pub(crate) kind: Option<String>,
+    /// Restrict results to matching package/name globs. Repeat for multiple patterns.
+    #[arg(long = "package-pattern")]
+    pub(crate) package_patterns: Vec<String>,
+    /// Number of matching results to skip.
+    #[arg(long, default_value_t = 0)]
+    pub(crate) offset: usize,
+    /// Maximum number of results to return.
+    #[arg(long, default_value_t = 100)]
+    pub(crate) limit: usize,
 }
 
 #[derive(Debug, Args)]

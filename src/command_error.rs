@@ -1,10 +1,14 @@
-use fractal::{config, credentials, sap::client::SapError};
+use fractal::{
+    config, credentials,
+    sap::{adt::AdtError, client::SapError},
+};
 
 #[derive(Debug)]
 pub(crate) enum CommandError {
     Config(config::ConfigError),
     Credential(credentials::CredentialError),
     Sap(SapError),
+    Adt(AdtError),
     Message {
         code: &'static str,
         message: String,
@@ -50,6 +54,7 @@ impl CommandError {
                 credentials::CredentialError::Missing(_) => "credential_missing",
             },
             Self::Sap(error) => error.code(),
+            Self::Adt(error) => error.code(),
             Self::Message { code, .. } => code,
         }
     }
@@ -66,6 +71,7 @@ impl CommandError {
             Self::Config(error) => error.to_string(),
             Self::Credential(error) => error.to_string(),
             Self::Sap(error) => error.to_string(),
+            Self::Adt(error) => error.to_string(),
             Self::Message { message, .. } => message.clone(),
         }
     }
@@ -82,6 +88,7 @@ impl CommandError {
             )),
             Self::Credential(_) => None,
             Self::Sap(error) => Some(error.hint().to_owned()),
+            Self::Adt(error) => error.hint(),
             Self::Message { hint, .. } => hint.clone(),
         }
     }
@@ -102,6 +109,12 @@ impl From<credentials::CredentialError> for CommandError {
 impl From<SapError> for CommandError {
     fn from(error: SapError) -> Self {
         Self::Sap(error)
+    }
+}
+
+impl From<AdtError> for CommandError {
+    fn from(error: AdtError) -> Self {
+        Self::Adt(error)
     }
 }
 

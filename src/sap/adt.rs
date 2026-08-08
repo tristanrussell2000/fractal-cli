@@ -19,6 +19,30 @@ pub enum AdtError {
     Parse(String),
 }
 
+impl AdtError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Sap(error) => error.code(),
+            Self::InvalidQuery(_) => "invalid_search_query",
+            Self::Parse(_) => "adt_response_parse_error",
+        }
+    }
+
+    pub fn hint(&self) -> Option<String> {
+        match self {
+            Self::Sap(error) => Some(error.hint().to_owned()),
+            Self::InvalidQuery(_) => Some("Provide a non-empty object search query.".to_owned()),
+            Self::Parse(_) => {
+                Some("The SAP ADT response did not match the expected search format.".to_owned())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("unknown repository kind '{0}'")]
+pub struct RepositoryKindParseError(pub String);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RepositoryKind {
     Clas,
@@ -42,6 +66,53 @@ pub enum RepositoryKind {
 }
 
 impl RepositoryKind {
+    pub fn parse(value: &str) -> Result<Self, RepositoryKindParseError> {
+        match value.to_ascii_uppercase().as_str() {
+            "CLAS" => Ok(Self::Clas),
+            "INTF" => Ok(Self::Intf),
+            "TABL" => Ok(Self::Tabl),
+            "STRU" => Ok(Self::Stru),
+            "TTYP" => Ok(Self::Ttyp),
+            "VIEW" => Ok(Self::View),
+            "DTEL" => Ok(Self::Dtel),
+            "DOMA" => Ok(Self::Doma),
+            "DDLS" => Ok(Self::Ddls),
+            "BDEF" => Ok(Self::Bdef),
+            "SRVD" => Ok(Self::Srvd),
+            "SRVB" => Ok(Self::Srvb),
+            "MSAG" => Ok(Self::Msag),
+            "FUGR" => Ok(Self::Fugr),
+            "PROG" => Ok(Self::Prog),
+            "ENHO" => Ok(Self::Enho),
+            "ENHS" => Ok(Self::Enhs),
+            "OTHER" => Ok(Self::Other),
+            _ => Err(RepositoryKindParseError(value.to_owned())),
+        }
+    }
+
+    pub fn from_object_type(object_type: &str) -> Self {
+        match object_type {
+            "CLAS/OC" => Self::Clas,
+            "INTF/OI" => Self::Intf,
+            "TABL/DT" => Self::Tabl,
+            "TABL/DS" => Self::Stru,
+            "TTYP/TT" => Self::Ttyp,
+            "VIEW/DV" => Self::View,
+            "DTEL/DE" => Self::Dtel,
+            "DOMA/DD" => Self::Doma,
+            "DDLS/DF" => Self::Ddls,
+            "BDEF/BDO" => Self::Bdef,
+            "SRVD/SRV" => Self::Srvd,
+            "SRVB/SVB" => Self::Srvb,
+            "MSAG/N" => Self::Msag,
+            "FUGR/F" => Self::Fugr,
+            "PROG/P" => Self::Prog,
+            "ENHO/XHH" => Self::Enho,
+            "ENHS/XSB" | "ENHS/XSD" | "ENHS/XB" => Self::Enhs,
+            _ => Self::Other,
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Clas => "CLAS",
@@ -88,6 +159,7 @@ pub struct ObjectSearchOptions {
 pub struct ObjectSearchResult {
     pub total: usize,
     pub hits: Vec<ObjectSearchHit>,
+    pub sap_search_cap: usize,
 }
 
 pub async fn search_objects(
@@ -188,7 +260,11 @@ pub async fn search_objects(
         None => all,
     };
 
-    Ok(ObjectSearchResult { total, hits })
+    Ok(ObjectSearchResult {
+        total,
+        hits,
+        sap_search_cap: 500,
+    })
 }
 
 fn parse_object_references(xml: &str) -> Result<Vec<ObjectSearchHit>, AdtError> {
@@ -207,7 +283,7 @@ fn parse_object_references(xml: &str) -> Result<Vec<ObjectSearchHit>, AdtError> 
                 uri: non_empty_attribute(node.attribute("uri")),
                 name: name.to_owned(),
                 object_type: object_type.to_owned(),
-                kind: kind_from_object_type(object_type),
+                kind: RepositoryKind::from_object_type(object_type),
                 description: non_empty_attribute(node.attribute("description")),
                 package: node
                     .attribute("packageName")
@@ -216,29 +292,6 @@ fn parse_object_references(xml: &str) -> Result<Vec<ObjectSearchHit>, AdtError> 
             })
         })
         .collect())
-}
-
-fn kind_from_object_type(object_type: &str) -> RepositoryKind {
-    match object_type {
-        "CLAS/OC" => RepositoryKind::Clas,
-        "INTF/OI" => RepositoryKind::Intf,
-        "TABL/DT" => RepositoryKind::Tabl,
-        "TABL/DS" => RepositoryKind::Stru,
-        "TTYP/TT" => RepositoryKind::Ttyp,
-        "VIEW/DV" => RepositoryKind::View,
-        "DTEL/DE" => RepositoryKind::Dtel,
-        "DOMA/DD" => RepositoryKind::Doma,
-        "DDLS/DF" => RepositoryKind::Ddls,
-        "BDEF/BDO" => RepositoryKind::Bdef,
-        "SRVD/SRV" => RepositoryKind::Srvd,
-        "SRVB/SVB" => RepositoryKind::Srvb,
-        "MSAG/N" => RepositoryKind::Msag,
-        "FUGR/F" => RepositoryKind::Fugr,
-        "PROG/P" => RepositoryKind::Prog,
-        "ENHO/XHH" => RepositoryKind::Enho,
-        "ENHS/XSB" | "ENHS/XSD" | "ENHS/XB" => RepositoryKind::Enhs,
-        _ => RepositoryKind::Other,
-    }
 }
 
 fn non_empty_attribute(value: Option<&str>) -> Option<String> {
@@ -291,7 +344,7 @@ fn glob_matches(pattern: &str, value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{RepositoryKind, glob_matches, kind_from_object_type};
+    use super::{RepositoryKind, glob_matches};
 
     #[test]
     fn matches_case_insensitive_globs() {
@@ -301,9 +354,28 @@ mod tests {
     }
 
     #[test]
+    fn parses_repository_kinds() {
+        assert_eq!(RepositoryKind::parse("clas").unwrap(), RepositoryKind::Clas);
+        assert_eq!(
+            RepositoryKind::parse("OTHER").unwrap(),
+            RepositoryKind::Other
+        );
+        assert!(RepositoryKind::parse("invalid").is_err());
+    }
+
+    #[test]
     fn maps_known_and_unknown_object_types() {
-        assert_eq!(kind_from_object_type("CLAS/OC"), RepositoryKind::Clas);
-        assert_eq!(kind_from_object_type("ENHS/XSD"), RepositoryKind::Enhs);
-        assert_eq!(kind_from_object_type("UNKNOWN/X"), RepositoryKind::Other);
+        assert_eq!(
+            RepositoryKind::from_object_type("CLAS/OC"),
+            RepositoryKind::Clas
+        );
+        assert_eq!(
+            RepositoryKind::from_object_type("ENHS/XSD"),
+            RepositoryKind::Enhs
+        );
+        assert_eq!(
+            RepositoryKind::from_object_type("UNKNOWN/X"),
+            RepositoryKind::Other
+        );
     }
 }

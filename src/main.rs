@@ -6,12 +6,16 @@ use std::io::Read;
 
 use clap::Parser;
 use cli::{
-    AuthCommand, Cli, Command, LoginArgs, ObjectCommand, PackageCommand, ProfileArgs, SystemCommand,
+    AuthCommand, Cli, Command, LoginArgs, ObjectCommand, PackageCommand, ProfileArgs, SearchArgs,
+    SystemCommand,
 };
 use command_error::CommandError;
 use fractal::{
     config, credentials,
-    sap::client::{DiscoveryResult, SapClient},
+    sap::{
+        adt::{ObjectSearchOptions, RepositoryKind, search_objects},
+        client::{DiscoveryResult, SapClient},
+    },
 };
 use output::{
     OutputFormat, default_output_format, print_result, run_and_print, run_and_print_async,
@@ -84,6 +88,32 @@ struct AuthRemoveResult {
     message: String,
 }
 
+#[derive(Debug, Serialize)]
+struct ObjectSearchResultOutput {
+    ok: bool,
+    profile: String,
+    query: String,
+    package_patterns: Vec<String>,
+    package_patterns_source: String,
+    total_matching: usize,
+    returned: usize,
+    offset: usize,
+    limit: usize,
+    next_offset: Option<usize>,
+    sap_search_cap: usize,
+    hits: Vec<ObjectSearchHitOutput>,
+}
+
+#[derive(Debug, Serialize)]
+struct ObjectSearchHitOutput {
+    name: String,
+    kind: String,
+    object_type: String,
+    package: Option<String>,
+    description: Option<String>,
+    uri: Option<String>,
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -105,6 +135,9 @@ async fn main() {
         Command::System {
             command: SystemCommand::Test,
         } => run_and_print_async(|| system_test(cli.profile.as_deref()), output).await,
+        Command::Object {
+            command: ObjectCommand::Search(args),
+        } => run_and_print_async(|| object_search(cli.profile.as_deref(), args), output).await,
         _ => {
             let (command_name, message) = describe_command(&cli.command);
             let result = Placeholder {
@@ -196,6 +229,77 @@ async fn system_test(explicit_profile: Option<&str>) -> Result<SystemTestResult,
     let discovery = client.test_connection().await?;
 
     Ok(system_test_result(name, profile, discovery))
+}
+
+async fn object_search(
+    explicit_profile: Option<&str>,
+    args: &SearchArgs,
+) -> Result<ObjectSearchResultOutput, CommandError> {
+    let kind = args
+        .kind
+        .as_deref()
+        .map(RepositoryKind::parse)
+        .transpose()
+        .map_err(|error| {
+            CommandError::with_hint(
+                "invalid_repository_kind",
+                error.to_string(),
+                "Use a kind such as CLAS, INTF, TABL, PROG, DDLS, or OTHER.",
+            )
+        })?;
+    let loaded = config::load()?;
+    let (profile_name, profile) = config::resolve_profile(&loaded.config, explicit_profile)?;
+    let password = credentials::get_password(profile_name)?;
+    let mut client = SapClient::new(profile, password)?;
+    let explicit_patterns =
+        (!args.package_patterns.is_empty()).then(|| args.package_patterns.clone());
+    let effective_patterns = explicit_patterns
+        .clone()
+        .unwrap_or_else(|| profile.customer_namespaces.clone());
+    let result = search_objects(
+        &mut client,
+        profile,
+        &args.query,
+        ObjectSearchOptions {
+            package_patterns: explicit_patterns,
+            kind,
+            offset: args.offset,
+            limit: Some(args.limit),
+        },
+    )
+    .await?;
+    let returned = result.hits.len();
+    let next_offset = (args.offset + returned < result.total).then_some(args.offset + returned);
+
+    Ok(ObjectSearchResultOutput {
+        ok: true,
+        profile: profile_name.to_owned(),
+        query: args.query.clone(),
+        package_patterns: effective_patterns,
+        package_patterns_source: if args.package_patterns.is_empty() {
+            "default".to_owned()
+        } else {
+            "explicit".to_owned()
+        },
+        total_matching: result.total,
+        returned,
+        offset: args.offset,
+        limit: args.limit,
+        next_offset,
+        sap_search_cap: result.sap_search_cap,
+        hits: result
+            .hits
+            .into_iter()
+            .map(|hit| ObjectSearchHitOutput {
+                name: hit.name,
+                kind: hit.kind.as_str().to_owned(),
+                object_type: hit.object_type,
+                package: hit.package,
+                description: hit.description,
+                uri: hit.uri,
+            })
+            .collect(),
+    })
 }
 
 fn system_test_result(
