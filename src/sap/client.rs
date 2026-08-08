@@ -137,7 +137,15 @@ impl SapClient {
     }
 
     pub async fn get_text(&mut self, path: &str) -> Result<String, SapError> {
-        let (_, response) = self.get(path, HeaderMap::new()).await?;
+        self.get_text_with_query(path, &[]).await
+    }
+
+    pub async fn get_text_with_query(
+        &mut self,
+        path: &str,
+        query: &[(&str, &str)],
+    ) -> Result<String, SapError> {
+        let (_, response) = self.get(path, query, HeaderMap::new()).await?;
         response.text().await.map_err(|error| SapError::Network {
             url: self.base_url.to_string(),
             message: format!("could not read SAP response body: {error}"),
@@ -148,7 +156,7 @@ impl SapClient {
         let mut headers = HeaderMap::new();
         headers.insert("X-CSRF-Token", HeaderValue::from_static("Fetch"));
 
-        let (url, response) = self.get(DISCOVERY_PATH, headers).await?;
+        let (url, response) = self.get(DISCOVERY_PATH, &[], headers).await?;
         let status = response.status();
 
         Ok(DiscoveryResult {
@@ -158,8 +166,13 @@ impl SapClient {
         })
     }
 
-    async fn get(&mut self, path: &str, headers: HeaderMap) -> Result<(Url, Response), SapError> {
-        let url = self.request_url(path)?;
+    async fn get(
+        &mut self,
+        path: &str,
+        query: &[(&str, &str)],
+        headers: HeaderMap,
+    ) -> Result<(Url, Response), SapError> {
+        let url = self.request_url(path, query)?;
         let request = self
             .http
             .get(url.clone())
@@ -199,7 +212,7 @@ impl SapClient {
         }
     }
 
-    fn request_url(&self, path: &str) -> Result<Url, SapError> {
+    fn request_url(&self, path: &str, query: &[(&str, &str)]) -> Result<Url, SapError> {
         let mut url = self
             .base_url
             .join(path)
@@ -207,8 +220,13 @@ impl SapClient {
                 url: self.base_url.to_string(),
                 source,
             })?;
-        url.query_pairs_mut()
-            .append_pair("sap-client", &self.sap_client);
+        {
+            let mut pairs = url.query_pairs_mut();
+            pairs.append_pair("sap-client", &self.sap_client);
+            for (name, value) in query {
+                pairs.append_pair(name, value);
+            }
+        }
         Ok(url)
     }
 }
