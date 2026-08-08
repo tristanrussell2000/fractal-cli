@@ -101,6 +101,7 @@ struct ObjectSearchResultOutput {
     limit: usize,
     next_offset: Option<usize>,
     sap_search_cap: usize,
+    possibly_truncated_by_sap_cap: bool,
     hits: Vec<ObjectSearchHitOutput>,
 }
 
@@ -287,6 +288,7 @@ async fn object_search(
         limit: args.limit,
         next_offset,
         sap_search_cap: result.sap_search_cap,
+        possibly_truncated_by_sap_cap: result.possibly_truncated_by_sap_cap,
         hits: result
             .hits
             .into_iter()

@@ -160,6 +160,7 @@ pub struct ObjectSearchResult {
     pub total: usize,
     pub hits: Vec<ObjectSearchHit>,
     pub sap_search_cap: usize,
+    pub possibly_truncated_by_sap_cap: bool,
 }
 
 pub async fn search_objects(
@@ -212,6 +213,7 @@ pub async fn search_objects(
     let mut orphans = Vec::new();
     let mut first_error = None;
     let mut successful_queries = 0;
+    let mut possibly_truncated_by_sap_cap = false;
 
     for search_query in queries {
         let query_params = [
@@ -222,7 +224,11 @@ pub async fn search_objects(
         match sap.get_text_with_query(SEARCH_PATH, &query_params).await {
             Ok(xml) => {
                 successful_queries += 1;
-                for hit in parse_object_references(&xml)? {
+                let parsed_hits = parse_object_references(&xml)?;
+                if parsed_hits.len() >= 500 {
+                    possibly_truncated_by_sap_cap = true;
+                }
+                for hit in parsed_hits {
                     if hit.object_type == "STOB/DO" {
                         continue;
                     }
@@ -264,6 +270,7 @@ pub async fn search_objects(
         total,
         hits,
         sap_search_cap: 500,
+        possibly_truncated_by_sap_cap,
     })
 }
 

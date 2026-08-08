@@ -58,10 +58,11 @@ async fn search_objects_queries_adt_and_filters_deduplicates_and_pages() {
         .mount(&server)
         .await;
 
-    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let profile = profile(server.uri());
+    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
     let result = search_objects(
         &mut client,
-        &profile(server.uri()),
+        &profile,
         "VERSION",
         ObjectSearchOptions {
             kind: Some(RepositoryKind::Clas),
@@ -77,5 +78,50 @@ async fn search_objects_queries_adt_and_filters_deduplicates_and_pages() {
     assert_eq!(result.hits.len(), 1);
     assert_eq!(result.hits[0].name, "ZCL_VERSION");
     assert_eq!(result.hits[0].kind, RepositoryKind::Clas);
+    assert!(!result.possibly_truncated_by_sap_cap);
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn search_objects_warns_when_a_sap_response_reaches_the_cap() {
+    let server = MockServer::start().await;
+    let references = (0..500)
+        .map(|index| {
+            format!(
+                r#"<r:objectReference name="ZOBJECT_{index}" type="CLAS/OC" packageName="ZAPP" uri="/sap/bc/adt/oo/classes/zobject_{index}"/>"#
+            )
+        })
+        .collect::<String>();
+    let body =
+        format!(r#"<r:objectReferences xmlns:r="urn:test">{references}</r:objectReferences>"#);
+
+    Mock::given(method("GET"))
+        .and(path(SEARCH_PATH))
+        .and(query_param("operation", "quickSearch"))
+        .and(query_param("maxResults", "500"))
+        .and(basic_auth("developer", "password"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .expect(3)
+        .mount(&server)
+        .await;
+
+    let profile = profile(server.uri());
+    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let result = search_objects(
+        &mut client,
+        &profile,
+        "OBJECT",
+        ObjectSearchOptions {
+            limit: Some(10),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert!(result.possibly_truncated_by_sap_cap);
+    assert_eq!(result.sap_search_cap, 500);
+    assert_eq!(result.total, 500);
+    assert_eq!(result.hits.len(), 10);
     server.verify().await;
 }
