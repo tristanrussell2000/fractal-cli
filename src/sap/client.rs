@@ -185,6 +185,50 @@ impl SapClient {
         })
     }
 
+    /// Sends a text POST request using the SAP session and CSRF token.
+    ///
+    /// The CSRF token is fetched through ADT discovery when this client does not
+    /// already have one. The optional body is sent as text and caller-provided
+    /// headers are preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SapError`] when the CSRF handshake, request, or response fails.
+    pub async fn post_text(
+        &mut self,
+        path: &str,
+        query: &[(&str, &str)],
+        body: Option<&str>,
+        headers: HeaderMap,
+    ) -> Result<String, SapError> {
+        self.ensure_csrf().await?;
+        let url = self.request_url(path, query)?;
+        let mut request = self
+            .http
+            .post(url.clone())
+            .headers(headers)
+            .basic_auth(&self.username, Some(&self.password));
+        if let Some(body) = body {
+            request = request.body(body.to_owned());
+        }
+        let response = self
+            .apply_session_headers(request, true)
+            .send()
+            .await
+            .map_err(|error| SapError::Network {
+                url: url.to_string(),
+                message: describe_network_error(&error),
+            })?;
+        if !response.status().is_success() {
+            return Err(http_error(url, response).await);
+        }
+        self.capture_csrf_token(&response);
+        response.text().await.map_err(|error| SapError::Network {
+            url: self.base_url.to_string(),
+            message: format!("could not read SAP response body: {error}"),
+        })
+    }
+
     /// Fetches SAP ADT discovery metadata to verify the connection and credentials.
     ///
     /// # Errors
@@ -202,6 +246,16 @@ impl SapClient {
             status,
             csrf_token_received: self.csrf_token.is_some(),
         })
+    }
+
+    async fn ensure_csrf(&mut self) -> Result<(), SapError> {
+        if self.csrf_token.is_some() {
+            return Ok(());
+        }
+        let mut headers = HeaderMap::new();
+        headers.insert("X-CSRF-Token", HeaderValue::from_static("Fetch"));
+        let _ = self.get(DISCOVERY_PATH, &[], headers).await?;
+        Ok(())
     }
 
     async fn get_read_only(

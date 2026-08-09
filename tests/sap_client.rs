@@ -2,9 +2,10 @@ use fractal::{
     config::Profile,
     sap::client::{SapClient, SapError},
 };
+use reqwest::header::{HeaderMap, HeaderValue};
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
-    matchers::{basic_auth, header, method, path, query_param},
+    matchers::{basic_auth, body_string, header, method, path, query_param},
 };
 
 fn profile(base_url: String) -> Profile {
@@ -70,6 +71,51 @@ async fn later_requests_reuse_the_session_cookie() {
         "ok"
     );
 
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn post_text_fetches_csrf_and_reuses_session_state() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/core/discovery"))
+        .and(header("x-csrf-token", "Fetch"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-csrf-token", "mock-csrf-token")
+                .insert_header("set-cookie", "SAP_SESSIONID=post-test; Path=/"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/repository/nodestructure"))
+        .and(query_param("parent_name", "ZAPP"))
+        .and(query_param("sap-client", "903"))
+        .and(header("x-csrf-token", "mock-csrf-token"))
+        .and(header("cookie", "SAP_SESSIONID=post-test"))
+        .and(basic_auth("developer", "password"))
+        .and(body_string("request-body"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("response-body"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let profile = profile(server.uri());
+    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert("Content-Type", HeaderValue::from_static("text/plain"));
+    let result = client
+        .post_text(
+            "/sap/bc/adt/repository/nodestructure",
+            &[("parent_name", "ZAPP")],
+            Some("request-body"),
+            headers,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result, "response-body");
     server.verify().await;
 }
 
