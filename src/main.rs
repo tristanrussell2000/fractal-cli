@@ -353,17 +353,25 @@ async fn object_source(
     )
     .await?;
 
-    Ok(ObjectSourceResultOutput {
+    Ok(map_object_source_result(profile_name, &args.uri, result))
+}
+
+fn map_object_source_result(
+    profile_name: &str,
+    uri: &str,
+    result: fractal::sap::adt::SourceResult,
+) -> ObjectSourceResultOutput {
+    ObjectSourceResultOutput {
         ok: true,
         profile: profile_name.to_owned(),
-        uri: args.uri.clone(),
+        uri: uri.to_owned(),
         start_byte: result.start_byte,
         end_byte: result.end_byte,
         total_bytes: result.total_bytes,
         truncated: result.truncated,
         next_offset: result.next_offset,
         source: result.source,
-    })
+    }
 }
 
 fn system_test_result(
@@ -597,6 +605,68 @@ mod tests {
         let error = parse_search_kind("NOPE").unwrap_err();
         assert_eq!(error.code(), "invalid_repository_kind");
         assert!(error.hint().unwrap().contains("CLAS"));
+    }
+
+    #[test]
+    fn parses_object_source_options_from_cli() {
+        let cli = Cli::try_parse_from([
+            "fractal",
+            "object",
+            "source",
+            "/sap/bc/adt/oo/classes/zcl_test",
+            "--offset",
+            "100",
+            "--limit",
+            "500",
+        ])
+        .unwrap();
+
+        let Command::Object {
+            command: ObjectCommand::Source(args),
+        } = cli.command
+        else {
+            panic!("expected object source command");
+        };
+        assert_eq!(args.uri, "/sap/bc/adt/oo/classes/zcl_test");
+        assert_eq!(args.offset, 100);
+        assert_eq!(args.limit, Some(500));
+    }
+
+    #[test]
+    fn maps_source_results_and_preserves_paging() {
+        let result = fractal::sap::adt::SourceResult {
+            start_byte: 100,
+            end_byte: 600,
+            total_bytes: 1200,
+            truncated: true,
+            next_offset: Some(600),
+            source: "source chunk".to_owned(),
+        };
+        let output = map_object_source_result("DE2_903", "/sap/bc/adt/oo/classes/zcl_test", result);
+
+        assert_eq!(output.profile, "DE2_903");
+        assert_eq!(output.start_byte, 100);
+        assert_eq!(output.end_byte, 600);
+        assert_eq!(output.total_bytes, 1200);
+        assert!(output.truncated);
+        assert_eq!(output.next_offset, Some(600));
+        assert_eq!(output.source, "source chunk");
+    }
+
+    #[test]
+    fn source_adt_errors_have_structured_cli_codes() {
+        for error in [
+            fractal::sap::adt::AdtError::InvalidUri("bad".to_owned()),
+            fractal::sap::adt::AdtError::DoubledSourceSuffix("/source/main".to_owned()),
+            fractal::sap::adt::AdtError::NoSourceForKind {
+                kind: "DOMA".to_owned(),
+                uri: "/sap/bc/adt/ddic/domains/zdomain".to_owned(),
+            },
+        ] {
+            let command_error = CommandError::from(error);
+            assert!(!command_error.code().is_empty());
+            assert!(command_error.hint().is_some());
+        }
     }
 
     #[test]
