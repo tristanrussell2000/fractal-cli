@@ -66,6 +66,6 @@ async fn fetches_and_parses_one_package_contents_response() {
     assert_eq!(contents.items.len(), 2);
     assert_eq!(contents.items[0].name, "ZCL_TEST");
     assert_eq!(contents.items[0].description, None);
-    assert_eq!(contents.items[1].kind.as_str(), "TABL");
+    assert_eq!(contents.items[1].object_type.kind().as_str(), "TABL");
     server.verify().await;
 }

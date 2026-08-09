@@ -79,6 +79,108 @@ impl AdtError {
 #[error("unknown repository kind '{0}'")]
 pub struct RepositoryKindParseError(pub String);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdtObjectType {
+    ClasOc,
+    IntfOi,
+    TablDt,
+    TablDs,
+    TtypTt,
+    ViewDv,
+    DtelDe,
+    DomaDd,
+    DdlsDf,
+    BdefBdo,
+    SrvdSrv,
+    SrvbSvb,
+    MsagN,
+    FugrF,
+    ProgP,
+    EnhoXhh,
+    EnhsXsb,
+    EnhsXsd,
+    EnhsXb,
+    Unknown(String),
+}
+
+impl AdtObjectType {
+    #[must_use]
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "CLAS/OC" => Self::ClasOc,
+            "INTF/OI" => Self::IntfOi,
+            "TABL/DT" => Self::TablDt,
+            "TABL/DS" => Self::TablDs,
+            "TTYP/TT" => Self::TtypTt,
+            "VIEW/DV" => Self::ViewDv,
+            "DTEL/DE" => Self::DtelDe,
+            "DOMA/DD" => Self::DomaDd,
+            "DDLS/DF" => Self::DdlsDf,
+            "BDEF/BDO" => Self::BdefBdo,
+            "SRVD/SRV" => Self::SrvdSrv,
+            "SRVB/SVB" => Self::SrvbSvb,
+            "MSAG/N" => Self::MsagN,
+            "FUGR/F" => Self::FugrF,
+            "PROG/P" => Self::ProgP,
+            "ENHO/XHH" => Self::EnhoXhh,
+            "ENHS/XSB" => Self::EnhsXsb,
+            "ENHS/XSD" => Self::EnhsXsd,
+            "ENHS/XB" => Self::EnhsXb,
+            _ => Self::Unknown(value.to_owned()),
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::ClasOc => "CLAS/OC",
+            Self::IntfOi => "INTF/OI",
+            Self::TablDt => "TABL/DT",
+            Self::TablDs => "TABL/DS",
+            Self::TtypTt => "TTYP/TT",
+            Self::ViewDv => "VIEW/DV",
+            Self::DtelDe => "DTEL/DE",
+            Self::DomaDd => "DOMA/DD",
+            Self::DdlsDf => "DDLS/DF",
+            Self::BdefBdo => "BDEF/BDO",
+            Self::SrvdSrv => "SRVD/SRV",
+            Self::SrvbSvb => "SRVB/SVB",
+            Self::MsagN => "MSAG/N",
+            Self::FugrF => "FUGR/F",
+            Self::ProgP => "PROG/P",
+            Self::EnhoXhh => "ENHO/XHH",
+            Self::EnhsXsb => "ENHS/XSB",
+            Self::EnhsXsd => "ENHS/XSD",
+            Self::EnhsXb => "ENHS/XB",
+            Self::Unknown(value) => value,
+        }
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> RepositoryKind {
+        match self {
+            Self::ClasOc => RepositoryKind::Clas,
+            Self::IntfOi => RepositoryKind::Intf,
+            Self::TablDt => RepositoryKind::Tabl,
+            Self::TablDs => RepositoryKind::Stru,
+            Self::TtypTt => RepositoryKind::Ttyp,
+            Self::ViewDv => RepositoryKind::View,
+            Self::DtelDe => RepositoryKind::Dtel,
+            Self::DomaDd => RepositoryKind::Doma,
+            Self::DdlsDf => RepositoryKind::Ddls,
+            Self::BdefBdo => RepositoryKind::Bdef,
+            Self::SrvdSrv => RepositoryKind::Srvd,
+            Self::SrvbSvb => RepositoryKind::Srvb,
+            Self::MsagN => RepositoryKind::Msag,
+            Self::FugrF => RepositoryKind::Fugr,
+            Self::ProgP => RepositoryKind::Prog,
+            Self::EnhoXhh => RepositoryKind::Enho,
+            Self::EnhsXsb | Self::EnhsXsd | Self::EnhsXb => RepositoryKind::Enhs,
+            Self::Unknown(_) => RepositoryKind::Other,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RepositoryKind {
     Clas,
@@ -132,30 +234,6 @@ impl RepositoryKind {
     }
 
     #[must_use]
-    pub fn from_object_type(object_type: &str) -> Self {
-        match object_type {
-            "CLAS/OC" => Self::Clas,
-            "INTF/OI" => Self::Intf,
-            "TABL/DT" => Self::Tabl,
-            "TABL/DS" => Self::Stru,
-            "TTYP/TT" => Self::Ttyp,
-            "VIEW/DV" => Self::View,
-            "DTEL/DE" => Self::Dtel,
-            "DOMA/DD" => Self::Doma,
-            "DDLS/DF" => Self::Ddls,
-            "BDEF/BDO" => Self::Bdef,
-            "SRVD/SRV" => Self::Srvd,
-            "SRVB/SVB" => Self::Srvb,
-            "MSAG/N" => Self::Msag,
-            "FUGR/F" => Self::Fugr,
-            "PROG/P" => Self::Prog,
-            "ENHO/XHH" => Self::Enho,
-            "ENHS/XSB" | "ENHS/XSD" | "ENHS/XB" => Self::Enhs,
-            _ => Self::Other,
-        }
-    }
-
-    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Clas => "CLAS",
@@ -184,8 +262,7 @@ impl RepositoryKind {
 pub struct ObjectSearchHit {
     pub uri: Option<String>,
     pub name: String,
-    pub object_type: String,
-    pub kind: RepositoryKind,
+    pub object_type: AdtObjectType,
     pub description: Option<String>,
     pub package: Option<String>,
 }
@@ -367,9 +444,9 @@ fn aggregate_search_results(
                 let parsed_hits = parse_object_references(&xml)?;
                 possibly_truncated_by_sap_cap |= parsed_hits.len() >= 500;
                 for hit in parsed_hits {
-                    if hit.object_type == "STOB/DO"
+                    if hit.object_type.as_str() == "STOB/DO"
                         || !matches_scope(&hit, patterns)
-                        || kind.is_some_and(|expected| hit.kind != expected)
+                        || kind.is_some_and(|expected| hit.object_type.kind() != expected)
                     {
                         continue;
                     }
@@ -501,8 +578,7 @@ fn parse_object_references(xml: &str) -> Result<Vec<ObjectSearchHit>, AdtError> 
             Some(ObjectSearchHit {
                 uri: non_empty_attribute(node.attribute("uri")),
                 name: name.to_owned(),
-                object_type: object_type.to_owned(),
-                kind: RepositoryKind::from_object_type(object_type),
+                object_type: AdtObjectType::parse(object_type),
                 description: non_empty_attribute(node.attribute("description")),
                 package: node
                     .attribute("packageName")
@@ -594,6 +670,16 @@ mod tests {
     }
 
     #[test]
+    fn parses_known_and_unknown_object_types() {
+        assert_eq!(AdtObjectType::parse("CLAS/OC").as_str(), "CLAS/OC");
+        assert_eq!(AdtObjectType::parse("TTYP/DA").as_str(), "TTYP/DA");
+        assert_eq!(
+            AdtObjectType::parse("TTYP/DA").kind(),
+            RepositoryKind::Other
+        );
+    }
+
+    #[test]
     fn maps_known_and_unknown_object_types() {
         let cases = [
             ("CLAS/OC", RepositoryKind::Clas),
@@ -605,7 +691,7 @@ mod tests {
             ("UNKNOWN/X", RepositoryKind::Other),
         ];
         for (object_type, expected) in cases {
-            assert_eq!(RepositoryKind::from_object_type(object_type), expected);
+            assert_eq!(AdtObjectType::parse(object_type).kind(), expected);
         }
     }
 
@@ -633,8 +719,7 @@ mod tests {
         ObjectSearchHit {
             uri: Some(format!("/objects/{name}")),
             name: name.to_owned(),
-            object_type: "CLAS/OC".to_owned(),
-            kind: RepositoryKind::Clas,
+            object_type: AdtObjectType::parse("CLAS/OC"),
             description: None,
             package: Some("ZAPP".to_owned()),
         }

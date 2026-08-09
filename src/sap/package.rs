@@ -2,7 +2,10 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use roxmltree::{Document, Node};
 use thiserror::Error;
 
-use super::{adt::RepositoryKind, client::SapClient};
+use super::{
+    adt::{AdtObjectType, RepositoryKind},
+    client::SapClient,
+};
 
 #[derive(Debug, Error)]
 pub enum PackageError {
@@ -21,8 +24,7 @@ pub struct Subpackage {
 #[derive(Debug, Clone)]
 pub struct PackageItem {
     pub name: String,
-    pub object_type: String,
-    pub kind: RepositoryKind,
+    pub object_type: AdtObjectType,
     pub package: String,
     pub description: Option<String>,
     pub uri: Option<String>,
@@ -95,9 +97,9 @@ pub fn parse_package_contents(xml: &str, package: &str) -> Result<PackageContent
             continue;
         }
 
-        let kind = RepositoryKind::from_object_type(object_type);
+        let object_type = AdtObjectType::parse(object_type);
         let description = if matches!(
-            kind,
+            object_type.kind(),
             RepositoryKind::Clas | RepositoryKind::Prog | RepositoryKind::Msag
         ) {
             None
@@ -107,8 +109,7 @@ pub fn parse_package_contents(xml: &str, package: &str) -> Result<PackageContent
 
         items.push(PackageItem {
             name: name.to_owned(),
-            object_type: object_type.to_owned(),
-            kind,
+            object_type,
             package: package.clone(),
             description,
             uri: non_empty(attribute(node, &["OBJECT_URI", "OBJ_URI"])),
@@ -156,7 +157,7 @@ mod tests {
         assert_eq!(result.package, "ZROOT");
         assert_eq!(result.subpackages[0].name, "ZSUB");
         assert_eq!(result.items.len(), 2);
-        assert_eq!(result.items[0].kind, RepositoryKind::Clas);
+        assert_eq!(result.items[0].object_type.kind(), RepositoryKind::Clas);
         assert_eq!(result.items[0].description, None);
         assert_eq!(result.items[1].description.as_deref(), Some("Table"));
     }
@@ -170,7 +171,7 @@ mod tests {
 
         let result = parse_package_contents(xml, "ZROOT").unwrap();
         assert_eq!(result.items.len(), 2);
-        assert_eq!(result.items[0].kind, RepositoryKind::Other);
+        assert_eq!(result.items[0].object_type.kind(), RepositoryKind::Other);
         assert_eq!(
             result.items[0].uri.as_deref(),
             Some("/sap/bc/adt/number/znumber")

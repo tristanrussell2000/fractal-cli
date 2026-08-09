@@ -336,8 +336,8 @@ fn map_object_search_result(
             .into_iter()
             .map(|hit| ObjectSearchHitOutput {
                 name: hit.name,
-                kind: hit.kind.as_str().to_owned(),
-                object_type: hit.object_type,
+                kind: hit.object_type.kind().as_str().to_owned(),
+                object_type: hit.object_type.as_str().to_owned(),
                 package: hit.package,
                 description: hit.description,
                 uri: hit.uri,
@@ -717,8 +717,7 @@ mod tests {
             possibly_truncated_by_sap_cap: true,
             hits: vec![fractal::sap::adt::ObjectSearchHit {
                 name: "ZCL_VERSION".to_owned(),
-                object_type: "CLAS/OC".to_owned(),
-                kind: RepositoryKind::Clas,
+                object_type: fractal::sap::adt::AdtObjectType::parse("CLAS/OC"),
                 package: Some("ZAPP".to_owned()),
                 description: Some("Version class".to_owned()),
                 uri: Some("/sap/bc/adt/oo/classes/zcl_version".to_owned()),

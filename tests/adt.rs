@@ -79,7 +79,7 @@ async fn search_objects_queries_adt_and_filters_deduplicates_and_pages() {
     assert_eq!(result.total, 2);
     assert_eq!(result.hits.len(), 1);
     assert_eq!(result.hits[0].name, "ZCL_VERSION");
-    assert_eq!(result.hits[0].kind, RepositoryKind::Clas);
+    assert_eq!(result.hits[0].object_type.kind(), RepositoryKind::Clas);
     assert!(!result.possibly_truncated_by_sap_cap);
     server.verify().await;
 }
