@@ -292,36 +292,52 @@ pub async fn search_objects(
         .package_patterns
         .filter(|patterns| !patterns.is_empty())
         .unwrap_or_else(|| profile.customer_namespaces.clone());
+    let queries = build_search_queries(query, &patterns);
+    let responses = fetch_search_responses(sap, &queries).await;
+    let aggregated = aggregate_search_results(responses, &patterns, options.kind)?;
+    let (total, hits) = page_search_results(aggregated.hits, options.offset, options.limit);
+
+    Ok(ObjectSearchResult {
+        total,
+        hits,
+        sap_search_cap: 500,
+        possibly_truncated_by_sap_cap: aggregated.possibly_truncated_by_sap_cap,
+    })
+}
+
+struct AggregatedSearch {
+    hits: Vec<ObjectSearchHit>,
+    possibly_truncated_by_sap_cap: bool,
+}
+
+fn build_search_queries(query: &str, patterns: &[String]) -> Vec<String> {
     let plain = if query.ends_with('*') {
         query.to_owned()
     } else {
         format!("{query}*")
     };
-
     let mut queries = vec![plain.clone()];
-    for pattern in &patterns {
+
+    for pattern in patterns {
         if pattern.is_empty() || pattern == "*" {
             continue;
         }
-        let scope = if pattern.ends_with('*') {
-            pattern.clone()
-        } else {
-            format!("{pattern}*")
-        };
+        let scope = pattern.strip_suffix('*').unwrap_or(pattern);
         let base = if plain.starts_with('*') {
             plain.clone()
         } else {
             format!("*{plain}")
         };
-        let combined = if scope.ends_with('*') && base.starts_with('*') {
-            format!("{}{}", scope.trim_end_matches('*'), base)
-        } else {
-            format!("{scope}{base}")
-        };
-        queries.push(combined);
+        queries.push(format!("{scope}{base}"));
     }
+    queries
+}
 
-    let query_results = futures::future::join_all(queries.iter().map(|search_query| async {
+async fn fetch_search_responses(
+    sap: &SapClient,
+    queries: &[String],
+) -> Vec<Result<String, SapError>> {
+    futures::future::join_all(queries.iter().map(|search_query| async {
         let query_params = [
             ("operation", "quickSearch"),
             ("query", search_query.as_str()),
@@ -330,30 +346,31 @@ pub async fn search_objects(
         sap.get_text_with_query_read_only(SEARCH_PATH, &query_params)
             .await
     }))
-    .await;
+    .await
+}
 
+fn aggregate_search_results(
+    responses: Vec<Result<String, SapError>>,
+    patterns: &[String],
+    kind: Option<RepositoryKind>,
+) -> Result<AggregatedSearch, AdtError> {
     let mut by_uri = BTreeMap::new();
     let mut orphans = Vec::new();
     let mut first_error = None;
     let mut successful_queries = 0;
     let mut possibly_truncated_by_sap_cap = false;
 
-    for result in query_results {
-        match result {
+    for response in responses {
+        match response {
             Ok(xml) => {
                 successful_queries += 1;
                 let parsed_hits = parse_object_references(&xml)?;
-                if parsed_hits.len() >= 500 {
-                    possibly_truncated_by_sap_cap = true;
-                }
+                possibly_truncated_by_sap_cap |= parsed_hits.len() >= 500;
                 for hit in parsed_hits {
-                    if hit.object_type == "STOB/DO" {
-                        continue;
-                    }
-                    if !matches_scope(&hit, &patterns) {
-                        continue;
-                    }
-                    if options.kind.is_some_and(|kind| hit.kind != kind) {
+                    if hit.object_type == "STOB/DO"
+                        || !matches_scope(&hit, patterns)
+                        || kind.is_some_and(|expected| hit.kind != expected)
+                    {
                         continue;
                     }
                     if let Some(uri) = &hit.uri {
@@ -378,23 +395,26 @@ pub async fn search_objects(
         ));
     }
 
-    let mut all: Vec<_> = by_uri.into_values().collect();
-    all.extend(orphans);
-    all.sort_by_key(|hit| hit.name.to_ascii_uppercase());
-
-    let total = all.len();
-    let limit = options.limit.map(|limit| limit.clamp(1, HARD_SEARCH_MAX));
-    let hits = match limit {
-        Some(limit) => all.into_iter().skip(options.offset).take(limit).collect(),
-        None => all,
-    };
-
-    Ok(ObjectSearchResult {
-        total,
+    let mut hits: Vec<_> = by_uri.into_values().collect();
+    hits.extend(orphans);
+    hits.sort_by_key(|hit| hit.name.to_ascii_uppercase());
+    Ok(AggregatedSearch {
         hits,
-        sap_search_cap: 500,
         possibly_truncated_by_sap_cap,
     })
+}
+
+fn page_search_results(
+    hits: Vec<ObjectSearchHit>,
+    offset: usize,
+    limit: Option<usize>,
+) -> (usize, Vec<ObjectSearchHit>) {
+    let total = hits.len();
+    let hits = match limit.map(|limit| limit.clamp(1, HARD_SEARCH_MAX)) {
+        Some(limit) => hits.into_iter().skip(offset).take(limit).collect(),
+        None => hits,
+    };
+    (total, hits)
 }
 
 fn validate_source_uri(uri: &str) -> Result<(), AdtError> {
