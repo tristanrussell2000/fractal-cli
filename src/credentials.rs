@@ -13,11 +13,23 @@ pub enum CredentialError {
     Missing(String),
 }
 
+/// Stores or replaces a profile password in the operating-system credential store.
+///
+/// # Errors
+///
+/// Returns an error for an invalid profile name or when the OS credential store
+/// cannot save the password.
 pub fn save_password(profile_name: &str, password: &str) -> Result<(), CredentialError> {
     let entry = entry(profile_name)?;
     entry.set_password(password).map_err(CredentialError::Store)
 }
 
+/// Retrieves a profile password from the operating-system credential store.
+///
+/// # Errors
+///
+/// Returns [`CredentialError::Missing`] when no password exists for the profile,
+/// or [`CredentialError::Store`] when the credential store cannot be accessed.
 pub fn get_password(profile_name: &str) -> Result<String, CredentialError> {
     let entry = entry(profile_name)?;
     match entry.get_password() {
@@ -27,6 +39,14 @@ pub fn get_password(profile_name: &str) -> Result<String, CredentialError> {
     }
 }
 
+/// Deletes a profile password from the operating-system credential store.
+///
+/// Deleting an already-missing credential is treated as success.
+///
+/// # Errors
+///
+/// Returns an error for an invalid profile name or when the credential store
+/// cannot perform the deletion.
 pub fn delete_password(profile_name: &str) -> Result<(), CredentialError> {
     let entry = entry(profile_name)?;
     match entry.delete_credential() {

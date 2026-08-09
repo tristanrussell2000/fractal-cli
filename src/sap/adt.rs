@@ -28,7 +28,7 @@ pub enum AdtError {
 
 impl AdtError {
     #[must_use]
-    pub fn code(&self) -> &'static str {
+    pub const fn code(&self) -> &'static str {
         match self {
             Self::Sap(error) => error.code(),
             Self::InvalidQuery(_) => "invalid_search_query",
@@ -88,6 +88,11 @@ pub enum RepositoryKind {
 }
 
 impl RepositoryKind {
+    /// Parses a logical repository kind such as `CLAS` or `PROG`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RepositoryKindParseError`] when the value is not a supported kind.
     pub fn parse(value: &str) -> Result<Self, RepositoryKindParseError> {
         match value.to_ascii_uppercase().as_str() {
             "CLAS" => Ok(Self::Clas),
@@ -203,6 +208,15 @@ pub struct SourceResult {
     pub source: String,
 }
 
+/// Fetches an ADT object's complete source and returns a locally paged byte range.
+///
+/// The HTTP response is fetched in full; `offset` and `limit` are applied locally.
+/// Byte boundaries are adjusted so returned text remains valid UTF-8.
+///
+/// # Errors
+///
+/// Returns [`AdtError`] for invalid or unsupported object URIs, SAP request
+/// failures, or malformed source responses.
 pub async fn get_source(
     sap: &mut SapClient,
     uri: &str,
@@ -244,6 +258,12 @@ pub async fn get_source(
     })
 }
 
+/// Searches SAP's ADT repository and aggregates plain and namespace-scoped results.
+///
+/// # Errors
+///
+/// Returns [`AdtError`] when the query is invalid, SAP requests fail, or a
+/// search response cannot be parsed.
 pub async fn search_objects(
     sap: &mut SapClient,
     profile: &Profile,

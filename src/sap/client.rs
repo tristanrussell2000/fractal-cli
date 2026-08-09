@@ -115,6 +115,12 @@ pub struct SapClient {
 }
 
 impl SapClient {
+    /// Creates an authenticated SAP HTTP client for a saved profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the profile URL is invalid or the HTTP client
+    /// cannot be initialized.
     pub fn new(profile: &Profile, password: String) -> Result<Self, SapError> {
         let base_url = Url::parse(profile.base_url.trim_end_matches('/')).map_err(|source| {
             SapError::InvalidUrl {
@@ -140,10 +146,20 @@ impl SapClient {
         })
     }
 
+    /// Fetches a text response from a SAP path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SapError`] for URL, network, HTTP, or response-body failures.
     pub async fn get_text(&mut self, path: &str) -> Result<String, SapError> {
         self.get_text_with_query(path, &[]).await
     }
 
+    /// Fetches a text response with additional query parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SapError`] for URL, network, HTTP, or response-body failures.
     pub async fn get_text_with_query(
         &mut self,
         path: &str,
@@ -152,6 +168,11 @@ impl SapClient {
         self.get_text_with_query_read_only(path, query).await
     }
 
+    /// Fetches a text response without mutating CSRF state, allowing concurrent reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SapError`] for URL, network, HTTP, or response-body failures.
     pub async fn get_text_with_query_read_only(
         &self,
         path: &str,
@@ -164,6 +185,11 @@ impl SapClient {
         })
     }
 
+    /// Fetches SAP ADT discovery metadata to verify the connection and credentials.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SapError`] when discovery cannot be reached or SAP rejects the request.
     pub async fn test_connection(&mut self) -> Result<DiscoveryResult, SapError> {
         let mut headers = HeaderMap::new();
         headers.insert("X-CSRF-Token", HeaderValue::from_static("Fetch"));

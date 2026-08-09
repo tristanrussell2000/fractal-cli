@@ -61,12 +61,24 @@ pub struct LoadedConfig {
     pub config: Config,
 }
 
+/// Returns the platform-specific path to Fractal's profile configuration file.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::NoConfigDirectory`] when the platform does not expose
+/// a suitable per-user configuration directory.
 pub fn config_path() -> Result<PathBuf, ConfigError> {
     let dirs = ProjectDirs::from(QUALIFIER, ORGANIZATION, APPLICATION)
         .ok_or(ConfigError::NoConfigDirectory)?;
     Ok(dirs.config_dir().join("config.toml"))
 }
 
+/// Loads profile configuration, returning an empty configuration when the file does not exist.
+///
+/// # Errors
+///
+/// Returns an error when the configuration path cannot be determined, the file
+/// cannot be read, or its TOML content is invalid.
 pub fn load() -> Result<LoadedConfig, ConfigError> {
     let path = config_path()?;
     if !path.exists() {
@@ -88,6 +100,12 @@ pub fn load() -> Result<LoadedConfig, ConfigError> {
     Ok(LoadedConfig { path, config })
 }
 
+/// Saves profile configuration and returns the path written.
+///
+/// # Errors
+///
+/// Returns an error when the configuration directory cannot be created, the
+/// configuration cannot be serialized, or the file cannot be written.
 pub fn save(config: &Config) -> Result<PathBuf, ConfigError> {
     let path = config_path()?;
     if let Some(parent) = path.parent() {
@@ -123,6 +141,12 @@ pub fn update_profile(
     }
 }
 
+/// Resolves a profile using explicit selection, `FRACTAL_PROFILE`, then the configured default.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::NoProfileSelected`] when no selection exists, or
+/// [`ConfigError::ProfileNotFound`] when the selected name is not configured.
 pub fn resolve_profile<'a>(
     config: &'a Config,
     explicit: Option<&str>,
@@ -142,6 +166,12 @@ pub fn remove_profile(config: &mut Config, name: &str) -> bool {
     removed
 }
 
+/// Resolves a profile using explicit selection, a supplied environment value, then the default.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::NoProfileSelected`] when no selection exists, or
+/// [`ConfigError::ProfileNotFound`] when the selected name is not configured.
 pub fn resolve_profile_with_environment<'a>(
     config: &'a Config,
     explicit: Option<&str>,
