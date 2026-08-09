@@ -364,7 +364,17 @@ async fn object_source(
     )
     .await?;
 
-    Ok(map_object_source_result(profile_name, &args.uri, result))
+    Ok(ObjectSourceResultOutput {
+        ok: true,
+        profile: profile_name.to_owned(),
+        uri: args.uri.clone(),
+        start_byte: result.start_byte,
+        end_byte: result.end_byte,
+        total_bytes: result.total_bytes,
+        truncated: result.truncated,
+        next_offset: result.next_offset,
+        source: result.content,
+    })
 }
 
 async fn object_xml(
@@ -391,24 +401,6 @@ async fn object_xml(
         uri: args.uri.clone(),
         xml: result.content,
     })
-}
-
-fn map_object_source_result(
-    profile_name: &str,
-    uri: &str,
-    result: fractal::sap::adt::ByteRangeResult,
-) -> ObjectSourceResultOutput {
-    ObjectSourceResultOutput {
-        ok: true,
-        profile: profile_name.to_owned(),
-        uri: uri.to_owned(),
-        start_byte: result.start_byte,
-        end_byte: result.end_byte,
-        total_bytes: result.total_bytes,
-        truncated: result.truncated,
-        next_offset: result.next_offset,
-        source: result.content,
-    }
 }
 
 fn system_test_result(
@@ -651,6 +643,10 @@ mod tests {
             "object",
             "xml",
             "/sap/bc/adt/oo/classes/zcl_test",
+            "--offset",
+            "100",
+            "--limit",
+            "500",
         ])
         .unwrap();
 
@@ -661,6 +657,8 @@ mod tests {
             panic!("expected object xml command");
         };
         assert_eq!(args.uri, "/sap/bc/adt/oo/classes/zcl_test");
+        assert_eq!(args.offset, 100);
+        assert_eq!(args.limit, Some(500));
     }
 
     #[test]
@@ -686,27 +684,6 @@ mod tests {
         assert_eq!(args.uri, "/sap/bc/adt/oo/classes/zcl_test");
         assert_eq!(args.offset, 100);
         assert_eq!(args.limit, Some(500));
-    }
-
-    #[test]
-    fn maps_source_results_and_preserves_paging() {
-        let result = fractal::sap::adt::ByteRangeResult {
-            start_byte: 100,
-            end_byte: 600,
-            total_bytes: 1200,
-            truncated: true,
-            next_offset: Some(600),
-            content: "source chunk".to_owned(),
-        };
-        let output = map_object_source_result("DE2_903", "/sap/bc/adt/oo/classes/zcl_test", result);
-
-        assert_eq!(output.profile, "DE2_903");
-        assert_eq!(output.start_byte, 100);
-        assert_eq!(output.end_byte, 600);
-        assert_eq!(output.total_bytes, 1200);
-        assert!(output.truncated);
-        assert_eq!(output.next_offset, Some(600));
-        assert_eq!(output.source, "source chunk");
     }
 
     #[test]
