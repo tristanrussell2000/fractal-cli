@@ -250,12 +250,9 @@ pub async fn get_source(
     let bytes = source.as_bytes();
     let total_bytes = bytes.len();
     let start_byte = utf8_safe_start(bytes, options.offset.min(total_bytes));
-    let requested_end = options
-        .limit
-        .map(|limit| start_byte.saturating_add(limit).min(total_bytes))
-        .map_or(total_bytes, |limit| {
-            start_byte.saturating_add(limit).min(total_bytes)
-        });
+    let requested_end = options.limit.map_or(total_bytes, |limit| {
+        start_byte.saturating_add(limit).min(total_bytes)
+    });
     let end_byte = utf8_safe_end(bytes, requested_end).max(start_byte);
     let source = std::str::from_utf8(&bytes[start_byte..end_byte])
         .map_err(|error| AdtError::SourceEncoding(error.to_string()))?
