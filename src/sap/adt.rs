@@ -24,6 +24,10 @@ pub enum AdtError {
     DoubledSourceSuffix(String),
     #[error("{kind} objects do not have an ABAP source view")]
     NoSourceForKind { kind: String, uri: String },
+    #[error("could not preserve valid UTF-8 while paging source: {0}")]
+    SourceEncoding(String),
+    #[error("could not aggregate ADT search responses: {0}")]
+    SearchAggregation(String),
 }
 
 impl AdtError {
@@ -36,6 +40,8 @@ impl AdtError {
             Self::InvalidUri(_) => "invalid_adt_uri",
             Self::DoubledSourceSuffix(_) => "doubled_source_suffix",
             Self::NoSourceForKind { .. } => "no_source_for_kind",
+            Self::SourceEncoding(_) => "source_encoding_error",
+            Self::SearchAggregation(_) => "search_aggregation_error",
         }
     }
 
@@ -57,6 +63,14 @@ impl AdtError {
             Self::NoSourceForKind { .. } => {
                 Some("Use `fractal object xml` to retrieve metadata for this object.".to_owned())
             }
+            Self::SourceEncoding(_) => Some(
+                "The source response could not be converted into a safe UTF-8 page; retry without paging or report the object URI."
+                    .to_owned(),
+            ),
+            Self::SearchAggregation(_) => Some(
+                "Retry the search; if it persists, inspect the underlying SAP request failures."
+                    .to_owned(),
+            ),
         }
     }
 }
@@ -244,7 +258,7 @@ pub async fn get_source(
         });
     let end_byte = utf8_safe_end(bytes, requested_end).max(start_byte);
     let source = std::str::from_utf8(&bytes[start_byte..end_byte])
-        .expect("UTF-8-safe source range must be valid")
+        .map_err(|error| AdtError::SourceEncoding(error.to_string()))?
         .to_owned();
     let truncated = end_byte < total_bytes;
 
@@ -357,8 +371,13 @@ pub async fn search_objects(
     }
 
     if successful_queries == 0 {
-        return Err(AdtError::Sap(
-            first_error.expect("at least one search query was generated"),
+        return Err(first_error.map_or_else(
+            || {
+                AdtError::SearchAggregation(
+                    "all generated searches failed without returning an error".to_owned(),
+                )
+            },
+            AdtError::Sap,
         ));
     }
 
@@ -504,7 +523,7 @@ fn glob_matches(pattern: &str, value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{RepositoryKind, glob_matches};
+    use super::{AdtError, RepositoryKind, glob_matches};
 
     #[test]
     fn matches_case_insensitive_globs() {
@@ -521,6 +540,17 @@ mod tests {
             RepositoryKind::Other
         );
         assert!(RepositoryKind::parse("invalid").is_err());
+    }
+
+    #[test]
+    fn classifies_invariant_failures_as_actionable_errors() {
+        let encoding = AdtError::SourceEncoding("invalid boundary".to_owned());
+        assert_eq!(encoding.code(), "source_encoding_error");
+        assert!(encoding.hint().is_some());
+
+        let aggregation = AdtError::SearchAggregation("no underlying error".to_owned());
+        assert_eq!(aggregation.code(), "search_aggregation_error");
+        assert!(aggregation.hint().is_some());
     }
 
     #[test]

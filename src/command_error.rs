@@ -37,7 +37,7 @@ impl CommandError {
         }
     }
 
-    pub(crate) fn code(&self) -> &'static str {
+    pub(crate) const fn code(&self) -> &'static str {
         match self {
             Self::Config(error) => match error {
                 config::ConfigError::NoConfigDirectory => "config_directory_unavailable",
