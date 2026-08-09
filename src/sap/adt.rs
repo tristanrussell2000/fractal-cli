@@ -269,6 +269,19 @@ pub async fn get_source(
     })
 }
 
+/// Fetches raw ADT metadata XML for an object URI.
+///
+/// # Errors
+///
+/// Returns [`AdtError::InvalidUri`] for a non-ADT URI or the underlying SAP
+/// error when the metadata request fails.
+pub async fn get_xml(sap: &mut SapClient, uri: &str) -> Result<String, AdtError> {
+    if !uri.starts_with("/sap/bc/adt/") {
+        return Err(AdtError::InvalidUri(uri.to_owned()));
+    }
+    Ok(sap.get_text(uri).await?)
+}
+
 /// Searches SAP's ADT repository and aggregates plain and namespace-scoped results.
 ///
 /// # Errors

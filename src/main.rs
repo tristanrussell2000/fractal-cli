@@ -7,7 +7,7 @@ use std::io::Read;
 use clap::Parser;
 use cli::{
     AuthCommand, Cli, Command, LoginArgs, ObjectCommand, PackageCommand, ProfileArgs, SearchArgs,
-    SourceArgs, SystemCommand,
+    SourceArgs, SystemCommand, UriArgs,
 };
 use command_error::CommandError;
 use fractal::{
@@ -128,6 +128,14 @@ struct ObjectSourceResultOutput {
     source: String,
 }
 
+#[derive(Debug, Serialize)]
+struct ObjectXmlResultOutput {
+    ok: bool,
+    profile: String,
+    uri: String,
+    xml: String,
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -155,6 +163,9 @@ async fn main() {
         Command::Object {
             command: ObjectCommand::Source(args),
         } => run_and_print_async(|| object_source(cli.profile.as_deref(), args), output).await,
+        Command::Object {
+            command: ObjectCommand::Xml(args),
+        } => run_and_print_async(|| object_xml(cli.profile.as_deref(), args), output).await,
         _ => {
             let (command_name, message) = describe_command(&cli.command);
             let result = Placeholder {
@@ -354,6 +365,24 @@ async fn object_source(
     .await?;
 
     Ok(map_object_source_result(profile_name, &args.uri, result))
+}
+
+async fn object_xml(
+    explicit_profile: Option<&str>,
+    args: &UriArgs,
+) -> Result<ObjectXmlResultOutput, CommandError> {
+    let loaded = config::load()?;
+    let (profile_name, profile) = config::resolve_profile(&loaded.config, explicit_profile)?;
+    let password = credentials::get_password(profile_name)?;
+    let mut client = SapClient::new(profile, password)?;
+    let xml = fractal::sap::adt::get_xml(&mut client, &args.uri).await?;
+
+    Ok(ObjectXmlResultOutput {
+        ok: true,
+        profile: profile_name.to_owned(),
+        uri: args.uri.clone(),
+        xml,
+    })
 }
 
 fn map_object_source_result(
@@ -605,6 +634,25 @@ mod tests {
         let error = parse_search_kind("NOPE").unwrap_err();
         assert_eq!(error.code(), "invalid_repository_kind");
         assert!(error.hint().unwrap().contains("CLAS"));
+    }
+
+    #[test]
+    fn parses_object_xml_options_from_cli() {
+        let cli = Cli::try_parse_from([
+            "fractal",
+            "object",
+            "xml",
+            "/sap/bc/adt/oo/classes/zcl_test",
+        ])
+        .unwrap();
+
+        let Command::Object {
+            command: ObjectCommand::Xml(args),
+        } = cli.command
+        else {
+            panic!("expected object xml command");
+        };
+        assert_eq!(args.uri, "/sap/bc/adt/oo/classes/zcl_test");
     }
 
     #[test]
