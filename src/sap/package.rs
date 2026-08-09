@@ -1,10 +1,13 @@
+use reqwest::header::{HeaderMap, HeaderValue};
 use roxmltree::{Document, Node};
 use thiserror::Error;
 
-use super::adt::RepositoryKind;
+use super::{adt::RepositoryKind, client::SapClient};
 
 #[derive(Debug, Error)]
 pub enum PackageError {
+    #[error(transparent)]
+    Sap(#[from] super::client::SapError),
     #[error("could not parse package node structure: {0}")]
     Parse(String),
 }
@@ -30,6 +33,39 @@ pub struct PackageContents {
     pub package: String,
     pub items: Vec<PackageItem>,
     pub subpackages: Vec<Subpackage>,
+}
+
+const NODE_STRUCTURE_PATH: &str = "/sap/bc/adt/repository/nodestructure";
+const NODE_STRUCTURE_ACCEPT: &str =
+    "application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.RepositoryObjTree.ObjectTree";
+
+/// Fetches and parses the direct contents of one ABAP package.
+///
+/// # Errors
+///
+/// Returns [`PackageError`] when SAP rejects the request or its XML response
+/// cannot be parsed.
+pub async fn get_package_contents(
+    sap: &mut SapClient,
+    package: &str,
+) -> Result<PackageContents, PackageError> {
+    let package = package.trim().to_ascii_uppercase();
+    if package.is_empty() {
+        return Err(PackageError::Parse("package name is required".to_owned()));
+    }
+
+    let mut headers = HeaderMap::new();
+    headers.insert("Accept", HeaderValue::from_static(NODE_STRUCTURE_ACCEPT));
+    let query = [
+        ("parent_name", package.as_str()),
+        ("parent_tech_name", package.as_str()),
+        ("parent_type", "DEVC/K"),
+        ("withShortDescriptions", "true"),
+    ];
+    let xml = sap
+        .post_text(NODE_STRUCTURE_PATH, &query, None, headers)
+        .await?;
+    parse_package_contents(&xml, &package)
 }
 
 /// Parses one SAP `nodestructure` response into direct items and subpackages.
