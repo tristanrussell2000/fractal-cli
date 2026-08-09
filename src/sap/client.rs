@@ -23,7 +23,8 @@ pub enum SapErrorKind {
 }
 
 impl SapErrorKind {
-    pub fn code(self) -> &'static str {
+    #[must_use]
+    pub const fn code(self) -> &'static str {
         match self {
             Self::AuthenticationFailed => "authentication_failed",
             Self::Forbidden => "forbidden",
@@ -33,7 +34,8 @@ impl SapErrorKind {
         }
     }
 
-    pub fn hint(self) -> &'static str {
+    #[must_use]
+    pub const fn hint(self) -> &'static str {
         match self {
             Self::AuthenticationFailed => {
                 "Check the selected profile, SAP username, password, and client."
@@ -73,7 +75,8 @@ pub enum SapError {
 }
 
 impl SapError {
-    pub fn code(&self) -> &'static str {
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
         match self {
             Self::Client(_) => "client_error",
             Self::InvalidUrl { .. } => "invalid_url",
@@ -82,7 +85,8 @@ impl SapError {
         }
     }
 
-    pub fn hint(&self) -> &'static str {
+    #[must_use]
+    pub const fn hint(&self) -> &'static str {
         match self {
             Self::Client(_) => "The local HTTP client could not be initialized.",
             Self::InvalidUrl { .. } => "Use a complete SAP URL including http:// or https://.",
@@ -104,7 +108,7 @@ pub struct DiscoveryResult {
 pub struct SapClient {
     http: Client,
     base_url: Url,
-    sap_client: String,
+    client_id: String,
     username: String,
     password: String,
     csrf_token: Option<String>,
@@ -129,7 +133,7 @@ impl SapClient {
         Ok(Self {
             http,
             base_url,
-            sap_client: profile.client.clone(),
+            client_id: profile.client.clone(),
             username: profile.username.clone(),
             password,
             csrf_token: None,
@@ -232,19 +236,17 @@ impl SapClient {
     }
 
     fn apply_session_headers(&self, mut request: RequestBuilder, mutating: bool) -> RequestBuilder {
-        if mutating {
-            if let Some(token) = &self.csrf_token {
-                request = request.header("X-CSRF-Token", token);
-            }
+        if mutating && let Some(token) = &self.csrf_token {
+            request = request.header("X-CSRF-Token", token);
         }
         request
     }
 
     fn capture_csrf_token(&mut self, response: &Response) {
-        if let Some(token) = response.headers().get("x-csrf-token") {
-            if let Ok(token) = token.to_str() {
-                self.csrf_token = Some(token.to_owned());
-            }
+        if let Some(token) = response.headers().get("x-csrf-token")
+            && let Ok(token) = token.to_str()
+        {
+            self.csrf_token = Some(token.to_owned());
         }
     }
 
@@ -258,7 +260,7 @@ impl SapClient {
             })?;
         {
             let mut pairs = url.query_pairs_mut();
-            pairs.append_pair("sap-client", &self.sap_client);
+            pairs.append_pair("sap-client", &self.client_id);
             for (name, value) in query {
                 pairs.append_pair(name, value);
             }
@@ -304,7 +306,7 @@ fn describe_network_error(error: &reqwest::Error) -> String {
     } else if error.is_builder() {
         error.to_string()
     } else {
-        format!("{}; check the VPN and SAP host", error)
+        format!("{error}; check the VPN and SAP host")
     }
 }
 
@@ -320,8 +322,7 @@ fn find_xml_text<'a>(body: &'a str, element: &str) -> Option<&'a str> {
     while let Some(relative) = body[search_from..].find('<') {
         let open = search_from + relative;
         let after_open = &body[open + 1..];
-        let name_end = after_open
-            .find(|character: char| character == ' ' || character == '>' || character == '/')?;
+        let name_end = after_open.find([' ', '>', '/'])?;
         let qualified_name = &after_open[..name_end];
         if qualified_name.rsplit(':').next() != Some(element) {
             search_from = open + 1;

@@ -27,6 +27,7 @@ pub enum AdtError {
 }
 
 impl AdtError {
+    #[must_use]
     pub fn code(&self) -> &'static str {
         match self {
             Self::Sap(error) => error.code(),
@@ -38,6 +39,7 @@ impl AdtError {
         }
     }
 
+    #[must_use]
     pub fn hint(&self) -> Option<String> {
         match self {
             Self::Sap(error) => Some(error.hint().to_owned()),
@@ -110,6 +112,7 @@ impl RepositoryKind {
         }
     }
 
+    #[must_use]
     pub fn from_object_type(object_type: &str) -> Self {
         match object_type {
             "CLAS/OC" => Self::Clas,
@@ -133,7 +136,8 @@ impl RepositoryKind {
         }
     }
 
-    pub fn as_str(self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Clas => "CLAS",
             Self::Intf => "INTF",
@@ -221,7 +225,9 @@ pub async fn get_source(
     let requested_end = options
         .limit
         .map(|limit| start_byte.saturating_add(limit).min(total_bytes))
-        .unwrap_or(total_bytes);
+        .map_or(total_bytes, |limit| {
+            start_byte.saturating_add(limit).min(total_bytes)
+        });
     let end_byte = utf8_safe_end(bytes, requested_end).max(start_byte);
     let source = std::str::from_utf8(&bytes[start_byte..end_byte])
         .expect("UTF-8-safe source range must be valid")
@@ -381,7 +387,7 @@ fn no_source_kind(uri: &str) -> Option<&'static str> {
 }
 
 #[inline]
-fn is_utf8_continuation_byte(byte: u8) -> bool {
+const fn is_utf8_continuation_byte(byte: u8) -> bool {
     (byte & 0b1100_0000) == 0b1000_0000
 }
 

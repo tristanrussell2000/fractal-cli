@@ -8,7 +8,7 @@ use crate::output::OutputFormat;
     version,
     about = "Explore and edit SAP S/4HANA development systems"
 )]
-pub(crate) struct Cli {
+pub struct Cli {
     /// Select the SAP profile for this command.
     #[arg(long, global = true, env = "FRACTAL_PROFILE")]
     pub(crate) profile: Option<String>,
@@ -22,7 +22,7 @@ pub(crate) struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
-pub(crate) enum Command {
+pub enum Command {
     /// Manage saved SAP profiles and credentials.
     Auth {
         #[command(subcommand)]
@@ -46,7 +46,7 @@ pub(crate) enum Command {
 }
 
 #[derive(Debug, Subcommand)]
-pub(crate) enum AuthCommand {
+pub enum AuthCommand {
     /// Save or update a profile and its password in the OS keychain.
     Login(LoginArgs),
     /// List saved profile names.
@@ -56,10 +56,10 @@ pub(crate) enum AuthCommand {
 }
 
 #[derive(Debug, Args)]
-pub(crate) struct LoginArgs {
-    /// Name used to select this profile, for example DE2_903.
+pub struct LoginArgs {
+    /// Name used to select this profile, for example `DE2_903`.
     pub(crate) name: String,
-    /// SAP base URL, for example https://sap.example:8001.
+    /// SAP base URL, for example `<https://sap.example:8001>`.
     #[arg(long)]
     pub(crate) url: String,
     /// SAP client, for example 903.
@@ -83,13 +83,13 @@ pub(crate) struct LoginArgs {
 }
 
 #[derive(Debug, Args)]
-pub(crate) struct ProfileArgs {
+pub struct ProfileArgs {
     /// Saved profile name.
     pub(crate) name: String,
 }
 
 #[derive(Debug, Subcommand)]
-pub(crate) enum SystemCommand {
+pub enum SystemCommand {
     /// List saved SAP environments.
     List,
     /// Verify connectivity and authentication for the selected profile.
@@ -97,13 +97,13 @@ pub(crate) enum SystemCommand {
 }
 
 #[derive(Debug, Subcommand)]
-pub(crate) enum PackageCommand {
+pub enum PackageCommand {
     /// Walk a package and show its object tree.
     Tree(NameArgs),
 }
 
 #[derive(Debug, Subcommand)]
-pub(crate) enum ObjectCommand {
+pub enum ObjectCommand {
     /// Search for repository objects by name.
     Search(SearchArgs),
     /// Read source for an ADT object URI.
@@ -113,13 +113,13 @@ pub(crate) enum ObjectCommand {
 }
 
 #[derive(Debug, Args)]
-pub(crate) struct NameArgs {
+pub struct NameArgs {
     /// ABAP package name.
     pub(crate) name: String,
 }
 
 #[derive(Debug, Args)]
-pub(crate) struct SearchArgs {
+pub struct SearchArgs {
     /// Name substring or SAP-style pattern.
     pub(crate) query: String,
     /// Restrict results to a repository kind, such as CLAS or PROG.
@@ -137,7 +137,7 @@ pub(crate) struct SearchArgs {
 }
 
 #[derive(Debug, Args)]
-pub(crate) struct SourceArgs {
+pub struct SourceArgs {
     /// ADT object URI, without a source suffix.
     pub(crate) uri: String,
     /// Byte offset to start returning from.
@@ -149,7 +149,7 @@ pub(crate) struct SourceArgs {
 }
 
 #[derive(Debug, Args)]
-pub(crate) struct UriArgs {
+pub struct UriArgs {
     /// ADT object URI, without a source suffix.
     pub(crate) uri: String,
 }

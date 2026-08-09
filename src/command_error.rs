@@ -4,7 +4,7 @@ use fractal::{
 };
 
 #[derive(Debug)]
-pub(crate) enum CommandError {
+pub enum CommandError {
     Config(config::ConfigError),
     Credential(credentials::CredentialError),
     Sap(SapError),
@@ -59,7 +59,8 @@ impl CommandError {
         }
     }
 
-    pub(crate) fn status(&self) -> Option<u16> {
+    #[must_use]
+    pub(crate) const fn status(&self) -> Option<u16> {
         match self {
             Self::Sap(SapError::Http { status, .. }) => Some(status.as_u16()),
             _ => None,
@@ -82,11 +83,10 @@ impl CommandError {
                 "Pass --profile <name> for this command, or set one with `fractal auth login <name> --default`."
                     .to_owned(),
             ),
-            Self::Config(_) => None,
             Self::Credential(credentials::CredentialError::Missing(profile)) => Some(format!(
                 "Run `fractal auth login {profile}` to store the missing credential."
             )),
-            Self::Credential(_) => None,
+            Self::Config(_) | Self::Credential(_) => None,
             Self::Sap(error) => Some(error.hint().to_owned()),
             Self::Adt(error) => error.hint(),
             Self::Message { hint, .. } => hint.clone(),

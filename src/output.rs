@@ -6,12 +6,12 @@ use serde::Serialize;
 use crate::command_error::CommandError;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
-pub(crate) enum OutputFormat {
+pub enum OutputFormat {
     Json,
     Readable,
 }
 
-pub(crate) fn default_output_format() -> OutputFormat {
+pub fn default_output_format() -> OutputFormat {
     if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         OutputFormat::Readable
     } else {
@@ -19,7 +19,7 @@ pub(crate) fn default_output_format() -> OutputFormat {
     }
 }
 
-pub(crate) fn run_and_print<T, F>(operation: F, output: OutputFormat) -> i32
+pub fn run_and_print<T, F>(operation: F, output: OutputFormat) -> i32
 where
     T: Serialize,
     F: FnOnce() -> Result<T, CommandError>,
@@ -27,7 +27,7 @@ where
     run_and_print_with(operation, print_result, output)
 }
 
-pub(crate) async fn run_and_print_async<T, F, Fut>(operation: F, output: OutputFormat) -> i32
+pub async fn run_and_print_async<T, F, Fut>(operation: F, output: OutputFormat) -> i32
 where
     T: Serialize,
     F: FnOnce() -> Fut,
@@ -36,7 +36,7 @@ where
     run_and_print_with_async(operation, print_result, output).await
 }
 
-pub(crate) fn run_and_print_with<T, F, P>(operation: F, print: P, output: OutputFormat) -> i32
+pub fn run_and_print_with<T, F, P>(operation: F, print: P, output: OutputFormat) -> i32
 where
     T: Serialize,
     F: FnOnce() -> Result<T, CommandError>,
@@ -73,7 +73,7 @@ where
     }
 }
 
-pub(crate) fn print_result<T: Serialize>(result: &T, output: OutputFormat) {
+pub fn print_result<T: Serialize>(result: &T, output: OutputFormat) {
     match output {
         OutputFormat::Json => print_json(result),
         OutputFormat::Readable => {

@@ -245,7 +245,7 @@ async fn system_test(explicit_profile: Option<&str>) -> Result<SystemTestResult,
     let mut client = SapClient::new(profile, password)?;
     let discovery = client.test_connection().await?;
 
-    Ok(system_test_result(name, profile, discovery))
+    Ok(system_test_result(name, profile, &discovery))
 }
 
 async fn object_search(
@@ -369,7 +369,7 @@ async fn object_source(
 fn system_test_result(
     name: &str,
     profile: &config::Profile,
-    discovery: DiscoveryResult,
+    discovery: &DiscoveryResult,
 ) -> SystemTestResult {
     SystemTestResult {
         ok: true,
@@ -524,7 +524,7 @@ fn auth_login(args: &LoginArgs) -> Result<AuthLoginResult, CommandError> {
     })
 }
 
-fn describe_command(command: &Command) -> (&'static str, &'static str) {
+const fn describe_command(command: &Command) -> (&'static str, &'static str) {
     match command {
         Command::Auth { command } => match command {
             AuthCommand::Login(_) => ("auth login", "Authentication is not implemented yet."),
