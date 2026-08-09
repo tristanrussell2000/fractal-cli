@@ -305,6 +305,7 @@ pub async fn search_objects(
     })
 }
 
+#[derive(Debug)]
 struct AggregatedSearch {
     hits: Vec<ObjectSearchHit>,
     possibly_truncated_by_sap_cap: bool,
@@ -540,7 +541,7 @@ fn glob_matches(pattern: &str, value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{AdtError, RepositoryKind, glob_matches};
+    use super::*;
 
     #[test]
     fn matches_case_insensitive_globs() {
@@ -572,17 +573,123 @@ mod tests {
 
     #[test]
     fn maps_known_and_unknown_object_types() {
+        let cases = [
+            ("CLAS/OC", RepositoryKind::Clas),
+            ("INTF/OI", RepositoryKind::Intf),
+            ("TABL/DT", RepositoryKind::Tabl),
+            ("TABL/DS", RepositoryKind::Stru),
+            ("DDLS/DF", RepositoryKind::Ddls),
+            ("ENHS/XSD", RepositoryKind::Enhs),
+            ("UNKNOWN/X", RepositoryKind::Other),
+        ];
+        for (object_type, expected) in cases {
+            assert_eq!(RepositoryKind::from_object_type(object_type), expected);
+        }
+    }
+
+    #[test]
+    fn builds_plain_and_namespace_scoped_queries() {
         assert_eq!(
-            RepositoryKind::from_object_type("CLAS/OC"),
-            RepositoryKind::Clas
+            build_search_queries("VERSION", &["Z*".to_owned(), "Y*".to_owned()]),
+            vec!["VERSION*", "Z*VERSION*", "Y*VERSION*"]
         );
         assert_eq!(
-            RepositoryKind::from_object_type("ENHS/XSD"),
-            RepositoryKind::Enhs
+            build_search_queries("VERSION*", &["ZAPP".to_owned()]),
+            vec!["VERSION*", "ZAPP*VERSION*"]
         );
         assert_eq!(
-            RepositoryKind::from_object_type("UNKNOWN/X"),
-            RepositoryKind::Other
+            build_search_queries("*WORKFLOW", &["Z*".to_owned()]),
+            vec!["*WORKFLOW*", "Z*WORKFLOW*"]
         );
+        assert_eq!(
+            build_search_queries("VERSION", &["*".to_owned()]),
+            vec!["VERSION*"]
+        );
+    }
+
+    fn hit(name: &str) -> ObjectSearchHit {
+        ObjectSearchHit {
+            uri: Some(format!("/objects/{name}")),
+            name: name.to_owned(),
+            object_type: "CLAS/OC".to_owned(),
+            kind: RepositoryKind::Clas,
+            description: None,
+            package: Some("ZAPP".to_owned()),
+        }
+    }
+
+    #[test]
+    fn pages_results_with_offsets_and_limits() {
+        let hits = vec![hit("A"), hit("B"), hit("C"), hit("D")];
+        let (total, page) = page_search_results(hits.clone(), 1, Some(2));
+        assert_eq!(total, 4);
+        assert_eq!(
+            page.iter().map(|hit| hit.name.as_str()).collect::<Vec<_>>(),
+            ["B", "C"]
+        );
+
+        let (_, page) = page_search_results(hits.clone(), 99, Some(2));
+        assert!(page.is_empty());
+        let (_, page) = page_search_results(hits.clone(), 0, Some(999));
+        assert_eq!(page.len(), 4);
+        let (_, page) = page_search_results(hits, 2, None);
+        assert_eq!(
+            page.iter().map(|hit| hit.name.as_str()).collect::<Vec<_>>(),
+            ["A", "B", "C", "D"]
+        );
+    }
+
+    #[test]
+    fn aggregates_filters_deduplicates_and_sorts_hits() {
+        let first = r#"<r:objectReferences xmlns:r="urn:test">
+            <r:objectReference name="ZB" type="CLAS/OC" packageName="ZAPP" uri="/b"/>
+            <r:objectReference name="ZA" type="CLAS/OC" packageName="ZAPP" uri="/a"/>
+            <r:objectReference name="STANDARD" type="CLAS/OC" packageName="SAPP" uri="/standard"/>
+            <r:objectReference name="ZTABLE" type="TABL/DT" packageName="ZAPP" uri="/table"/>
+            <r:objectReference name="ZSHADOW" type="STOB/DO" packageName="ZAPP" uri="/shadow"/>
+            <r:objectReference name="ZORPHAN" type="CLAS/OC" uri=""/>
+        </r:objectReferences>"#;
+        let second = r#"<r:objectReferences xmlns:r="urn:test">
+            <r:objectReference name="ZB" type="CLAS/OC" packageName="ZAPP" uri="/b"/>
+        </r:objectReferences>"#;
+
+        let aggregate = aggregate_search_results(
+            vec![Ok(first.to_owned()), Ok(second.to_owned())],
+            &["Z*".to_owned()],
+            Some(RepositoryKind::Clas),
+        )
+        .unwrap();
+        let names: Vec<_> = aggregate.hits.iter().map(|hit| hit.name.as_str()).collect();
+        assert_eq!(names, ["ZA", "ZB", "ZORPHAN"]);
+        assert!(!aggregate.possibly_truncated_by_sap_cap);
+    }
+
+    #[test]
+    fn aggregation_keeps_partial_success_and_reports_total_failure() {
+        let xml = r#"<objectReferences><objectReference name="ZOK" type="CLAS/OC" packageName="ZAPP" uri="/ok"/></objectReferences>"#;
+        let network_error = SapError::Network {
+            url: "http://sap".to_owned(),
+            message: "offline".to_owned(),
+        };
+        let partial = aggregate_search_results(
+            vec![Ok(xml.to_owned()), Err(network_error)],
+            &["Z*".to_owned()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(partial.hits.len(), 1);
+
+        let error = aggregate_search_results(Vec::new(), &["Z*".to_owned()], None).unwrap_err();
+        assert_eq!(error.code(), "search_aggregation_error");
+    }
+
+    #[test]
+    fn detects_a_response_at_the_sap_cap() {
+        let references: String = (0..500)
+            .map(|index| format!(r#"<objectReference name="Z{index}" type="CLAS/OC" packageName="ZAPP" uri="/{index}"/>"#))
+            .collect();
+        let xml = format!(r#"<objectReferences>{references}</objectReferences>"#);
+        let aggregate = aggregate_search_results(vec![Ok(xml)], &["Z*".to_owned()], None).unwrap();
+        assert!(aggregate.possibly_truncated_by_sap_cap);
     }
 }
