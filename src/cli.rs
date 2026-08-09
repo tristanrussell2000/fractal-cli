@@ -109,7 +109,7 @@ pub enum ObjectCommand {
     /// Read source for an ADT object URI.
     Source(SourceArgs),
     /// Read metadata XML for an ADT object URI.
-    Xml(UriArgs),
+    Xml(XmlArgs),
 }
 
 #[derive(Debug, Args)]
@@ -144,6 +144,18 @@ pub struct SourceArgs {
     #[arg(long, default_value_t = 0)]
     pub(crate) offset: usize,
     /// Maximum bytes to return. Omit to return the complete source.
+    #[arg(long)]
+    pub(crate) limit: Option<usize>,
+}
+
+#[derive(Debug, Args)]
+pub struct XmlArgs {
+    /// ADT object URI.
+    pub(crate) uri: String,
+    /// Byte offset to start returning from.
+    #[arg(long, default_value_t = 0)]
+    pub(crate) offset: usize,
+    /// Maximum bytes to return. Omit to return the complete XML.
     #[arg(long)]
     pub(crate) limit: Option<usize>,
 }

@@ -1,7 +1,7 @@
 use fractal::{
     config::Profile,
     sap::{
-        adt::{AdtError, SourceOptions, get_source},
+        adt::{AdtError, ByteRangeOptions, get_source},
         client::SapClient,
     },
 };
@@ -36,7 +36,7 @@ async fn fetches_complete_source_and_pages_utf8_safely() {
     let first = get_source(
         &mut client,
         "/sap/bc/adt/oo/classes/zcl_test",
-        SourceOptions {
+        ByteRangeOptions {
             offset: 0,
             limit: Some(4),
         },
@@ -44,7 +44,7 @@ async fn fetches_complete_source_and_pages_utf8_safely() {
     .await
     .unwrap();
 
-    assert_eq!(first.source, "abc");
+    assert_eq!(first.content, "abc");
     assert_eq!(first.start_byte, 0);
     assert_eq!(first.end_byte, 3);
     assert_eq!(first.total_bytes, source.len());
@@ -54,14 +54,14 @@ async fn fetches_complete_source_and_pages_utf8_safely() {
     let second = get_source(
         &mut client,
         "/sap/bc/adt/oo/classes/zcl_test",
-        SourceOptions {
+        ByteRangeOptions {
             offset: first.next_offset.unwrap(),
             limit: None,
         },
     )
     .await
     .unwrap();
-    assert_eq!(second.source, "édef");
+    assert_eq!(second.content, "édef");
     assert!(!second.truncated);
     server.verify().await;
 }
@@ -71,7 +71,7 @@ async fn rejects_invalid_source_uris_before_http() {
     let profile = profile("http://127.0.0.1:1".to_owned());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
 
-    let error = get_source(&mut client, "not-an-adt-uri", SourceOptions::default())
+    let error = get_source(&mut client, "not-an-adt-uri", ByteRangeOptions::default())
         .await
         .unwrap_err();
     assert!(matches!(error, AdtError::InvalidUri(_)));
@@ -85,7 +85,7 @@ async fn rejects_doubled_source_suffix_and_known_no_source_kinds() {
     let doubled = get_source(
         &mut client,
         "/sap/bc/adt/oo/classes/zcl_test/source/main",
-        SourceOptions::default(),
+        ByteRangeOptions::default(),
     )
     .await
     .unwrap_err();
@@ -94,7 +94,7 @@ async fn rejects_doubled_source_suffix_and_known_no_source_kinds() {
     let domain = get_source(
         &mut client,
         "/sap/bc/adt/ddic/domains/zdomain",
-        SourceOptions::default(),
+        ByteRangeOptions::default(),
     )
     .await
     .unwrap_err();

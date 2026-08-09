@@ -1,6 +1,9 @@
 use fractal::{
     config::Profile,
-    sap::{adt::get_xml, client::SapClient},
+    sap::{
+        adt::{ByteRangeOptions, get_xml},
+        client::SapClient,
+    },
 };
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
@@ -31,11 +34,15 @@ async fn fetches_raw_object_xml_without_adding_source_suffix() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let xml = get_xml(&mut client, "/sap/bc/adt/oo/classes/zcl_test")
-        .await
-        .unwrap();
+    let xml = get_xml(
+        &mut client,
+        "/sap/bc/adt/oo/classes/zcl_test",
+        ByteRangeOptions::default(),
+    )
+    .await
+    .unwrap();
 
-    assert!(xml.contains("ZCL_TEST"));
+    assert!(xml.content.contains("ZCL_TEST"));
     server.verify().await;
 }
 
@@ -44,6 +51,8 @@ async fn rejects_non_adt_xml_uri_before_http() {
     let profile = profile("http://127.0.0.1:1".to_owned());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
 
-    let error = get_xml(&mut client, "not-an-adt-uri").await.unwrap_err();
+    let error = get_xml(&mut client, "not-an-adt-uri", ByteRangeOptions::default())
+        .await
+        .unwrap_err();
     assert_eq!(error.code(), "invalid_adt_uri");
 }

@@ -206,20 +206,20 @@ pub struct ObjectSearchResult {
     pub possibly_truncated_by_sap_cap: bool,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct SourceOptions {
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ByteRangeOptions {
     pub offset: usize,
     pub limit: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
-pub struct SourceResult {
+pub struct ByteRangeResult {
     pub start_byte: usize,
     pub end_byte: usize,
     pub total_bytes: usize,
     pub truncated: bool,
     pub next_offset: Option<usize>,
-    pub source: String,
+    pub content: String,
 }
 
 /// Fetches an ADT object's complete source and returns a locally paged byte range.
@@ -234,8 +234,8 @@ pub struct SourceResult {
 pub async fn get_source(
     sap: &mut SapClient,
     uri: &str,
-    options: SourceOptions,
-) -> Result<SourceResult, AdtError> {
+    options: ByteRangeOptions,
+) -> Result<ByteRangeResult, AdtError> {
     validate_source_uri(uri)?;
     let kind = no_source_kind(uri);
     if let Some(kind) = kind {
@@ -247,26 +247,7 @@ pub async fn get_source(
 
     let source_uri = format!("{}{}", uri.trim_end_matches('/'), SOURCE_SUFFIX);
     let source = sap.get_text(&source_uri).await?;
-    let bytes = source.as_bytes();
-    let total_bytes = bytes.len();
-    let start_byte = utf8_safe_start(bytes, options.offset.min(total_bytes));
-    let requested_end = options.limit.map_or(total_bytes, |limit| {
-        start_byte.saturating_add(limit).min(total_bytes)
-    });
-    let end_byte = utf8_safe_end(bytes, requested_end).max(start_byte);
-    let source = std::str::from_utf8(&bytes[start_byte..end_byte])
-        .map_err(|error| AdtError::SourceEncoding(error.to_string()))?
-        .to_owned();
-    let truncated = end_byte < total_bytes;
-
-    Ok(SourceResult {
-        start_byte,
-        end_byte,
-        total_bytes,
-        truncated,
-        next_offset: truncated.then_some(end_byte),
-        source,
-    })
+    page_text(&source, options)
 }
 
 /// Fetches raw ADT metadata XML for an object URI.
@@ -275,11 +256,16 @@ pub async fn get_source(
 ///
 /// Returns [`AdtError::InvalidUri`] for a non-ADT URI or the underlying SAP
 /// error when the metadata request fails.
-pub async fn get_xml(sap: &mut SapClient, uri: &str) -> Result<String, AdtError> {
+pub async fn get_xml(
+    sap: &mut SapClient,
+    uri: &str,
+    options: ByteRangeOptions,
+) -> Result<ByteRangeResult, AdtError> {
     if !uri.starts_with("/sap/bc/adt/") {
         return Err(AdtError::InvalidUri(uri.to_owned()));
     }
-    Ok(sap.get_text(uri).await?)
+    let xml = sap.get_text(uri).await?;
+    page_text(&xml, options)
 }
 
 /// Searches SAP's ADT repository and aggregates plain and namespace-scoped results.
@@ -429,6 +415,29 @@ fn page_search_results(
         None => hits,
     };
     (total, hits)
+}
+
+fn page_text(text: &str, options: ByteRangeOptions) -> Result<ByteRangeResult, AdtError> {
+    let bytes = text.as_bytes();
+    let total_bytes = bytes.len();
+    let start_byte = utf8_safe_start(bytes, options.offset.min(total_bytes));
+    let requested_end = options.limit.map_or(total_bytes, |limit| {
+        start_byte.saturating_add(limit).min(total_bytes)
+    });
+    let end_byte = utf8_safe_end(bytes, requested_end).max(start_byte);
+    let content = std::str::from_utf8(&bytes[start_byte..end_byte])
+        .map_err(|error| AdtError::SourceEncoding(error.to_string()))?
+        .to_owned();
+    let truncated = end_byte < total_bytes;
+
+    Ok(ByteRangeResult {
+        start_byte,
+        end_byte,
+        total_bytes,
+        truncated,
+        next_offset: truncated.then_some(end_byte),
+        content,
+    })
 }
 
 fn validate_source_uri(uri: &str) -> Result<(), AdtError> {

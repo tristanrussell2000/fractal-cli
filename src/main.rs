@@ -7,13 +7,13 @@ use std::io::Read;
 use clap::Parser;
 use cli::{
     AuthCommand, Cli, Command, LoginArgs, ObjectCommand, PackageCommand, ProfileArgs, SearchArgs,
-    SourceArgs, SystemCommand, UriArgs,
+    SourceArgs, SystemCommand, XmlArgs,
 };
 use command_error::CommandError;
 use fractal::{
     config, credentials,
     sap::{
-        adt::{ObjectSearchOptions, RepositoryKind, search_objects},
+        adt::{ByteRangeOptions, ObjectSearchOptions, RepositoryKind, search_objects},
         client::{DiscoveryResult, SapClient},
     },
 };
@@ -357,7 +357,7 @@ async fn object_source(
     let result = fractal::sap::adt::get_source(
         &mut client,
         &args.uri,
-        fractal::sap::adt::SourceOptions {
+        ByteRangeOptions {
             offset: args.offset,
             limit: args.limit,
         },
@@ -369,26 +369,34 @@ async fn object_source(
 
 async fn object_xml(
     explicit_profile: Option<&str>,
-    args: &UriArgs,
+    args: &XmlArgs,
 ) -> Result<ObjectXmlResultOutput, CommandError> {
     let loaded = config::load()?;
     let (profile_name, profile) = config::resolve_profile(&loaded.config, explicit_profile)?;
     let password = credentials::get_password(profile_name)?;
     let mut client = SapClient::new(profile, password)?;
-    let xml = fractal::sap::adt::get_xml(&mut client, &args.uri).await?;
+    let result = fractal::sap::adt::get_xml(
+        &mut client,
+        &args.uri,
+        ByteRangeOptions {
+            offset: args.offset,
+            limit: args.limit,
+        },
+    )
+    .await?;
 
     Ok(ObjectXmlResultOutput {
         ok: true,
         profile: profile_name.to_owned(),
         uri: args.uri.clone(),
-        xml,
+        xml: result.content,
     })
 }
 
 fn map_object_source_result(
     profile_name: &str,
     uri: &str,
-    result: fractal::sap::adt::SourceResult,
+    result: fractal::sap::adt::ByteRangeResult,
 ) -> ObjectSourceResultOutput {
     ObjectSourceResultOutput {
         ok: true,
@@ -399,7 +407,7 @@ fn map_object_source_result(
         total_bytes: result.total_bytes,
         truncated: result.truncated,
         next_offset: result.next_offset,
-        source: result.source,
+        source: result.content,
     }
 }
 
@@ -682,13 +690,13 @@ mod tests {
 
     #[test]
     fn maps_source_results_and_preserves_paging() {
-        let result = fractal::sap::adt::SourceResult {
+        let result = fractal::sap::adt::ByteRangeResult {
             start_byte: 100,
             end_byte: 600,
             total_bytes: 1200,
             truncated: true,
             next_offset: Some(600),
-            source: "source chunk".to_owned(),
+            content: "source chunk".to_owned(),
         };
         let output = map_object_source_result("DE2_903", "/sap/bc/adt/oo/classes/zcl_test", result);
 
