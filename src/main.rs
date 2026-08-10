@@ -6,8 +6,8 @@ use std::io::Read;
 
 use clap::Parser;
 use cli::{
-    AuthCommand, Cli, Command, LoginArgs, ObjectCommand, PackageCommand, PackageTreeArgs,
-    ProfileArgs, SearchArgs, SourceArgs, SystemCommand, XmlArgs,
+    AuthCommand, Cli, Command, LoginArgs, ObjectCommand, PackageCommand, PackageItemsArgs,
+    PackageTreeArgs, ProfileArgs, SearchArgs, SourceArgs, SystemCommand, XmlArgs,
 };
 use command_error::CommandError;
 use fractal::{
@@ -154,6 +154,32 @@ struct PackageFailureOutput {
     message: String,
 }
 
+#[derive(Debug, Serialize)]
+struct PackageItemsResultOutput {
+    ok: bool,
+    profile: String,
+    root: String,
+    recursive: bool,
+    total_matching: usize,
+    returned: usize,
+    offset: usize,
+    limit: usize,
+    next_offset: Option<usize>,
+    kinds: std::collections::BTreeMap<String, usize>,
+    packages_failed: Vec<PackageFailureOutput>,
+    items: Vec<PackageItemOutput>,
+}
+
+#[derive(Debug, Serialize)]
+struct PackageItemOutput {
+    name: String,
+    kind: String,
+    object_type: String,
+    package: String,
+    description: Option<String>,
+    uri: Option<String>,
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -187,6 +213,9 @@ async fn main() {
         Command::Package {
             command: PackageCommand::Tree(args),
         } => run_and_print_async(|| package_tree(cli.profile.as_deref(), args), output).await,
+        Command::Package {
+            command: PackageCommand::Items(args),
+        } => run_and_print_async(|| package_items(cli.profile.as_deref(), args), output).await,
     };
 
     if exit_code != 0 {
@@ -228,6 +257,65 @@ async fn package_tree(
             .map(|failure| PackageFailureOutput {
                 package: failure.package,
                 message: failure.message,
+            })
+            .collect(),
+    })
+}
+
+async fn package_items(
+    explicit_profile: Option<&str>,
+    args: &PackageItemsArgs,
+) -> Result<PackageItemsResultOutput, CommandError> {
+    let kind = args.kind.as_deref().map(parse_search_kind).transpose()?;
+    let loaded = config::load()?;
+    let (profile_name, profile) = config::resolve_profile(&loaded.config, explicit_profile)?;
+    let password = credentials::get_password(profile_name)?;
+    let mut client = SapClient::new(profile, password)?;
+    let result = fractal::sap::package::get_package_items(
+        &mut client,
+        &args.name,
+        fractal::sap::package::PackageItemsOptions {
+            recursive: args.recursive,
+            kind,
+            object_type: args.object_type.clone(),
+            name_substring: args.name_substring.clone(),
+            offset: args.offset,
+            limit: args.limit,
+        },
+    )
+    .await?;
+    let returned = result.items.len();
+    let next_offset = (args.offset + returned < result.total).then_some(args.offset + returned);
+
+    Ok(PackageItemsResultOutput {
+        ok: true,
+        profile: profile_name.to_owned(),
+        root: result.root,
+        recursive: result.recursive,
+        total_matching: result.total,
+        returned,
+        offset: args.offset,
+        limit: args.limit,
+        next_offset,
+        kinds: result.kinds,
+        packages_failed: result
+            .packages_failed
+            .into_iter()
+            .map(|failure| PackageFailureOutput {
+                package: failure.package,
+                message: failure.message,
+            })
+            .collect(),
+        items: result
+            .items
+            .into_iter()
+            .map(|item| PackageItemOutput {
+                name: item.name,
+                kind: item.object_type.kind().as_str().to_owned(),
+                object_type: item.object_type.as_str().to_owned(),
+                package: item.package,
+                description: item.description,
+                uri: item.uri,
             })
             .collect(),
     })
@@ -629,6 +717,42 @@ mod tests {
         };
         assert_eq!(args.name, "ZAPP");
         assert!(args.no_recursive);
+    }
+
+    #[test]
+    fn parses_package_items_options_from_cli() {
+        let cli = Cli::try_parse_from([
+            "fractal",
+            "package",
+            "items",
+            "ZAPP",
+            "--recursive",
+            "--kind",
+            "clas",
+            "--object-type",
+            "CLAS/OC",
+            "--name-substring",
+            "TEST",
+            "--offset",
+            "2",
+            "--limit",
+            "5",
+        ])
+        .unwrap();
+
+        let Command::Package {
+            command: PackageCommand::Items(args),
+        } = cli.command
+        else {
+            panic!("expected package items command");
+        };
+        assert_eq!(args.name, "ZAPP");
+        assert!(args.recursive);
+        assert_eq!(args.kind.as_deref(), Some("clas"));
+        assert_eq!(args.object_type.as_deref(), Some("CLAS/OC"));
+        assert_eq!(args.name_substring.as_deref(), Some("TEST"));
+        assert_eq!(args.offset, 2);
+        assert_eq!(args.limit, 5);
     }
 
     #[test]

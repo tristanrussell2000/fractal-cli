@@ -100,6 +100,8 @@ pub enum SystemCommand {
 pub enum PackageCommand {
     /// Walk a package and show its package hierarchy.
     Tree(PackageTreeArgs),
+    /// List objects contained in a package.
+    Items(PackageItemsArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -119,6 +121,30 @@ pub struct PackageTreeArgs {
     /// Inspect only this package instead of recursively walking subpackages.
     #[arg(long)]
     pub(crate) no_recursive: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct PackageItemsArgs {
+    /// ABAP package name.
+    pub(crate) name: String,
+    /// Include objects from subpackages.
+    #[arg(long)]
+    pub(crate) recursive: bool,
+    /// Restrict results to a repository kind, such as CLAS or PROG.
+    #[arg(long)]
+    pub(crate) kind: Option<String>,
+    /// Restrict results to a raw SAP ADT object type, such as TTYP/DA.
+    #[arg(long = "object-type")]
+    pub(crate) object_type: Option<String>,
+    /// Case-insensitive substring match against object names.
+    #[arg(long)]
+    pub(crate) name_substring: Option<String>,
+    /// Number of matching items to skip.
+    #[arg(long, default_value_t = 0)]
+    pub(crate) offset: usize,
+    /// Maximum number of items to return.
+    #[arg(long, default_value_t = 100)]
+    pub(crate) limit: usize,
 }
 
 #[derive(Debug, Args)]

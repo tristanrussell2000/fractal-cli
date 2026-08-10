@@ -59,6 +59,26 @@ pub struct PackageTree {
     pub packages_failed: Vec<PackageFailure>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct PackageItemsOptions {
+    pub recursive: bool,
+    pub kind: Option<RepositoryKind>,
+    pub object_type: Option<String>,
+    pub name_substring: Option<String>,
+    pub offset: usize,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct PackageItemsResult {
+    pub root: String,
+    pub recursive: bool,
+    pub total: usize,
+    pub items: Vec<PackageItem>,
+    pub kinds: std::collections::BTreeMap<String, usize>,
+    pub packages_failed: Vec<PackageFailure>,
+}
+
 const NODE_STRUCTURE_PATH: &str = "/sap/bc/adt/repository/nodestructure";
 const NODE_STRUCTURE_ACCEPT: &str =
     "application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.RepositoryObjTree.ObjectTree";
@@ -214,6 +234,93 @@ pub async fn get_package_tree(
     Ok(PackageTree {
         root,
         packages,
+        kinds,
+        packages_failed,
+    })
+}
+
+/// Fetches, filters, sorts, and paginates package objects as one flat list.
+///
+/// Direct mode fetches only the requested package. Recursive mode walks
+/// subpackages serially; child failures are retained in the result.
+///
+/// # Errors
+///
+/// Returns [`PackageError`] when the root package cannot be fetched or parsed.
+pub async fn get_package_items(
+    sap: &mut SapClient,
+    package: &str,
+    options: PackageItemsOptions,
+) -> Result<PackageItemsResult, PackageError> {
+    let root = package.trim().to_ascii_uppercase();
+    let root_contents = get_package_contents(sap, &root).await?;
+    let mut all_items = root_contents.items;
+    let mut packages_failed = Vec::new();
+
+    if options.recursive {
+        let mut queue: Vec<String> = root_contents
+            .subpackages
+            .into_iter()
+            .map(|subpackage| subpackage.name)
+            .collect();
+        let mut index = 0;
+        while index < queue.len() {
+            let package_name = queue[index].clone();
+            index += 1;
+            match get_package_contents(sap, &package_name).await {
+                Ok(contents) => {
+                    all_items.extend(contents.items);
+                    queue.extend(
+                        contents
+                            .subpackages
+                            .into_iter()
+                            .map(|subpackage| subpackage.name),
+                    );
+                }
+                Err(error) => packages_failed.push(PackageFailure {
+                    package: package_name,
+                    message: error.to_string(),
+                }),
+            }
+        }
+    }
+
+    let name_filter = options
+        .name_substring
+        .map(|value| value.to_ascii_uppercase());
+    let object_type_filter = options.object_type.map(|value| value.to_ascii_uppercase());
+    all_items.retain(|item| {
+        options
+            .kind
+            .is_none_or(|kind| item.object_type.kind() == kind)
+            && object_type_filter
+                .as_deref()
+                .is_none_or(|object_type| item.object_type.as_str() == object_type)
+            && name_filter
+                .as_deref()
+                .is_none_or(|needle| item.name.to_ascii_uppercase().contains(needle))
+    });
+    all_items.sort_by_key(|item| item.name.to_ascii_uppercase());
+
+    let total = all_items.len();
+    let limit = options.limit.max(1);
+    let items: Vec<PackageItem> = all_items
+        .into_iter()
+        .skip(options.offset)
+        .take(limit)
+        .collect();
+    let mut kinds = std::collections::BTreeMap::new();
+    for item in &items {
+        *kinds
+            .entry(item.object_type.kind().as_str().to_owned())
+            .or_insert(0) += 1;
+    }
+
+    Ok(PackageItemsResult {
+        root,
+        recursive: options.recursive,
+        total,
+        items,
         kinds,
         packages_failed,
     })
