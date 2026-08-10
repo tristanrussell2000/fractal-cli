@@ -98,8 +98,8 @@ pub enum SystemCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum PackageCommand {
-    /// Walk a package and show its object tree.
-    Tree(NameArgs),
+    /// Walk a package and show its package hierarchy.
+    Tree(PackageTreeArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -110,6 +110,15 @@ pub enum ObjectCommand {
     Source(SourceArgs),
     /// Read metadata XML for an ADT object URI.
     Xml(XmlArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct PackageTreeArgs {
+    /// ABAP package name.
+    pub(crate) name: String,
+    /// Inspect only this package instead of recursively walking subpackages.
+    #[arg(long)]
+    pub(crate) no_recursive: bool,
 }
 
 #[derive(Debug, Args)]

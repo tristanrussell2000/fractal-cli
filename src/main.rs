@@ -6,8 +6,8 @@ use std::io::Read;
 
 use clap::Parser;
 use cli::{
-    AuthCommand, Cli, Command, LoginArgs, ObjectCommand, PackageCommand, ProfileArgs, SearchArgs,
-    SourceArgs, SystemCommand, XmlArgs,
+    AuthCommand, Cli, Command, LoginArgs, ObjectCommand, PackageCommand, PackageTreeArgs,
+    ProfileArgs, SearchArgs, SourceArgs, SystemCommand, XmlArgs,
 };
 use command_error::CommandError;
 use fractal::{
@@ -22,14 +22,6 @@ use output::{
     run_and_print_with,
 };
 use serde::Serialize;
-
-#[derive(Debug, Serialize)]
-struct Placeholder {
-    ok: bool,
-    command: String,
-    profile: Option<String>,
-    message: String,
-}
 
 #[derive(Debug, Serialize)]
 struct SystemListResult {
@@ -136,6 +128,32 @@ struct ObjectXmlResultOutput {
     xml: String,
 }
 
+#[derive(Debug, Serialize)]
+struct PackageTreeResultOutput {
+    ok: bool,
+    profile: String,
+    root: String,
+    recursive: bool,
+    packages_walked: usize,
+    packages: Vec<PackageTreeNodeOutput>,
+    kinds: std::collections::BTreeMap<String, usize>,
+    packages_failed: Vec<PackageFailureOutput>,
+}
+
+#[derive(Debug, Serialize)]
+struct PackageTreeNodeOutput {
+    name: String,
+    parent: Option<String>,
+    description: Option<String>,
+    item_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct PackageFailureOutput {
+    package: String,
+    message: String,
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -166,22 +184,53 @@ async fn main() {
         Command::Object {
             command: ObjectCommand::Xml(args),
         } => run_and_print_async(|| object_xml(cli.profile.as_deref(), args), output).await,
-        _ => {
-            let (command_name, message) = describe_command(&cli.command);
-            let result = Placeholder {
-                ok: false,
-                command: command_name.to_owned(),
-                profile: cli.profile,
-                message: message.to_owned(),
-            };
-            print_result(&result, output);
-            0
-        }
+        Command::Package {
+            command: PackageCommand::Tree(args),
+        } => run_and_print_async(|| package_tree(cli.profile.as_deref(), args), output).await,
     };
 
     if exit_code != 0 {
         std::process::exit(exit_code);
     }
+}
+
+async fn package_tree(
+    explicit_profile: Option<&str>,
+    args: &PackageTreeArgs,
+) -> Result<PackageTreeResultOutput, CommandError> {
+    let loaded = config::load()?;
+    let (profile_name, profile) = config::resolve_profile(&loaded.config, explicit_profile)?;
+    let password = credentials::get_password(profile_name)?;
+    let mut client = SapClient::new(profile, password)?;
+    let recursive = !args.no_recursive;
+    let tree = fractal::sap::package::get_package_tree(&mut client, &args.name, recursive).await?;
+
+    Ok(PackageTreeResultOutput {
+        ok: true,
+        profile: profile_name.to_owned(),
+        root: tree.root,
+        recursive,
+        packages_walked: tree.packages.len(),
+        packages: tree
+            .packages
+            .into_iter()
+            .map(|package| PackageTreeNodeOutput {
+                name: package.name,
+                parent: package.parent,
+                description: package.description,
+                item_count: package.item_count,
+            })
+            .collect(),
+        kinds: tree.kinds,
+        packages_failed: tree
+            .packages_failed
+            .into_iter()
+            .map(|failure| PackageFailureOutput {
+                package: failure.package,
+                message: failure.message,
+            })
+            .collect(),
+    })
 }
 
 fn print_system_list(result: &SystemListResult, output: OutputFormat) {
@@ -561,35 +610,26 @@ fn auth_login(args: &LoginArgs) -> Result<AuthLoginResult, CommandError> {
     })
 }
 
-const fn describe_command(command: &Command) -> (&'static str, &'static str) {
-    match command {
-        Command::Auth { command } => match command {
-            AuthCommand::Login(_) => ("auth login", "Authentication is not implemented yet."),
-            AuthCommand::List => ("auth list", "Profile listing is not implemented yet."),
-            AuthCommand::Remove(_) => ("auth remove", "Profile removal is not implemented yet."),
-        },
-        Command::System { command } => match command {
-            SystemCommand::List => ("system list", "System listing is not implemented yet."),
-            SystemCommand::Test => ("system test", "SAP connectivity is not implemented yet."),
-        },
-        Command::Package { command } => match command {
-            PackageCommand::Tree(_) => ("package tree", "Package browsing is not implemented yet."),
-        },
-        Command::Object { command } => match command {
-            ObjectCommand::Search(_) => ("object search", "Object search is not implemented yet."),
-            ObjectCommand::Source(_) => {
-                ("object source", "Source retrieval is not implemented yet.")
-            }
-            ObjectCommand::Xml(_) => ("object xml", "Metadata retrieval is not implemented yet."),
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use clap::Parser;
 
     use super::*;
+
+    #[test]
+    fn parses_package_tree_options_from_cli() {
+        let cli =
+            Cli::try_parse_from(["fractal", "package", "tree", "ZAPP", "--no-recursive"]).unwrap();
+
+        let Command::Package {
+            command: PackageCommand::Tree(args),
+        } = cli.command
+        else {
+            panic!("expected package tree command");
+        };
+        assert_eq!(args.name, "ZAPP");
+        assert!(args.no_recursive);
+    }
 
     #[test]
     fn parses_object_search_options_from_cli() {

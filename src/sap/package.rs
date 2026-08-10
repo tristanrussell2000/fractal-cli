@@ -37,6 +37,28 @@ pub struct PackageContents {
     pub subpackages: Vec<Subpackage>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PackageTreeNode {
+    pub name: String,
+    pub parent: Option<String>,
+    pub description: Option<String>,
+    pub item_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct PackageFailure {
+    pub package: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PackageTree {
+    pub root: String,
+    pub packages: Vec<PackageTreeNode>,
+    pub kinds: std::collections::BTreeMap<String, usize>,
+    pub packages_failed: Vec<PackageFailure>,
+}
+
 const NODE_STRUCTURE_PATH: &str = "/sap/bc/adt/repository/nodestructure";
 const NODE_STRUCTURE_ACCEPT: &str =
     "application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.RepositoryObjTree.ObjectTree";
@@ -120,6 +142,80 @@ pub fn parse_package_contents(xml: &str, package: &str) -> Result<PackageContent
         package,
         items,
         subpackages,
+    })
+}
+
+/// Traverses package contents breadth-first and returns package summaries.
+///
+/// When `recursive` is false, only the requested package is fetched. Root
+/// failures are returned; child-package failures are retained in the result.
+///
+/// # Errors
+///
+/// Returns [`PackageError`] when the root package request fails or cannot be parsed.
+pub async fn get_package_tree(
+    sap: &mut SapClient,
+    package: &str,
+    recursive: bool,
+) -> Result<PackageTree, PackageError> {
+    let root = package.trim().to_ascii_uppercase();
+    let root_contents = get_package_contents(sap, &root).await?;
+    let mut packages = vec![PackageTreeNode {
+        name: root.clone(),
+        parent: None,
+        description: None,
+        item_count: root_contents.items.len(),
+    }];
+    let mut kinds = std::collections::BTreeMap::new();
+    for item in &root_contents.items {
+        *kinds
+            .entry(item.object_type.kind().as_str().to_owned())
+            .or_insert(0) += 1;
+    }
+    let mut packages_failed = Vec::new();
+
+    if recursive {
+        let mut queue: Vec<(String, String, Option<String>)> = root_contents
+            .subpackages
+            .into_iter()
+            .map(|subpackage| (subpackage.name, root.clone(), subpackage.description))
+            .collect();
+        let mut index = 0;
+        while index < queue.len() {
+            let (name, parent, description) = queue[index].clone();
+            index += 1;
+            match get_package_contents(sap, &name).await {
+                Ok(contents) => {
+                    packages.push(PackageTreeNode {
+                        name: name.clone(),
+                        parent: Some(parent),
+                        description,
+                        item_count: contents.items.len(),
+                    });
+                    for item in &contents.items {
+                        *kinds
+                            .entry(item.object_type.kind().as_str().to_owned())
+                            .or_insert(0) += 1;
+                    }
+                    queue.extend(
+                        contents.subpackages.into_iter().map(|subpackage| {
+                            (subpackage.name, name.clone(), subpackage.description)
+                        }),
+                    );
+                }
+                Err(error) => packages_failed.push(PackageFailure {
+                    package: name,
+                    message: error.to_string(),
+                }),
+            }
+        }
+    }
+
+    Ok(PackageTree {
+        root,
+        packages,
+        kinds,
+        packages_failed,
     })
 }
 

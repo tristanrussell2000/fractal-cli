@@ -1,6 +1,6 @@
 use fractal::{
     config, credentials,
-    sap::{adt::AdtError, client::SapError},
+    sap::{adt::AdtError, client::SapError, package::PackageError},
 };
 
 #[derive(Debug)]
@@ -9,6 +9,7 @@ pub enum CommandError {
     Credential(credentials::CredentialError),
     Sap(SapError),
     Adt(AdtError),
+    Package(PackageError),
     Message {
         code: &'static str,
         message: String,
@@ -55,6 +56,10 @@ impl CommandError {
             },
             Self::Sap(error) => error.code(),
             Self::Adt(error) => error.code(),
+            Self::Package(error) => match error {
+                PackageError::Sap(error) => error.code(),
+                PackageError::Parse(_) => "package_response_parse_error",
+            },
             Self::Message { code, .. } => code,
         }
     }
@@ -73,6 +78,7 @@ impl CommandError {
             Self::Credential(error) => error.to_string(),
             Self::Sap(error) => error.to_string(),
             Self::Adt(error) => error.to_string(),
+            Self::Package(error) => error.to_string(),
             Self::Message { message, .. } => message.clone(),
         }
     }
@@ -87,8 +93,14 @@ impl CommandError {
                 "Run `fractal auth login {profile}` to store the missing credential."
             )),
             Self::Config(_) | Self::Credential(_) => None,
-            Self::Sap(error) => Some(error.hint().to_owned()),
+            Self::Sap(error) | Self::Package(PackageError::Sap(error)) => {
+                Some(error.hint().to_owned())
+            }
             Self::Adt(error) => error.hint(),
+            Self::Package(PackageError::Parse(_)) => Some(
+                "The SAP package response did not match the expected nodestructure format."
+                    .to_owned(),
+            ),
             Self::Message { hint, .. } => hint.clone(),
         }
     }
@@ -115,6 +127,12 @@ impl From<SapError> for CommandError {
 impl From<AdtError> for CommandError {
     fn from(error: AdtError) -> Self {
         Self::Adt(error)
+    }
+}
+
+impl From<PackageError> for CommandError {
+    fn from(error: PackageError) -> Self {
+        Self::Package(error)
     }
 }
 
