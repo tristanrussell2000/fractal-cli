@@ -7,7 +7,8 @@ use clap::Parser;
 use cli::{AuthCommand, Cli, Command, ObjectCommand, PackageCommand, SystemCommand};
 use commands::auth::{auth_list, auth_login, auth_remove};
 use commands::object::{
-    object_info, object_kinds, object_search, object_source, object_xml, print_object_kinds,
+    object_info, object_kinds, object_search, object_source, object_usages, object_xml,
+    print_object_kinds,
 };
 use commands::package::{package_items, package_tree};
 use commands::system::{print_system_list, system_list, system_test};
@@ -46,6 +47,9 @@ async fn main() {
         Command::Object {
             command: ObjectCommand::Info(args),
         } => run_and_print_async(|| object_info(cli.profile.as_deref(), args), output).await,
+        Command::Object {
+            command: ObjectCommand::Usages(args),
+        } => run_and_print_async(|| object_usages(cli.profile.as_deref(), args), output).await,
         Command::Object {
             command: ObjectCommand::Kinds,
         } => run_and_print_with(object_kinds, print_object_kinds, output),

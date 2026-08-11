@@ -1,10 +1,12 @@
 use serde::Serialize;
 
-use crate::cli::{SearchArgs, SourceArgs, UriArgs, XmlArgs};
+use crate::cli::{SearchArgs, SourceArgs, UriArgs, UsagesArgs, XmlArgs};
 use crate::command_error::CommandError;
 use crate::commands::connect;
 use crate::output::{OutputFormat, print_result};
-use fractal::sap::adt::{ByteRangeOptions, ObjectSearchOptions, RepositoryKind, search_objects};
+use fractal::sap::adt::{
+    ByteRangeOptions, ObjectSearchOptions, RepositoryKind, get_object_usages, search_objects,
+};
 
 #[derive(Debug, Serialize)]
 pub struct ObjectSearchResultOutput {
@@ -60,6 +62,28 @@ pub struct ObjectInfoResultOutput {
     profile: String,
     uri: String,
     description: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ObjectUsagesResultOutput {
+    ok: bool,
+    profile: String,
+    uri: String,
+    direct_results_only: bool,
+    total: usize,
+    direct_results: usize,
+    references: Vec<UsageReferenceOutput>,
+}
+
+#[derive(Debug, Serialize)]
+struct UsageReferenceOutput {
+    uri: String,
+    parent_uri: Option<String>,
+    name: Option<String>,
+    kind: Option<String>,
+    object_type: Option<String>,
+    package: Option<String>,
+    direct_result: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -224,6 +248,59 @@ pub async fn object_info(
     })
 }
 
+pub async fn object_usages(
+    explicit_profile: Option<&str>,
+    args: &UsagesArgs,
+) -> Result<ObjectUsagesResultOutput, CommandError> {
+    let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
+    let references = get_object_usages(&mut client, &args.uri).await?;
+    let total = references.len();
+    let direct_results = references
+        .iter()
+        .filter(|reference| reference.direct_result)
+        .count();
+    let filtered = if args.direct_results {
+        references
+            .into_iter()
+            .filter(|reference| reference.direct_result)
+            .collect()
+    } else {
+        references
+    };
+
+    Ok(ObjectUsagesResultOutput {
+        ok: true,
+        profile: profile_name,
+        uri: args.uri.clone(),
+        direct_results_only: args.direct_results,
+        total,
+        direct_results,
+        references: map_usage_references(filtered),
+    })
+}
+
+fn map_usage_references(
+    references: Vec<fractal::sap::adt::UsageReference>,
+) -> Vec<UsageReferenceOutput> {
+    references
+        .into_iter()
+        .map(|reference| UsageReferenceOutput {
+            uri: reference.uri,
+            parent_uri: reference.parent_uri,
+            name: reference.name,
+            kind: reference
+                .object_type
+                .as_ref()
+                .map(|object_type| object_type.kind().as_str().to_owned()),
+            object_type: reference
+                .object_type
+                .map(|object_type| object_type.as_str().to_owned()),
+            package: reference.package,
+            direct_result: reference.direct_result,
+        })
+        .collect()
+}
+
 // `run_and_print_with` requires an operation returning `Result<T, CommandError>`;
 // this handler can never fail, but must match that shape to share the runner.
 #[allow(clippy::unnecessary_wraps)]
@@ -376,6 +453,77 @@ mod tests {
             panic!("expected object info command");
         };
         assert_eq!(args.uri, "/sap/bc/adt/oo/classes/zcl_test");
+    }
+
+    #[test]
+    fn parses_object_usages_options_from_cli() {
+        let cli = Cli::try_parse_from([
+            "fractal",
+            "object",
+            "usages",
+            "/sap/bc/adt/ddic/tables/zdtls_check_in",
+            "--direct-results",
+        ])
+        .unwrap();
+
+        let Command::Object {
+            command: ObjectCommand::Usages(args),
+        } = cli.command
+        else {
+            panic!("expected object usages command");
+        };
+        assert_eq!(args.uri, "/sap/bc/adt/ddic/tables/zdtls_check_in");
+        assert!(args.direct_results);
+    }
+
+    #[test]
+    fn object_usages_direct_results_defaults_to_false() {
+        let cli = Cli::try_parse_from([
+            "fractal",
+            "object",
+            "usages",
+            "/sap/bc/adt/ddic/tables/zdtls_check_in",
+        ])
+        .unwrap();
+
+        let Command::Object {
+            command: ObjectCommand::Usages(args),
+        } = cli.command
+        else {
+            panic!("expected object usages command");
+        };
+        assert!(!args.direct_results);
+    }
+
+    #[test]
+    fn maps_usage_references_and_computes_direct_result_kind_and_type() {
+        let refs = vec![
+            fractal::sap::adt::UsageReference {
+                uri: "/sap/bc/adt/ddic/structures/zdtls_check_in_s".to_owned(),
+                parent_uri: Some("/sap/bc/adt/packages/zdtls".to_owned()),
+                name: Some("ZDTLS_CHECK_IN_S".to_owned()),
+                object_type: Some(fractal::sap::adt::AdtObjectType::parse("TABL/DS")),
+                package: Some("ZDTLS".to_owned()),
+                direct_result: true,
+            },
+            fractal::sap::adt::UsageReference {
+                uri: "/sap/bc/adt/packages/zdtls".to_owned(),
+                parent_uri: None,
+                name: Some("ZDTLS".to_owned()),
+                object_type: None,
+                package: Some("ZDTLS".to_owned()),
+                direct_result: false,
+            },
+        ];
+
+        let mapped = map_usage_references(refs);
+        assert_eq!(mapped.len(), 2);
+        assert_eq!(mapped[0].kind.as_deref(), Some("STRU"));
+        assert_eq!(mapped[0].object_type.as_deref(), Some("TABL/DS"));
+        assert!(mapped[0].direct_result);
+        assert_eq!(mapped[1].kind, None);
+        assert_eq!(mapped[1].object_type, None);
+        assert!(!mapped[1].direct_result);
     }
 
     #[test]

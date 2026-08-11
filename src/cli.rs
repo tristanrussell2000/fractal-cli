@@ -114,6 +114,8 @@ pub enum ObjectCommand {
     Xml(XmlArgs),
     /// Read the authoritative short description for an ADT object URI.
     Info(UriArgs),
+    /// Find objects that reference an ADT object URI (where-used).
+    Usages(UsagesArgs),
     /// List known repository kinds with plain-text descriptions.
     Kinds,
 }
@@ -197,6 +199,16 @@ pub struct XmlArgs {
     /// Maximum bytes to return. Omit to return the complete XML.
     #[arg(long)]
     pub(crate) limit: Option<usize>,
+}
+
+#[derive(Debug, Args)]
+pub struct UsagesArgs {
+    /// ADT object URI.
+    pub(crate) uri: String,
+    /// Only include direct usage hits; omit hierarchy/context rows (containing
+    /// object, method, package) that SAP also reports.
+    #[arg(long)]
+    pub(crate) direct_results: bool,
 }
 
 #[derive(Debug, Args)]
