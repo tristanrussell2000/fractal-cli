@@ -16,7 +16,7 @@ pub enum AdtError {
     Sap(#[from] SapError),
     #[error("invalid object search query: {0}")]
     InvalidQuery(String),
-    #[error("could not parse ADT search response: {0}")]
+    #[error("could not parse ADT XML response: {0}")]
     Parse(String),
     #[error("invalid ADT object URI: {0}")]
     InvalidUri(String),
@@ -24,6 +24,8 @@ pub enum AdtError {
     DoubledSourceSuffix(String),
     #[error("{kind} objects do not have an ABAP source view")]
     NoSourceForKind { kind: String, uri: String },
+    #[error("no description found for object URI: {0}")]
+    NoDescription(String),
     #[error("could not preserve valid UTF-8 while paging source: {0}")]
     SourceEncoding(String),
     #[error("could not aggregate ADT search responses: {0}")]
@@ -40,6 +42,7 @@ impl AdtError {
             Self::InvalidUri(_) => "invalid_adt_uri",
             Self::DoubledSourceSuffix(_) => "doubled_source_suffix",
             Self::NoSourceForKind { .. } => "no_source_for_kind",
+            Self::NoDescription(_) => "no_description",
             Self::SourceEncoding(_) => "source_encoding_error",
             Self::SearchAggregation(_) => "search_aggregation_error",
         }
@@ -63,6 +66,10 @@ impl AdtError {
             Self::NoSourceForKind { .. } => {
                 Some("Use `fractal object xml` to retrieve metadata for this object.".to_owned())
             }
+            Self::NoDescription(_) => Some(
+                "This URI doesn't expose a description (shadow or fragment URIs are common causes). Try `fractal object xml` for full metadata, or strip any #fragment from the URI and retry against the primary object."
+                    .to_owned(),
+            ),
             Self::SourceEncoding(_) => Some(
                 "The source response could not be converted into a safe UTF-8 page; retry without paging or report the object URI."
                     .to_owned(),
@@ -283,6 +290,12 @@ pub struct ObjectSearchResult {
     pub possibly_truncated_by_sap_cap: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct ObjectInfoResult {
+    pub uri: String,
+    pub description: String,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ByteRangeOptions {
     pub offset: usize,
@@ -343,6 +356,49 @@ pub async fn get_xml(
     }
     let xml = sap.get_text(uri).await?;
     page_text(&xml, options)
+}
+
+/// Fetches an ADT object's metadata XML and extracts its short description.
+///
+/// This requests the same URI as [`get_xml`]; unlike `get_xml`, the response is
+/// parsed and reduced to the first `description` attribute found anywhere in
+/// the document, matching `SapFractal`'s `get_object_info` behavior.
+///
+/// # Errors
+///
+/// Returns [`AdtError::InvalidUri`] for a non-ADT URI, the underlying SAP error
+/// when the metadata request fails, [`AdtError::Parse`] when the response is
+/// not valid XML, or [`AdtError::NoDescription`] when no `description`
+/// attribute is present anywhere in the document.
+pub async fn get_object_info(sap: &mut SapClient, uri: &str) -> Result<ObjectInfoResult, AdtError> {
+    if !uri.starts_with("/sap/bc/adt/") {
+        return Err(AdtError::InvalidUri(uri.to_owned()));
+    }
+    let xml = sap.get_text(uri).await?;
+    parse_object_info(&xml, uri)
+}
+
+fn parse_object_info(xml: &str, uri: &str) -> Result<ObjectInfoResult, AdtError> {
+    let document = Document::parse(xml).map_err(|error| AdtError::Parse(error.to_string()))?;
+    let description = find_description(document.root_element())
+        .ok_or_else(|| AdtError::NoDescription(uri.to_owned()))?;
+    Ok(ObjectInfoResult {
+        uri: uri.to_owned(),
+        description,
+    })
+}
+
+/// Depth-first search for the first `description` attribute in the document,
+/// checking each element's own attributes before descending into its children.
+fn find_description(node: roxmltree::Node) -> Option<String> {
+    node.attributes()
+        .find(|attr| attr.name() == "description")
+        .map(|attr| attr.value().to_owned())
+        .or_else(|| {
+            node.children()
+                .filter(roxmltree::Node::is_element)
+                .find_map(find_description)
+        })
 }
 
 /// Searches SAP's ADT repository and aggregates plain and namespace-scoped results.
@@ -798,5 +854,45 @@ mod tests {
         let xml = format!(r#"<objectReferences>{references}</objectReferences>"#);
         let aggregate = aggregate_search_results(vec![Ok(xml)], &["Z*".to_owned()], None).unwrap();
         assert!(aggregate.possibly_truncated_by_sap_cap);
+    }
+
+    #[test]
+    fn finds_description_on_the_root_element() {
+        let xml = r#"<class:abapClass xmlns:class="urn:test" description="Root class"/>"#;
+        let info = parse_object_info(xml, "/sap/bc/adt/oo/classes/zcl_example").unwrap();
+        assert_eq!(info.description, "Root class");
+        assert_eq!(info.uri, "/sap/bc/adt/oo/classes/zcl_example");
+    }
+
+    #[test]
+    fn finds_description_nested_under_a_child_element() {
+        let xml = r#"<class:abapClass xmlns:class="urn:test">
+            <class:include>
+                <class:section description="Nested description"/>
+            </class:include>
+        </class:abapClass>"#;
+        let info = parse_object_info(xml, "/uri").unwrap();
+        assert_eq!(info.description, "Nested description");
+    }
+
+    #[test]
+    fn matches_description_attributes_regardless_of_namespace_prefix() {
+        let xml = r#"<class:abapClass xmlns:class="urn:test" xmlns:adtcore="urn:adt" adtcore:description="Namespaced description"/>"#;
+        let info = parse_object_info(xml, "/uri").unwrap();
+        assert_eq!(info.description, "Namespaced description");
+    }
+
+    #[test]
+    fn returns_a_hinted_error_when_no_description_is_present() {
+        let xml = r#"<class:abapClass xmlns:class="urn:test"><class:include/></class:abapClass>"#;
+        let error = parse_object_info(xml, "/uri").unwrap_err();
+        assert_eq!(error.code(), "no_description");
+        assert!(error.hint().is_some());
+    }
+
+    #[test]
+    fn returns_a_parse_error_for_malformed_object_info_xml() {
+        let error = parse_object_info("<not-closed", "/uri").unwrap_err();
+        assert_eq!(error.code(), "adt_response_parse_error");
     }
 }
