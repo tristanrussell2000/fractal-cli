@@ -3,14 +3,11 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::cli::PackageItemsArgs;
+use crate::commands::connect;
 use crate::{cli::PackageTreeArgs, command_error::CommandError};
-use fractal::{
-    config, credentials,
-    sap::{
-        adt::RepositoryKind,
-        client::SapClient,
-        package::{PackageItemsOptions, get_package_items, get_package_tree},
-    },
+use fractal::sap::{
+    adt::RepositoryKind,
+    package::{PackageItemsOptions, get_package_items, get_package_tree},
 };
 
 #[derive(Debug, Serialize)]
@@ -69,16 +66,13 @@ pub async fn package_tree(
     explicit_profile: Option<&str>,
     args: &PackageTreeArgs,
 ) -> Result<PackageTreeResultOutput, CommandError> {
-    let loaded = config::load()?;
-    let (profile_name, profile) = config::resolve_profile(&loaded.config, explicit_profile)?;
-    let password = credentials::get_password(profile_name)?;
-    let mut client = SapClient::new(profile, password)?;
+    let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
     let recursive = !args.no_recursive;
     let tree = get_package_tree(&mut client, &args.name, recursive).await?;
 
     Ok(PackageTreeResultOutput {
         ok: true,
-        profile: profile_name.to_owned(),
+        profile: profile_name,
         root: tree.root,
         recursive,
         packages_walked: tree.packages.len(),
@@ -120,10 +114,7 @@ pub async fn package_items(
                 "Use a kind such as CLAS, INTF, TABL, PROG, DDLS, or OTHER.",
             )
         })?;
-    let loaded = config::load()?;
-    let (profile_name, profile) = config::resolve_profile(&loaded.config, explicit_profile)?;
-    let password = credentials::get_password(profile_name)?;
-    let mut client = SapClient::new(profile, password)?;
+    let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
     let result = get_package_items(
         &mut client,
         &args.name,
@@ -142,7 +133,7 @@ pub async fn package_items(
 
     Ok(PackageItemsResultOutput {
         ok: true,
-        profile: profile_name.to_owned(),
+        profile: profile_name,
         root: result.root,
         recursive: result.recursive,
         total_matching: result.total,

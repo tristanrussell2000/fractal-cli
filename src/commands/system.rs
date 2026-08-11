@@ -1,11 +1,9 @@
 use serde::Serialize;
 
 use crate::command_error::CommandError;
+use crate::commands::connect;
 use crate::output::{OutputFormat, print_result};
-use fractal::{
-    config, credentials,
-    sap::client::{DiscoveryResult, SapClient},
-};
+use fractal::{config, sap::client::DiscoveryResult};
 
 #[derive(Debug, Serialize)]
 pub struct SystemListResult {
@@ -91,13 +89,10 @@ pub fn system_list() -> Result<SystemListResult, CommandError> {
 }
 
 pub async fn system_test(explicit_profile: Option<&str>) -> Result<SystemTestResult, CommandError> {
-    let loaded = config::load()?;
-    let (name, profile) = config::resolve_profile(&loaded.config, explicit_profile)?;
-    let password = credentials::get_password(name)?;
-    let mut client = SapClient::new(profile, password)?;
+    let (name, profile, mut client) = connect(explicit_profile).await?;
     let discovery = client.test_connection().await?;
 
-    Ok(system_test_result(name, profile, &discovery))
+    Ok(system_test_result(&name, &profile, &discovery))
 }
 
 fn system_test_result(

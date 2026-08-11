@@ -2,14 +2,9 @@ use serde::Serialize;
 
 use crate::cli::{SearchArgs, SourceArgs, UriArgs, XmlArgs};
 use crate::command_error::CommandError;
+use crate::commands::connect;
 use crate::output::{OutputFormat, print_result};
-use fractal::{
-    config, credentials,
-    sap::{
-        adt::{ByteRangeOptions, ObjectSearchOptions, RepositoryKind, search_objects},
-        client::SapClient,
-    },
-};
+use fractal::sap::adt::{ByteRangeOptions, ObjectSearchOptions, RepositoryKind, search_objects};
 
 #[derive(Debug, Serialize)]
 pub struct ObjectSearchResultOutput {
@@ -84,10 +79,7 @@ pub async fn object_search(
     args: &SearchArgs,
 ) -> Result<ObjectSearchResultOutput, CommandError> {
     let kind = args.kind.as_deref().map(parse_search_kind).transpose()?;
-    let loaded = config::load()?;
-    let (profile_name, profile) = config::resolve_profile(&loaded.config, explicit_profile)?;
-    let password = credentials::get_password(profile_name)?;
-    let mut client = SapClient::new(profile, password)?;
+    let (profile_name, profile, mut client) = connect(explicit_profile).await?;
     let explicit_patterns =
         (!args.package_patterns.is_empty()).then(|| args.package_patterns.clone());
     let effective_patterns = explicit_patterns
@@ -95,7 +87,7 @@ pub async fn object_search(
         .unwrap_or_else(|| profile.customer_namespaces.clone());
     let result = search_objects(
         &mut client,
-        profile,
+        &profile,
         &args.query,
         ObjectSearchOptions {
             package_patterns: explicit_patterns,
@@ -106,7 +98,7 @@ pub async fn object_search(
     )
     .await?;
     Ok(map_object_search_result(
-        profile_name,
+        &profile_name,
         &args.query,
         args,
         effective_patterns,
@@ -170,10 +162,7 @@ pub async fn object_source(
     explicit_profile: Option<&str>,
     args: &SourceArgs,
 ) -> Result<ObjectSourceResultOutput, CommandError> {
-    let loaded = config::load()?;
-    let (profile_name, profile) = config::resolve_profile(&loaded.config, explicit_profile)?;
-    let password = credentials::get_password(profile_name)?;
-    let mut client = SapClient::new(profile, password)?;
+    let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
     let result = fractal::sap::adt::get_source(
         &mut client,
         &args.uri,
@@ -186,7 +175,7 @@ pub async fn object_source(
 
     Ok(ObjectSourceResultOutput {
         ok: true,
-        profile: profile_name.to_owned(),
+        profile: profile_name,
         uri: args.uri.clone(),
         start_byte: result.start_byte,
         end_byte: result.end_byte,
@@ -201,10 +190,7 @@ pub async fn object_xml(
     explicit_profile: Option<&str>,
     args: &XmlArgs,
 ) -> Result<ObjectXmlResultOutput, CommandError> {
-    let loaded = config::load()?;
-    let (profile_name, profile) = config::resolve_profile(&loaded.config, explicit_profile)?;
-    let password = credentials::get_password(profile_name)?;
-    let mut client = SapClient::new(profile, password)?;
+    let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
     let result = fractal::sap::adt::get_xml(
         &mut client,
         &args.uri,
@@ -217,7 +203,7 @@ pub async fn object_xml(
 
     Ok(ObjectXmlResultOutput {
         ok: true,
-        profile: profile_name.to_owned(),
+        profile: profile_name,
         uri: args.uri.clone(),
         xml: result.content,
     })
@@ -227,15 +213,12 @@ pub async fn object_info(
     explicit_profile: Option<&str>,
     args: &UriArgs,
 ) -> Result<ObjectInfoResultOutput, CommandError> {
-    let loaded = config::load()?;
-    let (profile_name, profile) = config::resolve_profile(&loaded.config, explicit_profile)?;
-    let password = credentials::get_password(profile_name)?;
-    let mut client = SapClient::new(profile, password)?;
+    let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
     let result = fractal::sap::adt::get_object_info(&mut client, &args.uri).await?;
 
     Ok(ObjectInfoResultOutput {
         ok: true,
-        profile: profile_name.to_owned(),
+        profile: profile_name,
         uri: result.uri,
         description: result.description,
     })
