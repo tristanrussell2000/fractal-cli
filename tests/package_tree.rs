@@ -22,11 +22,13 @@ fn profile(base_url: String) -> Profile {
 fn nodestructure_response(package: &str, child: Option<&str>) -> String {
     let child_xml = child
         .map(|name| {
-            format!(r#"<NODE OBJECT_TYPE="DEVC/K" OBJECT_NAME="{name}" DESCRIPTION="Child"/>"#)
+            format!(
+                "<NODE><OBJECT_TYPE>DEVC/K</OBJECT_TYPE><OBJECT_NAME>{name}</OBJECT_NAME><DESCRIPTION>Child</DESCRIPTION></NODE>"
+            )
         })
         .unwrap_or_default();
     format!(
-        r#"<response><TREE_CONTENT>{child_xml}<NODE OBJECT_TYPE="CLAS/OC" OBJECT_NAME="ZCL_{package}" OBJECT_URI="/class/{package}"/><NODE OBJECT_TYPE="TABL/DT" OBJECT_NAME="ZT_{package}" OBJECT_URI="/table/{package}"/></TREE_CONTENT></response>"#
+        "<response><TREE_CONTENT>{child_xml}<NODE><OBJECT_TYPE>CLAS/OC</OBJECT_TYPE><OBJECT_NAME>ZCL_{package}</OBJECT_NAME><OBJECT_URI>/class/{package}</OBJECT_URI></NODE><NODE><OBJECT_TYPE>TABL/DT</OBJECT_TYPE><OBJECT_NAME>ZT_{package}</OBJECT_NAME><OBJECT_URI>/table/{package}</OBJECT_URI></NODE></TREE_CONTENT></response>"
     )
 }
 
@@ -80,9 +82,9 @@ async fn recursive_children_are_fetched_concurrently() {
         .mount(&server)
         .await;
     let root_xml = r#"<response><TREE_CONTENT>
-        <NODE OBJECT_TYPE="DEVC/K" OBJECT_NAME="ZSUB_A"/>
-        <NODE OBJECT_TYPE="DEVC/K" OBJECT_NAME="ZSUB_B"/>
-        <NODE OBJECT_TYPE="DEVC/K" OBJECT_NAME="ZSUB_C"/>
+        <NODE><OBJECT_TYPE>DEVC/K</OBJECT_TYPE><OBJECT_NAME>ZSUB_A</OBJECT_NAME></NODE>
+        <NODE><OBJECT_TYPE>DEVC/K</OBJECT_TYPE><OBJECT_NAME>ZSUB_B</OBJECT_NAME></NODE>
+        <NODE><OBJECT_TYPE>DEVC/K</OBJECT_TYPE><OBJECT_NAME>ZSUB_C</OBJECT_NAME></NODE>
     </TREE_CONTENT></response>"#;
     Mock::given(method("POST"))
         .and(path("/sap/bc/adt/repository/nodestructure"))
@@ -96,7 +98,7 @@ async fn recursive_children_are_fetched_concurrently() {
         .and(query_param("parent_type", "DEVC/K"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_string("<response><TREE_CONTENT><NODE OBJECT_TYPE=\"CLAS/OC\" OBJECT_NAME=\"ZCL_CHILD\"/></TREE_CONTENT></response>")
+                .set_body_string("<response><TREE_CONTENT><NODE><OBJECT_TYPE>CLAS/OC</OBJECT_TYPE><OBJECT_NAME>ZCL_CHILD</OBJECT_NAME></NODE></TREE_CONTENT></response>")
                 .set_delay(Duration::from_millis(150)),
         )
         .expect(3)
@@ -162,7 +164,7 @@ async fn retries_csrf_failed_child_after_one_refresh() {
         .mount(&server)
         .await;
 
-    let root_xml = r#"<response><TREE_CONTENT><NODE OBJECT_TYPE="DEVC/K" OBJECT_NAME="ZSUB"/></TREE_CONTENT></response>"#;
+    let root_xml = r#"<response><TREE_CONTENT><NODE><OBJECT_TYPE>DEVC/K</OBJECT_TYPE><OBJECT_NAME>ZSUB</OBJECT_NAME></NODE></TREE_CONTENT></response>"#;
     Mock::given(method("POST"))
         .and(path("/sap/bc/adt/repository/nodestructure"))
         .and(query_param("parent_name", "ZAPP"))
@@ -185,7 +187,7 @@ async fn retries_csrf_failed_child_after_one_refresh() {
         .and(query_param("parent_name", "ZSUB"))
         .and(header("x-csrf-token", "token-2"))
         .respond_with(ResponseTemplate::new(200).set_body_string(
-            "<response><TREE_CONTENT><NODE OBJECT_TYPE=\"CLAS/OC\" OBJECT_NAME=\"ZCL_SUB\"/></TREE_CONTENT></response>",
+            "<response><TREE_CONTENT><NODE><OBJECT_TYPE>CLAS/OC</OBJECT_TYPE><OBJECT_NAME>ZCL_SUB</OBJECT_NAME></NODE></TREE_CONTENT></response>",
         ))
         .expect(1)
         .mount(&server)

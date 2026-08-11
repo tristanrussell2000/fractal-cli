@@ -23,10 +23,14 @@ fn profile(base_url: String) -> Profile {
 
 fn response(package: &str, child: Option<&str>) -> String {
     let child_xml = child
-        .map(|name| format!(r#"<NODE OBJECT_TYPE="DEVC/K" OBJECT_NAME="{name}"/>"#))
+        .map(|name| {
+            format!(
+                "<NODE><OBJECT_TYPE>DEVC/K</OBJECT_TYPE><OBJECT_NAME>{name}</OBJECT_NAME></NODE>"
+            )
+        })
         .unwrap_or_default();
     format!(
-        r#"<response><TREE_CONTENT>{child_xml}<NODE OBJECT_TYPE="CLAS/OC" OBJECT_NAME="ZCL_{package}" OBJECT_URI="/class/{package}"/><NODE OBJECT_TYPE="TABL/DT" OBJECT_NAME="ZTABLE_{package}" OBJECT_URI="/table/{package}"/></TREE_CONTENT></response>"#
+        "<response><TREE_CONTENT>{child_xml}<NODE><OBJECT_TYPE>CLAS/OC</OBJECT_TYPE><OBJECT_NAME>ZCL_{package}</OBJECT_NAME><OBJECT_URI>/class/{package}</OBJECT_URI></NODE><NODE><OBJECT_TYPE>TABL/DT</OBJECT_TYPE><OBJECT_NAME>ZTABLE_{package}</OBJECT_NAME><OBJECT_URI>/table/{package}</OBJECT_URI></NODE></TREE_CONTENT></response>"
     )
 }
 

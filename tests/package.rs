@@ -45,13 +45,11 @@ async fn fetches_and_parses_one_package_contents_response() {
         .and(basic_auth("developer", "password"))
         .and(body_string(""))
         .respond_with(ResponseTemplate::new(200).set_body_string(
-            r#"<r:response xmlns:r="urn:test">
-                <r:TREE_CONTENT>
-                    <r:SEU_ADT_REPOSITORY_OBJ_NODE OBJECT_TYPE="DEVC/K" OBJECT_NAME="ZSUB" DESCRIPTION="Subpackage"/>
-                    <r:SEU_ADT_REPOSITORY_OBJ_NODE OBJECT_TYPE="CLAS/OC" OBJECT_NAME="ZCL_TEST" OBJECT_URI="/sap/bc/adt/oo/classes/zcl_test" DESCRIPTION="ignored"/>
-                    <r:SEU_ADT_REPOSITORY_OBJ_NODE OBJECT_TYPE="TABL/DT" OBJECT_NAME="ZTABLE" OBJECT_URI="/sap/bc/adt/ddic/tables/ztable" DESCRIPTION="Table"/>
-                </r:TREE_CONTENT>
-            </r:response>"#,
+            r#"<asx:abap xmlns:asx="http://www.sap.com/abapxml"><asx:values><DATA><TREE_CONTENT>
+                <SEU_ADT_REPOSITORY_OBJ_NODE><OBJECT_TYPE>DEVC/K</OBJECT_TYPE><OBJECT_NAME>ZSUB</OBJECT_NAME><DESCRIPTION>Subpackage</DESCRIPTION></SEU_ADT_REPOSITORY_OBJ_NODE>
+                <SEU_ADT_REPOSITORY_OBJ_NODE><OBJECT_TYPE>CLAS/OC</OBJECT_TYPE><OBJECT_NAME>ZCL_TEST</OBJECT_NAME><OBJECT_URI>/sap/bc/adt/oo/classes/zcl_test</OBJECT_URI><DESCRIPTION>ignored</DESCRIPTION></SEU_ADT_REPOSITORY_OBJ_NODE>
+                <SEU_ADT_REPOSITORY_OBJ_NODE><OBJECT_TYPE>TABL/DT</OBJECT_TYPE><OBJECT_NAME>ZTABLE</OBJECT_NAME><OBJECT_URI>/sap/bc/adt/ddic/tables/ztable</OBJECT_URI><DESCRIPTION>Table</DESCRIPTION></SEU_ADT_REPOSITORY_OBJ_NODE>
+            </TREE_CONTENT></DATA></asx:values></asx:abap>"#,
         ))
         .expect(1)
         .mount(&server)

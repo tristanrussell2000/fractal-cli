@@ -133,17 +133,17 @@ pub fn parse_package_contents(xml: &str, package: &str) -> Result<PackageContent
     let mut subpackages = Vec::new();
 
     for node in document.descendants().filter(is_repository_node) {
-        let Some(name) = attribute(node, &["OBJECT_NAME", "OBJ_NAME"]) else {
+        let Some(name) = child_text(node, &["OBJECT_NAME", "OBJ_NAME"]) else {
             continue;
         };
-        let Some(object_type) = attribute(node, &["OBJECT_TYPE", "OBJ_TYPE"]) else {
+        let Some(object_type) = child_text(node, &["OBJECT_TYPE", "OBJ_TYPE"]) else {
             continue;
         };
 
         if object_type == "DEVC/K" {
             subpackages.push(Subpackage {
                 name: name.to_ascii_uppercase(),
-                description: non_empty(attribute(node, &["DESCRIPTION"])),
+                description: non_empty(child_text(node, &["DESCRIPTION"])),
             });
             continue;
         }
@@ -155,7 +155,7 @@ pub fn parse_package_contents(xml: &str, package: &str) -> Result<PackageContent
         ) {
             None
         } else {
-            non_empty(attribute(node, &["DESCRIPTION"]))
+            non_empty(child_text(node, &["DESCRIPTION"]))
         };
 
         items.push(PackageItem {
@@ -163,7 +163,7 @@ pub fn parse_package_contents(xml: &str, package: &str) -> Result<PackageContent
             object_type,
             package: package.clone(),
             description,
-            uri: non_empty(attribute(node, &["OBJECT_URI", "OBJ_URI"])),
+            uri: non_empty(child_text(node, &["OBJECT_URI", "OBJ_URI"])),
         });
     }
 
@@ -423,8 +423,16 @@ fn is_repository_node(node: &Node<'_, '_>) -> bool {
     )
 }
 
-fn attribute<'a>(node: Node<'a, 'a>, names: &[&str]) -> Option<&'a str> {
-    names.iter().find_map(|name| node.attribute(*name))
+/// `nodestructure` encodes each field as a child element's text, not an XML
+/// attribute (e.g. `<OBJECT_TYPE>DEVC/K</OBJECT_TYPE>`, never
+/// `OBJECT_TYPE="DEVC/K"`). Empty/self-closed fields have no text child, so
+/// this already returns `None` for them without extra checks.
+fn child_text<'a>(node: Node<'a, 'a>, names: &[&str]) -> Option<&'a str> {
+    names.iter().find_map(|name| {
+        node.children()
+            .find(|child| child.is_element() && child.tag_name().name() == *name)
+            .and_then(|child| child.text())
+    })
 }
 
 fn non_empty(value: Option<&str>) -> Option<String> {
@@ -436,15 +444,19 @@ fn non_empty(value: Option<&str>) -> Option<String> {
 mod tests {
     use super::*;
 
+    // Field shapes below mirror a real captured `nodestructure` response (a live
+    // ZDTLS package on a DE3 system): every field is a child element's text,
+    // never an XML attribute, and the response is wrapped in the standard ABAP
+    // asx:abap/asx:values/DATA envelope. The parser previously assumed XML
+    // attributes, which matched no real SAP response and silently produced
+    // zero items against a live system.
     #[test]
     fn parses_namespaced_package_and_object_nodes() {
-        let xml = r#"<r:response xmlns:r="urn:test">
-            <r:TREE_CONTENT>
-                <r:SEU_ADT_REPOSITORY_OBJ_NODE OBJECT_TYPE="DEVC/K" OBJECT_NAME="zsub" DESCRIPTION="Sub"/>
-                <r:SEU_ADT_REPOSITORY_OBJ_NODE OBJECT_TYPE="CLAS/OC" OBJECT_NAME="ZCL_TEST" DESCRIPTION="unreliable" OBJECT_URI="/sap/bc/adt/oo/classes/zcl_test"/>
-                <r:SEU_ADT_REPOSITORY_OBJ_NODE OBJECT_TYPE="TABL/DT" OBJECT_NAME="ZTABLE" DESCRIPTION="Table" OBJECT_URI="/sap/bc/adt/ddic/tables/ztable"/>
-            </r:TREE_CONTENT>
-        </r:response>"#;
+        let xml = r#"<asx:abap xmlns:asx="http://www.sap.com/abapxml"><asx:values><DATA><TREE_CONTENT>
+            <SEU_ADT_REPOSITORY_OBJ_NODE><OBJECT_TYPE>DEVC/K</OBJECT_TYPE><OBJECT_NAME>ZSUB</OBJECT_NAME><DESCRIPTION>Sub</DESCRIPTION></SEU_ADT_REPOSITORY_OBJ_NODE>
+            <SEU_ADT_REPOSITORY_OBJ_NODE><OBJECT_TYPE>CLAS/OC</OBJECT_TYPE><OBJECT_NAME>ZCL_TEST</OBJECT_NAME><DESCRIPTION>unreliable</DESCRIPTION><OBJECT_URI>/sap/bc/adt/oo/classes/zcl_test</OBJECT_URI></SEU_ADT_REPOSITORY_OBJ_NODE>
+            <SEU_ADT_REPOSITORY_OBJ_NODE><OBJECT_TYPE>TABL/DT</OBJECT_TYPE><OBJECT_NAME>ZTABLE</OBJECT_NAME><DESCRIPTION>Table</DESCRIPTION><OBJECT_URI>/sap/bc/adt/ddic/tables/ztable</OBJECT_URI></SEU_ADT_REPOSITORY_OBJ_NODE>
+        </TREE_CONTENT></DATA></asx:values></asx:abap>"#;
 
         let result = parse_package_contents(xml, "zroot").unwrap();
         assert_eq!(result.package, "ZROOT");
@@ -458,8 +470,8 @@ mod tests {
     #[test]
     fn accepts_alternative_node_names_and_unknown_types() {
         let xml = r#"<response>
-            <OBJECT OBJECT_TYPE="NROB/NRO" OBJECT_NAME="ZNUMBER" OBJ_URI="/sap/bc/adt/number/znumber"/>
-            <NODE OBJ_TYPE="PROG/P" OBJ_NAME="ZPROG" DESCRIPTION="ignored"/>
+            <OBJECT><OBJECT_TYPE>NROB/NRO</OBJECT_TYPE><OBJECT_NAME>ZNUMBER</OBJECT_NAME><OBJ_URI>/sap/bc/adt/number/znumber</OBJ_URI></OBJECT>
+            <NODE><OBJ_TYPE>PROG/P</OBJ_TYPE><OBJ_NAME>ZPROG</OBJ_NAME><DESCRIPTION>ignored</DESCRIPTION></NODE>
         </response>"#;
 
         let result = parse_package_contents(xml, "ZROOT").unwrap();
@@ -474,10 +486,26 @@ mod tests {
 
     #[test]
     fn ignores_incomplete_nodes_and_preserves_empty_success() {
-        let xml =
-            r#"<response><NODE OBJECT_TYPE="CLAS/OC"/><NODE OBJECT_NAME="ZNO_TYPE"/></response>"#;
+        let xml = r#"<response>
+            <NODE><OBJECT_TYPE>CLAS/OC</OBJECT_TYPE></NODE>
+            <NODE><OBJECT_NAME>ZNO_TYPE</OBJECT_NAME></NODE>
+        </response>"#;
         let result = parse_package_contents(xml, "ZROOT").unwrap();
         assert!(result.items.is_empty());
+        assert!(result.subpackages.is_empty());
+    }
+
+    // Regression test for the live-system bug: SAP includes a package-root
+    // pseudo-node (its own DEVC/K facet entry) with self-closed, empty fields
+    // alongside `TECH_NAME`. A self-closed element has no text child, so
+    // `child_text` must return `None` for it rather than an empty string,
+    // or this node would be mistaken for a nameless real subpackage.
+    #[test]
+    fn skips_self_closed_empty_fields_instead_of_treating_them_as_present() {
+        let xml = r#"<response>
+            <SEU_ADT_REPOSITORY_OBJ_NODE><OBJECT_TYPE>DEVC/K</OBJECT_TYPE><OBJECT_NAME/><TECH_NAME>ZDTLS</TECH_NAME><DESCRIPTION/></SEU_ADT_REPOSITORY_OBJ_NODE>
+        </response>"#;
+        let result = parse_package_contents(xml, "ZDTLS").unwrap();
         assert!(result.subpackages.is_empty());
     }
 
