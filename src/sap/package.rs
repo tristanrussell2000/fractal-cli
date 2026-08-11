@@ -80,6 +80,13 @@ pub struct PackageItemsResult {
     pub packages_failed: Vec<PackageFailure>,
 }
 
+impl PackageError {
+    #[must_use]
+    fn is_csrf_failure(&self) -> bool {
+        matches!(self, Self::Sap(error) if error.is_csrf_failure())
+    }
+}
+
 const NODE_STRUCTURE_PATH: &str = "/sap/bc/adt/repository/nodestructure";
 const PACKAGE_FETCH_CONCURRENCY: usize = 4;
 const NODE_STRUCTURE_ACCEPT: &str =
@@ -274,7 +281,7 @@ struct WalkedPackageContents {
 }
 
 async fn walk_package_contents(
-    sap: &SapClient,
+    sap: &mut SapClient,
     root: String,
     root_contents: PackageContents,
     recursive: bool,
@@ -299,27 +306,52 @@ async fn walk_package_contents(
         .collect();
 
     while !frontier.is_empty() {
-        let mut results = stream::iter(frontier.into_iter().enumerate())
-            .map(|(index, (name, parent, description))| async move {
-                let result = get_package_contents_read_only(sap, &name).await;
-                (index, name, parent, description, result)
+        let mut results = {
+            let read_only: &SapClient = &*sap;
+            fetch_frontier(read_only, frontier).await
+        };
+        let retry_indices: Vec<usize> = results
+            .iter()
+            .enumerate()
+            .filter_map(|(index, (_, _, _, _, result))| {
+                result
+                    .as_ref()
+                    .err()
+                    .filter(|error| error.is_csrf_failure())
+                    .map(|_| index)
             })
-            .buffer_unordered(PACKAGE_FETCH_CONCURRENCY)
-            .collect::<Vec<_>>()
-            .await;
+            .collect();
+
+        if !retry_indices.is_empty() && sap.refresh_csrf().await.is_ok() {
+            let retry_frontier = retry_indices
+                .iter()
+                .map(|index| {
+                    (
+                        results[*index].1.clone(),
+                        results[*index].2.clone(),
+                        results[*index].3.clone(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let retried = fetch_frontier(sap, retry_frontier).await;
+            for (index, retried_result) in retry_indices.into_iter().zip(retried) {
+                results[index].4 = retried_result.4;
+            }
+        }
+
         results.sort_by_key(|(index, ..)| *index);
         frontier = Vec::new();
 
         for (_, name, parent, description, result) in results {
             match result {
                 Ok(contents) => {
-                    all_items.extend(contents.items.clone());
                     packages.push(PackageTreeNode {
                         name: name.clone(),
                         parent: Some(parent),
                         description,
                         item_count: contents.items.len(),
                     });
+                    all_items.extend(contents.items);
                     frontier.extend(
                         contents.subpackages.into_iter().map(|subpackage| {
                             (subpackage.name, name.clone(), subpackage.description)
@@ -340,6 +372,26 @@ async fn walk_package_contents(
         packages,
         packages_failed: failures,
     }
+}
+
+async fn fetch_frontier(
+    sap: &SapClient,
+    frontier: Vec<(String, String, Option<String>)>,
+) -> Vec<(
+    usize,
+    String,
+    String,
+    Option<String>,
+    Result<PackageContents, PackageError>,
+)> {
+    stream::iter(frontier.into_iter().enumerate())
+        .map(|(index, (name, parent, description))| async move {
+            let result = get_package_contents_read_only(sap, &name).await;
+            (index, name, parent, description, result)
+        })
+        .buffer_unordered(PACKAGE_FETCH_CONCURRENCY)
+        .collect()
+        .await
 }
 
 async fn get_package_contents_read_only(

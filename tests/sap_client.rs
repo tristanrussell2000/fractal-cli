@@ -119,6 +119,24 @@ async fn post_text_fetches_csrf_and_reuses_session_state() {
     server.verify().await;
 }
 
+#[test]
+fn csrf_failures_are_distinguished_from_regular_forbidden_errors() {
+    let csrf = SapError::Http {
+        kind: fractal::sap::client::SapErrorKind::Forbidden,
+        status: reqwest::StatusCode::FORBIDDEN,
+        url: "http://sap".to_owned(),
+        message: "CSRF token validation failed".to_owned(),
+    };
+    let forbidden = SapError::Http {
+        kind: fractal::sap::client::SapErrorKind::Forbidden,
+        status: reqwest::StatusCode::FORBIDDEN,
+        url: "http://sap".to_owned(),
+        message: "User is not authorized".to_owned(),
+    };
+    assert!(csrf.is_csrf_failure());
+    assert!(!forbidden.is_csrf_failure());
+}
+
 #[tokio::test]
 async fn discovery_request_returns_sap_xml_error_message() {
     let server = MockServer::start().await;

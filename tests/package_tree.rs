@@ -141,3 +141,61 @@ async fn non_recursive_tree_does_not_fetch_child_packages() {
     assert!(tree.packages_failed.is_empty());
     server.verify().await;
 }
+
+#[tokio::test]
+async fn retries_csrf_failed_child_after_one_refresh() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/core/discovery"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-csrf-token", "token-1")
+                .insert_header("set-cookie", "SAP_SESSIONID=recovery; Path=/"),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/core/discovery"))
+        .respond_with(ResponseTemplate::new(200).insert_header("x-csrf-token", "token-2"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let root_xml = r#"<response><TREE_CONTENT><NODE OBJECT_TYPE="DEVC/K" OBJECT_NAME="ZSUB"/></TREE_CONTENT></response>"#;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/repository/nodestructure"))
+        .and(query_param("parent_name", "ZAPP"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(root_xml))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/repository/nodestructure"))
+        .and(query_param("parent_name", "ZSUB"))
+        .and(header("x-csrf-token", "token-1"))
+        .respond_with(ResponseTemplate::new(403).set_body_string(
+                "<a:error><a:message>CSRF token validation failed</a:message></a:error>",
+            ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/repository/nodestructure"))
+        .and(query_param("parent_name", "ZSUB"))
+        .and(header("x-csrf-token", "token-2"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "<response><TREE_CONTENT><NODE OBJECT_TYPE=\"CLAS/OC\" OBJECT_NAME=\"ZCL_SUB\"/></TREE_CONTENT></response>",
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let profile = profile(server.uri());
+    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let tree = get_package_tree(&mut client, "ZAPP", true).await.unwrap();
+
+    assert_eq!(tree.packages.len(), 2);
+    assert!(tree.packages_failed.is_empty());
+    server.verify().await;
+}

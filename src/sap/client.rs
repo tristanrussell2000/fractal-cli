@@ -76,6 +76,23 @@ pub enum SapError {
 
 impl SapError {
     #[must_use]
+    pub fn is_csrf_failure(&self) -> bool {
+        match self {
+            Self::Http {
+                status: StatusCode::FORBIDDEN,
+                message,
+                ..
+            } => {
+                let message = message.to_ascii_lowercase();
+                message.contains("csrf")
+                    || message.contains("cross-site request forgery")
+                    || message.contains("token validation")
+            }
+            _ => false,
+        }
+    }
+
+    #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
             Self::Client(_) => "client_error",
@@ -269,6 +286,19 @@ impl SapClient {
             url: self.base_url.to_string(),
             message: format!("could not read SAP response body: {error}"),
         })
+    }
+
+    /// Refreshes the CSRF token and session state through ADT discovery.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SapError`] when the discovery handshake fails.
+    pub async fn refresh_csrf(&mut self) -> Result<(), SapError> {
+        self.csrf_token = None;
+        let mut headers = HeaderMap::new();
+        headers.insert("X-CSRF-Token", HeaderValue::from_static("Fetch"));
+        let _ = self.get(DISCOVERY_PATH, &[], headers).await?;
+        Ok(())
     }
 
     /// Fetches SAP ADT discovery metadata to verify the connection and credentials.
