@@ -5,39 +5,13 @@ mod output;
 
 use clap::Parser;
 use cli::{AuthCommand, Cli, Command, ObjectCommand, PackageCommand, SystemCommand};
-use command_error::CommandError;
 use commands::auth::{auth_list, auth_login, auth_remove};
 use commands::object::{
     object_info, object_kinds, object_search, object_source, object_xml, print_object_kinds,
 };
 use commands::package::{package_items, package_tree};
-use fractal::{
-    config, credentials,
-    sap::client::{DiscoveryResult, SapClient},
-};
-use output::{
-    OutputFormat, default_output_format, print_result, run_and_print, run_and_print_async,
-    run_and_print_with,
-};
-use serde::Serialize;
-
-#[derive(Debug, Serialize)]
-struct SystemListResult {
-    ok: bool,
-    config_path: String,
-    default_profile: Option<String>,
-    profiles: Vec<ProfileSummary>,
-}
-
-#[derive(Debug, Serialize)]
-struct ProfileSummary {
-    name: String,
-    base_url: String,
-    client: String,
-    username: String,
-    insecure_tls: bool,
-    customer_namespaces: Vec<String>,
-}
+use commands::system::{print_system_list, system_list, system_test};
+use output::{default_output_format, run_and_print, run_and_print_async, run_and_print_with};
 
 #[tokio::main]
 async fn main() {
@@ -85,96 +59,6 @@ async fn main() {
 
     if exit_code != 0 {
         std::process::exit(exit_code);
-    }
-}
-
-fn print_system_list(result: &SystemListResult, output: OutputFormat) {
-    if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
-        return;
-    }
-
-    println!("config: {}", result.config_path);
-    match &result.default_profile {
-        Some(profile) => println!("default profile: {profile}"),
-        None => println!("default profile: (none)"),
-    }
-
-    if result.profiles.is_empty() {
-        println!("profiles: (none)");
-        return;
-    }
-
-    println!("profiles:");
-    for profile in &result.profiles {
-        let marker = if result.default_profile.as_deref() == Some(profile.name.as_str()) {
-            "*"
-        } else {
-            " "
-        };
-        println!(
-            "  {marker} {} — {} client {} user {}",
-            profile.name, profile.base_url, profile.client, profile.username
-        );
-    }
-}
-
-fn system_list() -> Result<SystemListResult, CommandError> {
-    let loaded = config::load()?;
-    let profiles = loaded
-        .config
-        .profiles
-        .iter()
-        .map(|(name, profile)| ProfileSummary {
-            name: name.clone(),
-            base_url: profile.base_url.clone(),
-            client: profile.client.clone(),
-            username: profile.username.clone(),
-            insecure_tls: profile.insecure_tls,
-            customer_namespaces: profile.customer_namespaces.clone(),
-        })
-        .collect();
-
-    Ok(SystemListResult {
-        ok: true,
-        config_path: loaded.path.display().to_string(),
-        default_profile: loaded.config.default_profile,
-        profiles,
-    })
-}
-
-#[derive(Debug, Serialize)]
-struct SystemTestResult {
-    ok: bool,
-    profile: String,
-    base_url: String,
-    status: u16,
-    csrf_token_received: bool,
-    message: String,
-}
-
-async fn system_test(explicit_profile: Option<&str>) -> Result<SystemTestResult, CommandError> {
-    let loaded = config::load()?;
-    let (name, profile) = config::resolve_profile(&loaded.config, explicit_profile)?;
-    let password = credentials::get_password(name)?;
-    let mut client = SapClient::new(profile, password)?;
-    let discovery = client.test_connection().await?;
-
-    Ok(system_test_result(name, profile, &discovery))
-}
-
-fn system_test_result(
-    name: &str,
-    profile: &config::Profile,
-    discovery: &DiscoveryResult,
-) -> SystemTestResult {
-    SystemTestResult {
-        ok: true,
-        profile: name.to_owned(),
-        base_url: profile.base_url.clone(),
-        status: discovery.status.as_u16(),
-        csrf_token_received: discovery.csrf_token_received,
-        message: "SAP ADT discovery endpoint is reachable and accepted the credentials.".to_owned(),
     }
 }
 
