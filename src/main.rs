@@ -8,7 +8,7 @@ use std::io::Read;
 use clap::Parser;
 use cli::{
     AuthCommand, Cli, Command, LoginArgs, ObjectCommand, PackageCommand, ProfileArgs, SearchArgs,
-    SourceArgs, SystemCommand, XmlArgs,
+    SourceArgs, SystemCommand, UriArgs, XmlArgs,
 };
 use command_error::CommandError;
 use commands::package::{package_items, package_tree};
@@ -130,6 +130,14 @@ struct ObjectXmlResultOutput {
     xml: String,
 }
 
+#[derive(Debug, Serialize)]
+struct ObjectInfoResultOutput {
+    ok: bool,
+    profile: String,
+    uri: String,
+    description: String,
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -160,6 +168,9 @@ async fn main() {
         Command::Object {
             command: ObjectCommand::Xml(args),
         } => run_and_print_async(|| object_xml(cli.profile.as_deref(), args), output).await,
+        Command::Object {
+            command: ObjectCommand::Info(args),
+        } => run_and_print_async(|| object_info(cli.profile.as_deref(), args), output).await,
         Command::Package {
             command: PackageCommand::Tree(args),
         } => run_and_print_async(|| package_tree(cli.profile.as_deref(), args), output).await,
@@ -389,6 +400,24 @@ async fn object_xml(
         profile: profile_name.to_owned(),
         uri: args.uri.clone(),
         xml: result.content,
+    })
+}
+
+async fn object_info(
+    explicit_profile: Option<&str>,
+    args: &UriArgs,
+) -> Result<ObjectInfoResultOutput, CommandError> {
+    let loaded = config::load()?;
+    let (profile_name, profile) = config::resolve_profile(&loaded.config, explicit_profile)?;
+    let password = credentials::get_password(profile_name)?;
+    let mut client = SapClient::new(profile, password)?;
+    let result = fractal::sap::adt::get_object_info(&mut client, &args.uri).await?;
+
+    Ok(ObjectInfoResultOutput {
+        ok: true,
+        profile: profile_name.to_owned(),
+        uri: result.uri,
+        description: result.description,
     })
 }
 
@@ -700,6 +729,25 @@ mod tests {
         assert_eq!(args.uri, "/sap/bc/adt/oo/classes/zcl_test");
         assert_eq!(args.offset, 100);
         assert_eq!(args.limit, Some(500));
+    }
+
+    #[test]
+    fn parses_object_info_options_from_cli() {
+        let cli = Cli::try_parse_from([
+            "fractal",
+            "object",
+            "info",
+            "/sap/bc/adt/oo/classes/zcl_test",
+        ])
+        .unwrap();
+
+        let Command::Object {
+            command: ObjectCommand::Info(args),
+        } = cli.command
+        else {
+            panic!("expected object info command");
+        };
+        assert_eq!(args.uri, "/sap/bc/adt/oo/classes/zcl_test");
     }
 
     #[test]

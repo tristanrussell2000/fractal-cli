@@ -112,6 +112,8 @@ pub enum ObjectCommand {
     Source(SourceArgs),
     /// Read metadata XML for an ADT object URI.
     Xml(XmlArgs),
+    /// Read the authoritative short description for an ADT object URI.
+    Info(UriArgs),
 }
 
 #[derive(Debug, Args)]
@@ -197,6 +199,6 @@ pub struct XmlArgs {
 
 #[derive(Debug, Args)]
 pub struct UriArgs {
-    /// ADT object URI, without a source suffix.
+    /// ADT object URI.
     pub(crate) uri: String,
 }
