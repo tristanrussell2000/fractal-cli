@@ -175,8 +175,8 @@ async fn retries_csrf_failed_child_after_one_refresh() {
         .and(query_param("parent_name", "ZSUB"))
         .and(header("x-csrf-token", "token-1"))
         .respond_with(ResponseTemplate::new(403).set_body_string(
-                "<a:error><a:message>CSRF token validation failed</a:message></a:error>",
-            ))
+            "<a:error><a:message>CSRF token validation failed</a:message></a:error>",
+        ))
         .expect(1)
         .mount(&server)
         .await;
