@@ -1,3 +1,4 @@
+use futures::{StreamExt, stream};
 use reqwest::header::{HeaderMap, HeaderValue};
 use roxmltree::{Document, Node};
 use thiserror::Error;
@@ -80,6 +81,7 @@ pub struct PackageItemsResult {
 }
 
 const NODE_STRUCTURE_PATH: &str = "/sap/bc/adt/repository/nodestructure";
+const PACKAGE_FETCH_CONCURRENCY: usize = 4;
 const NODE_STRUCTURE_ACCEPT: &str =
     "application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.RepositoryObjTree.ObjectTree";
 
@@ -180,62 +182,26 @@ pub async fn get_package_tree(
 ) -> Result<PackageTree, PackageError> {
     let root = package.trim().to_ascii_uppercase();
     let root_contents = get_package_contents(sap, &root).await?;
+    let walked = walk_package_contents(sap, root.clone(), root_contents, recursive).await;
     let mut packages = vec![PackageTreeNode {
         name: root.clone(),
         parent: None,
         description: None,
-        item_count: root_contents.items.len(),
+        item_count: walked.root_items.len(),
     }];
     let mut kinds = std::collections::BTreeMap::new();
-    for item in &root_contents.items {
+    for item in walked.all_items {
         *kinds
             .entry(item.object_type.kind().as_str().to_owned())
             .or_insert(0) += 1;
     }
-    let mut packages_failed = Vec::new();
-
-    if recursive {
-        let mut queue: Vec<(String, String, Option<String>)> = root_contents
-            .subpackages
-            .into_iter()
-            .map(|subpackage| (subpackage.name, root.clone(), subpackage.description))
-            .collect();
-        let mut index = 0;
-        while index < queue.len() {
-            let (name, parent, description) = queue[index].clone();
-            index += 1;
-            match get_package_contents(sap, &name).await {
-                Ok(contents) => {
-                    packages.push(PackageTreeNode {
-                        name: name.clone(),
-                        parent: Some(parent),
-                        description,
-                        item_count: contents.items.len(),
-                    });
-                    for item in &contents.items {
-                        *kinds
-                            .entry(item.object_type.kind().as_str().to_owned())
-                            .or_insert(0) += 1;
-                    }
-                    queue.extend(
-                        contents.subpackages.into_iter().map(|subpackage| {
-                            (subpackage.name, name.clone(), subpackage.description)
-                        }),
-                    );
-                }
-                Err(error) => packages_failed.push(PackageFailure {
-                    package: name,
-                    message: error.to_string(),
-                }),
-            }
-        }
-    }
+    packages.extend(walked.packages);
 
     Ok(PackageTree {
         root,
         packages,
         kinds,
-        packages_failed,
+        packages_failed: walked.packages_failed,
     })
 }
 
@@ -254,36 +220,9 @@ pub async fn get_package_items(
 ) -> Result<PackageItemsResult, PackageError> {
     let root = package.trim().to_ascii_uppercase();
     let root_contents = get_package_contents(sap, &root).await?;
-    let mut all_items = root_contents.items;
-    let mut packages_failed = Vec::new();
-
-    if options.recursive {
-        let mut queue: Vec<String> = root_contents
-            .subpackages
-            .into_iter()
-            .map(|subpackage| subpackage.name)
-            .collect();
-        let mut index = 0;
-        while index < queue.len() {
-            let package_name = queue[index].clone();
-            index += 1;
-            match get_package_contents(sap, &package_name).await {
-                Ok(contents) => {
-                    all_items.extend(contents.items);
-                    queue.extend(
-                        contents
-                            .subpackages
-                            .into_iter()
-                            .map(|subpackage| subpackage.name),
-                    );
-                }
-                Err(error) => packages_failed.push(PackageFailure {
-                    package: package_name,
-                    message: error.to_string(),
-                }),
-            }
-        }
-    }
+    let walked = walk_package_contents(sap, root.clone(), root_contents, options.recursive).await;
+    let mut all_items = walked.all_items;
+    let packages_failed = walked.packages_failed;
 
     let name_filter = options
         .name_substring
@@ -324,6 +263,105 @@ pub async fn get_package_items(
         kinds,
         packages_failed,
     })
+}
+
+#[derive(Debug)]
+struct WalkedPackageContents {
+    root_items: Vec<PackageItem>,
+    all_items: Vec<PackageItem>,
+    packages: Vec<PackageTreeNode>,
+    packages_failed: Vec<PackageFailure>,
+}
+
+async fn walk_package_contents(
+    sap: &SapClient,
+    root: String,
+    root_contents: PackageContents,
+    recursive: bool,
+) -> WalkedPackageContents {
+    let root_items = root_contents.items.clone();
+    if !recursive {
+        return WalkedPackageContents {
+            root_items,
+            all_items: root_contents.items,
+            packages: Vec::new(),
+            packages_failed: Vec::new(),
+        };
+    }
+
+    let mut all_items = root_contents.items;
+    let mut packages = Vec::new();
+    let mut failures = Vec::new();
+    let mut frontier: Vec<(String, String, Option<String>)> = root_contents
+        .subpackages
+        .into_iter()
+        .map(|subpackage| (subpackage.name, root.clone(), subpackage.description))
+        .collect();
+
+    while !frontier.is_empty() {
+        let mut results = stream::iter(frontier.into_iter().enumerate())
+            .map(|(index, (name, parent, description))| async move {
+                let result = get_package_contents_read_only(sap, &name).await;
+                (index, name, parent, description, result)
+            })
+            .buffer_unordered(PACKAGE_FETCH_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+        results.sort_by_key(|(index, ..)| *index);
+        frontier = Vec::new();
+
+        for (_, name, parent, description, result) in results {
+            match result {
+                Ok(contents) => {
+                    all_items.extend(contents.items.clone());
+                    packages.push(PackageTreeNode {
+                        name: name.clone(),
+                        parent: Some(parent),
+                        description,
+                        item_count: contents.items.len(),
+                    });
+                    frontier.extend(
+                        contents.subpackages.into_iter().map(|subpackage| {
+                            (subpackage.name, name.clone(), subpackage.description)
+                        }),
+                    );
+                }
+                Err(error) => failures.push(PackageFailure {
+                    package: name,
+                    message: error.to_string(),
+                }),
+            }
+        }
+    }
+
+    WalkedPackageContents {
+        root_items,
+        all_items,
+        packages,
+        packages_failed: failures,
+    }
+}
+
+async fn get_package_contents_read_only(
+    sap: &SapClient,
+    package: &str,
+) -> Result<PackageContents, PackageError> {
+    let package = package.trim().to_ascii_uppercase();
+    if package.is_empty() {
+        return Err(PackageError::Parse("package name is required".to_owned()));
+    }
+    let mut headers = HeaderMap::new();
+    headers.insert("Accept", HeaderValue::from_static(NODE_STRUCTURE_ACCEPT));
+    let query = [
+        ("parent_name", package.as_str()),
+        ("parent_tech_name", package.as_str()),
+        ("parent_type", "DEVC/K"),
+        ("withShortDescriptions", "true"),
+    ];
+    let xml = sap
+        .post_text_read_only(NODE_STRUCTURE_PATH, &query, None, headers)
+        .await?;
+    parse_package_contents(&xml, &package)
 }
 
 fn is_repository_node(node: &Node<'_, '_>) -> bool {

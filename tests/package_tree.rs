@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use fractal::{
     config::Profile,
     sap::{client::SapClient, package::get_package_tree},
@@ -65,6 +67,49 @@ async fn recursively_walks_package_tree_and_counts_kinds() {
     assert_eq!(tree.packages.len(), 2);
     assert_eq!(tree.kinds.get("CLAS"), Some(&2));
     assert_eq!(tree.kinds.get("TABL"), Some(&2));
+    assert!(tree.packages_failed.is_empty());
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn recursive_children_are_fetched_concurrently() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/core/discovery"))
+        .respond_with(ResponseTemplate::new(200).insert_header("x-csrf-token", "csrf"))
+        .mount(&server)
+        .await;
+    let root_xml = r#"<response><TREE_CONTENT>
+        <NODE OBJECT_TYPE="DEVC/K" OBJECT_NAME="ZSUB_A"/>
+        <NODE OBJECT_TYPE="DEVC/K" OBJECT_NAME="ZSUB_B"/>
+        <NODE OBJECT_TYPE="DEVC/K" OBJECT_NAME="ZSUB_C"/>
+    </TREE_CONTENT></response>"#;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/repository/nodestructure"))
+        .and(query_param("parent_name", "ZAPP"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(root_xml))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/repository/nodestructure"))
+        .and(query_param("parent_type", "DEVC/K"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("<response><TREE_CONTENT><NODE OBJECT_TYPE=\"CLAS/OC\" OBJECT_NAME=\"ZCL_CHILD\"/></TREE_CONTENT></response>")
+                .set_delay(Duration::from_millis(150)),
+        )
+        .expect(3)
+        .mount(&server)
+        .await;
+
+    let profile = profile(server.uri());
+    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let started = Instant::now();
+    let tree = get_package_tree(&mut client, "ZAPP", true).await.unwrap();
+
+    assert!(started.elapsed() < Duration::from_millis(400));
+    assert_eq!(tree.packages.len(), 4);
     assert!(tree.packages_failed.is_empty());
     server.verify().await;
 }

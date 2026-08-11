@@ -229,6 +229,48 @@ impl SapClient {
         })
     }
 
+    /// Sends a text POST using an already-established CSRF/session state.
+    ///
+    /// This method does not perform a CSRF handshake or mutate client state, so
+    /// it can be used for concurrent read-only POST requests after [`Self::post_text`]
+    /// or [`Self::test_connection`] has established the session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SapError`] when the request or response fails.
+    pub async fn post_text_read_only(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+        body: Option<&str>,
+        headers: HeaderMap,
+    ) -> Result<String, SapError> {
+        let url = self.request_url(path, query)?;
+        let mut request = self
+            .http
+            .post(url.clone())
+            .headers(headers)
+            .basic_auth(&self.username, Some(&self.password));
+        if let Some(body) = body {
+            request = request.body(body.to_owned());
+        }
+        let response = self
+            .apply_session_headers(request, true)
+            .send()
+            .await
+            .map_err(|error| SapError::Network {
+                url: url.to_string(),
+                message: describe_network_error(&error),
+            })?;
+        if !response.status().is_success() {
+            return Err(http_error(url, response).await);
+        }
+        response.text().await.map_err(|error| SapError::Network {
+            url: self.base_url.to_string(),
+            message: format!("could not read SAP response body: {error}"),
+        })
+    }
+
     /// Fetches SAP ADT discovery metadata to verify the connection and credentials.
     ///
     /// # Errors
