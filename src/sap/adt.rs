@@ -263,6 +263,63 @@ impl RepositoryKind {
             Self::Other => "OTHER",
         }
     }
+
+    /// Every known kind, in the same order as [`Self::as_str`].
+    pub const ALL: [Self; 18] = [
+        Self::Clas,
+        Self::Intf,
+        Self::Tabl,
+        Self::Stru,
+        Self::Ttyp,
+        Self::View,
+        Self::Dtel,
+        Self::Doma,
+        Self::Ddls,
+        Self::Bdef,
+        Self::Srvd,
+        Self::Srvb,
+        Self::Msag,
+        Self::Fugr,
+        Self::Prog,
+        Self::Enho,
+        Self::Enhs,
+        Self::Other,
+    ];
+
+    /// A short, human-readable description of the kind for reference/lookup use.
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Clas => "Class — an ABAP object-oriented class",
+            Self::Intf => "Interface — an ABAP object-oriented interface",
+            Self::Tabl => "Database table — a DDIC transparent table",
+            Self::Stru => "Structure — a DDIC structure with no database table behind it",
+            Self::Ttyp => "Table type — a DDIC type for internal tables",
+            Self::View => "View — a classic DDIC database view",
+            Self::Dtel => "Data element — a DDIC field type carrying semantic meaning and labels",
+            Self::Doma => "Domain — a DDIC value range and technical type for data elements",
+            Self::Ddls => "CDS view — a Core Data Services view definition (DDL source)",
+            Self::Bdef => {
+                "Behavior definition — a RAP (RESTful ABAP Programming) behavior definition"
+            }
+            Self::Srvd => "Service definition — a RAP service definition exposing CDS views",
+            Self::Srvb => {
+                "Service binding — a RAP service binding (e.g. OData) for a service definition"
+            }
+            Self::Msag => "Message class — a container of ABAP messages",
+            Self::Fugr => "Function group — a container of function modules",
+            Self::Prog => "Program — a classic ABAP report or executable program",
+            Self::Enho => {
+                "Enhancement implementation — an implementation of an enhancement spot or BAdI"
+            }
+            Self::Enhs => {
+                "Enhancement spot — a defined extension point (BAdI definition, source plug-in)"
+            }
+            Self::Other => {
+                "Any object type not covered by the kinds above — check the raw object_type field for the exact SAP ADT type code"
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

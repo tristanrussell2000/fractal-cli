@@ -114,6 +114,8 @@ pub enum ObjectCommand {
     Xml(XmlArgs),
     /// Read the authoritative short description for an ADT object URI.
     Info(UriArgs),
+    /// List known repository kinds with plain-text descriptions.
+    Kinds,
 }
 
 #[derive(Debug, Args)]

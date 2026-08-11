@@ -138,6 +138,18 @@ struct ObjectInfoResultOutput {
     description: String,
 }
 
+#[derive(Debug, Serialize)]
+struct ObjectKindsResultOutput {
+    ok: bool,
+    kinds: Vec<ObjectKindOutput>,
+}
+
+#[derive(Debug, Serialize)]
+struct ObjectKindOutput {
+    kind: String,
+    description: String,
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -171,6 +183,9 @@ async fn main() {
         Command::Object {
             command: ObjectCommand::Info(args),
         } => run_and_print_async(|| object_info(cli.profile.as_deref(), args), output).await,
+        Command::Object {
+            command: ObjectCommand::Kinds,
+        } => run_and_print_with(object_kinds, print_object_kinds, output),
         Command::Package {
             command: PackageCommand::Tree(args),
         } => run_and_print_async(|| package_tree(cli.profile.as_deref(), args), output).await,
@@ -212,6 +227,23 @@ fn print_system_list(result: &SystemListResult, output: OutputFormat) {
             "  {marker} {} — {} client {} user {}",
             profile.name, profile.base_url, profile.client, profile.username
         );
+    }
+}
+
+fn print_object_kinds(result: &ObjectKindsResultOutput, output: OutputFormat) {
+    if matches!(output, OutputFormat::Json) {
+        print_result(result, output);
+        return;
+    }
+
+    let width = result
+        .kinds
+        .iter()
+        .map(|kind| kind.kind.len())
+        .max()
+        .unwrap_or(0);
+    for kind in &result.kinds {
+        println!("{:width$}  {}", kind.kind, kind.description);
     }
 }
 
@@ -418,6 +450,22 @@ async fn object_info(
         profile: profile_name.to_owned(),
         uri: result.uri,
         description: result.description,
+    })
+}
+
+// `run_and_print_with` requires an operation returning `Result<T, CommandError>`;
+// this handler can never fail, but must match that shape to share the runner.
+#[allow(clippy::unnecessary_wraps)]
+fn object_kinds() -> Result<ObjectKindsResultOutput, CommandError> {
+    Ok(ObjectKindsResultOutput {
+        ok: true,
+        kinds: RepositoryKind::ALL
+            .into_iter()
+            .map(|kind| ObjectKindOutput {
+                kind: kind.as_str().to_owned(),
+                description: kind.description().to_owned(),
+            })
+            .collect(),
     })
 }
 
@@ -748,6 +796,31 @@ mod tests {
             panic!("expected object info command");
         };
         assert_eq!(args.uri, "/sap/bc/adt/oo/classes/zcl_test");
+    }
+
+    #[test]
+    fn parses_object_kinds_command_from_cli() {
+        let cli = Cli::try_parse_from(["fractal", "object", "kinds"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Object {
+                command: ObjectCommand::Kinds
+            }
+        ));
+    }
+
+    #[test]
+    fn every_repository_kind_has_a_stable_code_and_a_description() {
+        let result = object_kinds().unwrap();
+        assert_eq!(
+            result.kinds.len(),
+            RepositoryKind::ALL.len()
+        );
+        for kind in &result.kinds {
+            assert!(!kind.kind.is_empty());
+            assert!(!kind.description.is_empty());
+        }
     }
 
     #[test]
