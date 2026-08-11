@@ -173,3 +173,61 @@ pub async fn package_items(
             .collect(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use crate::cli::{Cli, Command, PackageCommand};
+
+    #[test]
+    fn parses_package_tree_options_from_cli() {
+        let cli =
+            Cli::try_parse_from(["fractal", "package", "tree", "ZAPP", "--no-recursive"]).unwrap();
+
+        let Command::Package {
+            command: PackageCommand::Tree(args),
+        } = cli.command
+        else {
+            panic!("expected package tree command");
+        };
+        assert_eq!(args.name, "ZAPP");
+        assert!(args.no_recursive);
+    }
+
+    #[test]
+    fn parses_package_items_options_from_cli() {
+        let cli = Cli::try_parse_from([
+            "fractal",
+            "package",
+            "items",
+            "ZAPP",
+            "--recursive",
+            "--kind",
+            "clas",
+            "--object-type",
+            "CLAS/OC",
+            "--name-substring",
+            "TEST",
+            "--offset",
+            "2",
+            "--limit",
+            "5",
+        ])
+        .unwrap();
+
+        let Command::Package {
+            command: PackageCommand::Items(args),
+        } = cli.command
+        else {
+            panic!("expected package items command");
+        };
+        assert_eq!(args.name, "ZAPP");
+        assert!(args.recursive);
+        assert_eq!(args.kind.as_deref(), Some("clas"));
+        assert_eq!(args.object_type.as_deref(), Some("CLAS/OC"));
+        assert_eq!(args.name_substring.as_deref(), Some("TEST"));
+        assert_eq!(args.offset, 2);
+        assert_eq!(args.limit, 5);
+    }
+}
