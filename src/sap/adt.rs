@@ -5,6 +5,7 @@ use roxmltree::Document;
 use thiserror::Error;
 
 use super::client::{SapClient, SapError};
+use super::{find_child, non_empty_attribute};
 use crate::config::Profile;
 
 const SEARCH_PATH: &str = "/sap/bc/adt/repository/informationsystem/search";
@@ -576,14 +577,6 @@ fn normalize_reference_uri(uri: &str) -> &str {
         .trim_end_matches('/')
 }
 
-fn find_child<'a, 'i>(
-    node: roxmltree::Node<'a, 'i>,
-    name: &str,
-) -> Option<roxmltree::Node<'a, 'i>> {
-    node.children()
-        .find(|child| child.is_element() && child.tag_name().name() == name)
-}
-
 /// Searches SAP's ADT repository and aggregates plain and namespace-scoped results.
 ///
 /// # Errors
@@ -826,11 +819,6 @@ fn parse_object_references(xml: &str) -> Result<Vec<ObjectSearchHit>, AdtError> 
             })
         })
         .collect())
-}
-
-fn non_empty_attribute(value: Option<&str>) -> Option<String> {
-    let value = value?.trim();
-    (!value.is_empty()).then(|| value.to_owned())
 }
 
 fn matches_scope(hit: &ObjectSearchHit, patterns: &[String]) -> bool {

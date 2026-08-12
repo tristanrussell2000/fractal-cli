@@ -6,6 +6,7 @@ use thiserror::Error;
 use super::{
     adt::{AdtObjectType, RepositoryKind},
     client::SapClient,
+    non_empty_attribute,
 };
 
 #[derive(Debug, Error)]
@@ -143,7 +144,7 @@ pub fn parse_package_contents(xml: &str, package: &str) -> Result<PackageContent
         if object_type == "DEVC/K" {
             subpackages.push(Subpackage {
                 name: name.to_ascii_uppercase(),
-                description: non_empty(child_text(node, &["DESCRIPTION"])),
+                description: non_empty_attribute(child_text(node, &["DESCRIPTION"])),
             });
             continue;
         }
@@ -155,7 +156,7 @@ pub fn parse_package_contents(xml: &str, package: &str) -> Result<PackageContent
         ) {
             None
         } else {
-            non_empty(child_text(node, &["DESCRIPTION"]))
+            non_empty_attribute(child_text(node, &["DESCRIPTION"]))
         };
 
         items.push(PackageItem {
@@ -163,7 +164,7 @@ pub fn parse_package_contents(xml: &str, package: &str) -> Result<PackageContent
             object_type,
             package: package.clone(),
             description,
-            uri: non_empty(child_text(node, &["OBJECT_URI", "OBJ_URI"])),
+            uri: non_empty_attribute(child_text(node, &["OBJECT_URI", "OBJ_URI"])),
         });
     }
 
@@ -433,11 +434,6 @@ fn child_text<'a>(node: Node<'a, 'a>, names: &[&str]) -> Option<&'a str> {
             .find(|child| child.is_element() && child.tag_name().name() == *name)
             .and_then(|child| child.text())
     })
-}
-
-fn non_empty(value: Option<&str>) -> Option<String> {
-    let value = value?.trim();
-    (!value.is_empty()).then(|| value.to_owned())
 }
 
 #[cfg(test)]
