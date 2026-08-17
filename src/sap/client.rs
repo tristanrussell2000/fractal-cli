@@ -246,11 +246,24 @@ impl SapClient {
         })
     }
 
+    /// Ensures that a CSRF token and session are available for read-only POSTs.
+    ///
+    /// Call this before issuing concurrent requests through
+    /// [`Self::post_text_read_only`]. If the client already has a token, this is
+    /// a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SapError`] when the discovery handshake fails.
+    pub async fn establish_csrf_session(&mut self) -> Result<(), SapError> {
+        self.ensure_csrf().await
+    }
+
     /// Sends a text POST using an already-established CSRF/session state.
     ///
     /// This method does not perform a CSRF handshake or mutate client state, so
-    /// it can be used for concurrent read-only POST requests after [`Self::post_text`]
-    /// or [`Self::test_connection`] has established the session.
+    /// it can be used for concurrent read-only POST requests after
+    /// [`Self::establish_csrf_session`] has established the session.
     ///
     /// # Errors
     ///

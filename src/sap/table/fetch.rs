@@ -1,6 +1,6 @@
 use reqwest::header::{HeaderMap, HeaderValue};
 
-use super::{TableDataResult, TableError, parse_table_data};
+use super::{TableColumn, TableDataResult, TableError, parse_table_data};
 use crate::sap::client::{SapClient, SapError};
 
 const DDIC_PREVIEW_PATH: &str = "/sap/bc/adt/datapreview/ddic";
@@ -69,6 +69,11 @@ impl Default for TableDataOptions {
 /// freestyle endpoint. Because SAP has no offset parameter, this requests
 /// `offset + limit` rows and applies the requested page locally.
 ///
+/// The unfiltered path concurrently requests an accurate row count. Filtered
+/// simple queries concurrently request DDIC column metadata. These enrichment
+/// requests are best-effort and never replace an otherwise valid preview with
+/// an error.
+///
 /// # Errors
 ///
 /// Returns [`TableError`] when input validation, the SAP request, or XML
@@ -80,8 +85,9 @@ pub async fn get_table_data(
 ) -> Result<TableDataResult, TableError> {
     let entity = validate_entity_name(entity)?;
     let row_count = preview_row_count(options)?;
+    sap.establish_csrf_session().await?;
 
-    let xml = match &options.query {
+    let mut result = match &options.query {
         TableDataQuery::Simple {
             fields,
             where_clause,
@@ -90,22 +96,48 @@ pub async fn get_table_data(
                 .as_deref()
                 .is_none_or(|value| value.trim().is_empty()) =>
         {
-            post_ddic_preview(sap, &entity, row_count).await?
+            let count_query =
+                break_sql_lines(&format!("SELECT COUNT(*) AS ROW_COUNT FROM {entity}"));
+            let (preview, count) = tokio::join!(
+                post_ddic_preview(sap, &entity, row_count),
+                post_freestyle_preview(sap, &count_query, 1),
+            );
+
+            let mut result = parse_table_data(&preview?)?;
+            if let Ok(count_xml) = count
+                && let Ok(count_result) = parse_table_data(&count_xml)
+                && let Some(total_rows) = extract_count(&count_result)
+            {
+                result.total_rows = Some(total_rows);
+            }
+            result
         }
         TableDataQuery::Simple {
             fields,
             where_clause,
         } => {
             let query = build_simple_query(&entity, fields, where_clause.as_deref())?;
-            post_freestyle_preview(sap, &break_sql_lines(&query), row_count).await?
+            let query = break_sql_lines(&query);
+            let (preview, metadata) = tokio::join!(
+                post_freestyle_preview(sap, &query, row_count),
+                post_ddic_preview(sap, &entity, 1),
+            );
+
+            let mut result = parse_table_data(&preview?)?;
+            if let Ok(metadata_xml) = metadata
+                && let Ok(metadata_result) = parse_table_data(&metadata_xml)
+            {
+                merge_column_metadata(&mut result.columns, &metadata_result.columns);
+            }
+            result
         }
         TableDataQuery::Full(query) => {
             let query = validate_full_query(query)?;
-            post_freestyle_preview(sap, &break_sql_lines(query), row_count).await?
+            let xml = post_freestyle_preview(sap, &break_sql_lines(query), row_count).await?;
+            parse_table_data(&xml)?
         }
     };
 
-    let mut result = parse_table_data(&xml)?;
     result.rows = result
         .rows
         .into_iter()
@@ -116,7 +148,7 @@ pub async fn get_table_data(
 }
 
 async fn post_ddic_preview(
-    sap: &mut SapClient,
+    sap: &SapClient,
     entity: &str,
     row_count: usize,
 ) -> Result<String, SapError> {
@@ -125,12 +157,12 @@ async fn post_ddic_preview(
         ("rowNumber", row_count.as_str()),
         ("ddicEntityName", entity),
     ];
-    sap.post_text(DDIC_PREVIEW_PATH, &query, None, HeaderMap::new())
+    sap.post_text_read_only(DDIC_PREVIEW_PATH, &query, None, HeaderMap::new())
         .await
 }
 
 async fn post_freestyle_preview(
-    sap: &mut SapClient,
+    sap: &SapClient,
     statement: &str,
     row_count: usize,
 ) -> Result<String, SapError> {
@@ -141,8 +173,41 @@ async fn post_freestyle_preview(
         "Content-Type",
         HeaderValue::from_static("text/plain; charset=utf-8"),
     );
-    sap.post_text(FREESTYLE_PREVIEW_PATH, &query, Some(statement), headers)
+    sap.post_text_read_only(FREESTYLE_PREVIEW_PATH, &query, Some(statement), headers)
         .await
+}
+
+fn extract_count(result: &TableDataResult) -> Option<u64> {
+    let count_index = result
+        .columns
+        .iter()
+        .position(|column| column.name.eq_ignore_ascii_case("ROW_COUNT"))
+        .or_else(|| (result.columns.len() == 1).then_some(0))?;
+    result.rows.first()?.get(count_index)?.trim().parse().ok()
+}
+
+fn merge_column_metadata(columns: &mut [TableColumn], metadata: &[TableColumn]) {
+    for column in columns {
+        let Some(source) = metadata
+            .iter()
+            .find(|candidate| candidate.name.eq_ignore_ascii_case(&column.name))
+        else {
+            continue;
+        };
+
+        if source.sap_type.is_some() {
+            column.sap_type.clone_from(&source.sap_type);
+        }
+        if source.col_type.is_some() {
+            column.col_type.clone_from(&source.col_type);
+        }
+        if source.length.is_some() {
+            column.length = source.length;
+        }
+        if source.description.is_some() {
+            column.description.clone_from(&source.description);
+        }
+    }
 }
 
 fn preview_row_count(options: &TableDataOptions) -> Result<usize, TableError> {
@@ -569,5 +634,30 @@ mod tests {
         let once = pad_abap_tokens(" STATUS  =  'OPEN' ");
         assert_eq!(once, "STATUS = 'OPEN'");
         assert_eq!(pad_abap_tokens(&once), once);
+    }
+
+    #[test]
+    fn merges_metadata_by_case_insensitive_column_name() {
+        let mut columns = vec![TableColumn {
+            name: "event_id".to_owned(),
+            sap_type: None,
+            col_type: None,
+            length: None,
+            description: Some("event_id".to_owned()),
+        }];
+        let metadata = vec![TableColumn {
+            name: "EVENT_ID".to_owned(),
+            sap_type: Some("N".to_owned()),
+            col_type: Some("NUMC".to_owned()),
+            length: Some(10),
+            description: Some("Event ID".to_owned()),
+        }];
+
+        merge_column_metadata(&mut columns, &metadata);
+
+        assert_eq!(columns[0].sap_type.as_deref(), Some("N"));
+        assert_eq!(columns[0].col_type.as_deref(), Some("NUMC"));
+        assert_eq!(columns[0].length, Some(10));
+        assert_eq!(columns[0].description.as_deref(), Some("Event ID"));
     }
 }

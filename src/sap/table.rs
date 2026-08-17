@@ -106,9 +106,9 @@ pub struct TableColumn {
 /// `entity` is only present on the cheap path; `executed_query` only on the
 /// freestyle path. `total_rows` is present on both but is only trustworthy on
 /// the freestyle path — protocol captures show that the cheap path's value
-/// reflects the preview window rather than the table's real size. Callers
-/// needing an accurate total on the cheap path should issue a separate
-/// `COUNT(*)` query.
+/// reflects the preview window rather than the table's real size. The
+/// higher-level table fetch attempts to replace that value with a separate
+/// `COUNT(*)` result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableDataResult {
     pub entity: Option<String>,
