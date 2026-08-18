@@ -415,7 +415,7 @@ pub async fn get_source(
     }
 
     let source_uri = format!("{}{}", uri.trim_end_matches('/'), SOURCE_SUFFIX);
-    let source = sap.get_text_with_query_read_only(&source_uri, &[]).await?;
+    let source = sap.get_text_with_query(&source_uri, &[]).await?;
     page_text(&source, options)
 }
 
@@ -652,8 +652,7 @@ async fn fetch_search_responses(
             ("query", search_query.as_str()),
             ("maxResults", "500"),
         ];
-        sap.get_text_with_query_read_only(SEARCH_PATH, &query_params)
-            .await
+        sap.get_text_with_query(SEARCH_PATH, &query_params).await
     }))
     .await
 }

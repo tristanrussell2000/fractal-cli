@@ -168,29 +168,19 @@ impl SapClient {
     /// # Errors
     ///
     /// Returns [`SapError`] for URL, network, HTTP, or response-body failures.
-    pub async fn get_text(&mut self, path: &str) -> Result<String, SapError> {
+    pub async fn get_text(&self, path: &str) -> Result<String, SapError> {
         self.get_text_with_query(path, &[]).await
     }
 
     /// Fetches a text response with additional query parameters.
     ///
+    /// This does not mutate CSRF state and can be called concurrently through
+    /// shared references.
+    ///
     /// # Errors
     ///
     /// Returns [`SapError`] for URL, network, HTTP, or response-body failures.
     pub async fn get_text_with_query(
-        &mut self,
-        path: &str,
-        query: &[(&str, &str)],
-    ) -> Result<String, SapError> {
-        self.get_text_with_query_read_only(path, query).await
-    }
-
-    /// Fetches a text response without mutating CSRF state, allowing concurrent reads.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SapError`] for URL, network, HTTP, or response-body failures.
-    pub async fn get_text_with_query_read_only(
         &self,
         path: &str,
         query: &[(&str, &str)],
