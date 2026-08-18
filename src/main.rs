@@ -4,7 +4,7 @@ mod commands;
 mod output;
 
 use clap::Parser;
-use cli::{AuthCommand, Cli, Command, ObjectCommand, PackageCommand, SystemCommand};
+use cli::{AuthCommand, Cli, Command, ObjectCommand, PackageCommand, SystemCommand, TableCommand};
 use commands::auth::{auth_list, auth_login, auth_remove};
 use commands::object::{
     object_info, object_kinds, object_search, object_source, object_usages, object_xml,
@@ -12,7 +12,11 @@ use commands::object::{
 };
 use commands::package::{package_items, package_tree};
 use commands::system::{print_system_list, system_list, system_test};
-use output::{default_output_format, run_and_print, run_and_print_async, run_and_print_with};
+use commands::table::{print_table_data, table_data};
+use output::{
+    default_output_format, run_and_print, run_and_print_async, run_and_print_with,
+    run_and_print_with_async,
+};
 
 #[tokio::main]
 async fn main() {
@@ -59,6 +63,16 @@ async fn main() {
         Command::Package {
             command: PackageCommand::Items(args),
         } => run_and_print_async(|| package_items(cli.profile.as_deref(), args), output).await,
+        Command::Table {
+            command: TableCommand::Data(args),
+        } => {
+            run_and_print_with_async(
+                || table_data(cli.profile.as_deref(), args),
+                print_table_data,
+                output,
+            )
+            .await
+        }
     };
 
     if exit_code != 0 {

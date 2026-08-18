@@ -43,6 +43,11 @@ pub enum Command {
         #[command(subcommand)]
         command: ObjectCommand,
     },
+    /// Read data from SAP tables and views.
+    Table {
+        #[command(subcommand)]
+        command: TableCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -118,6 +123,37 @@ pub enum ObjectCommand {
     Usages(UsagesArgs),
     /// List known repository kinds with plain-text descriptions.
     Kinds,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TableCommand {
+    /// Preview rows using a simple selection or complete `OpenSQL` query.
+    Data(TableDataArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct TableDataArgs {
+    /// DDIC table or view name.
+    pub(crate) name: String,
+    /// Comma-separated fields for simple mode. Omit to select every field.
+    #[arg(long, conflicts_with = "query")]
+    pub(crate) fields: Option<String>,
+    /// `OpenSQL` WHERE fragment for simple mode.
+    #[arg(long = "where", conflicts_with = "query")]
+    pub(crate) where_clause: Option<String>,
+    /// Complete `OpenSQL` SELECT statement. Use `-` to read it from standard input.
+    #[arg(
+        long,
+        allow_hyphen_values = true,
+        conflicts_with_all = ["fields", "where_clause"]
+    )]
+    pub(crate) query: Option<String>,
+    /// Number of matching rows to skip locally.
+    #[arg(long, default_value_t = 0)]
+    pub(crate) offset: usize,
+    /// Maximum number of rows to return.
+    #[arg(long, default_value_t = 100)]
+    pub(crate) limit: usize,
 }
 
 #[derive(Debug, Args)]

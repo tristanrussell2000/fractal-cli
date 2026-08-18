@@ -1,6 +1,6 @@
 use fractal::{
     config, credentials,
-    sap::{adt::AdtError, client::SapError, package::PackageError},
+    sap::{adt::AdtError, client::SapError, package::PackageError, table::TableError},
 };
 
 #[derive(Debug)]
@@ -10,6 +10,7 @@ pub enum CommandError {
     Sap(SapError),
     Adt(AdtError),
     Package(PackageError),
+    Table(TableError),
     Message {
         code: &'static str,
         message: String,
@@ -60,14 +61,19 @@ impl CommandError {
                 PackageError::Sap(error) => error.code(),
                 PackageError::Parse(_) => "package_response_parse_error",
             },
+            Self::Table(error) => error.code(),
             Self::Message { code, .. } => code,
         }
     }
 
     #[must_use]
-    pub(crate) const fn status(&self) -> Option<u16> {
+    pub(crate) fn status(&self) -> Option<u16> {
         match self {
             Self::Sap(SapError::Http { status, .. }) => Some(status.as_u16()),
+            Self::Table(error) => match error.sap_error() {
+                Some(SapError::Http { status, .. }) => Some(status.as_u16()),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -79,6 +85,7 @@ impl CommandError {
             Self::Sap(error) => error.to_string(),
             Self::Adt(error) => error.to_string(),
             Self::Package(error) => error.to_string(),
+            Self::Table(error) => error.to_string(),
             Self::Message { message, .. } => message.clone(),
         }
     }
@@ -101,6 +108,7 @@ impl CommandError {
                 "The SAP package response did not match the expected nodestructure format."
                     .to_owned(),
             ),
+            Self::Table(error) => error.hint(),
             Self::Message { hint, .. } => hint.clone(),
         }
     }
@@ -136,6 +144,12 @@ impl From<PackageError> for CommandError {
     }
 }
 
+impl From<TableError> for CommandError {
+    fn from(error: TableError) -> Self {
+        Self::Table(error)
+    }
+}
+
 impl From<String> for CommandError {
     fn from(message: String) -> Self {
         Self::from_message("command_error", message)
@@ -153,7 +167,10 @@ mod tests {
     use reqwest::StatusCode;
 
     use super::CommandError;
-    use fractal::sap::client::{SapError, SapErrorKind};
+    use fractal::sap::{
+        client::{SapError, SapErrorKind},
+        table::{TableError, TableQueryError, TableQueryErrorKind},
+    };
 
     #[test]
     fn preserves_structured_sap_error_fields() {
@@ -178,5 +195,29 @@ mod tests {
 
         assert_eq!(error.code(), "credential_missing");
         assert!(error.hint().unwrap().contains("DE2_903"));
+    }
+
+    #[test]
+    fn preserves_structured_table_error_fields_and_http_status() {
+        let source = SapError::Http {
+            kind: SapErrorKind::Other,
+            status: StatusCode::BAD_REQUEST,
+            url: "https://sap.example/sap/bc/adt/datapreview/freestyle".to_owned(),
+            message: "Unknown column name \"EVNT_ID\".".to_owned(),
+        };
+        let error = CommandError::from(TableError::Query {
+            query: TableQueryError {
+                kind: TableQueryErrorKind::UnknownColumn,
+                identifier: Some("EVNT_ID".to_owned()),
+                suggestions: vec!["EVENT_ID".to_owned()],
+                message: "Unknown column name \"EVNT_ID\".".to_owned(),
+            },
+            source: Box::new(source),
+        });
+
+        assert_eq!(error.code(), "table_query_unknown_column");
+        assert_eq!(error.status(), Some(400));
+        assert!(error.message().contains("EVNT_ID"));
+        assert!(error.hint().unwrap().contains("EVENT_ID"));
     }
 }

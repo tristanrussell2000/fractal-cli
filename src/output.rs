@@ -54,7 +54,11 @@ where
     }
 }
 
-async fn run_and_print_with_async<T, F, Fut, P>(operation: F, print: P, output: OutputFormat) -> i32
+pub async fn run_and_print_with_async<T, F, Fut, P>(
+    operation: F,
+    print: P,
+    output: OutputFormat,
+) -> i32
 where
     T: Serialize,
     F: FnOnce() -> Fut,
