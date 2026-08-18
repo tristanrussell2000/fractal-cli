@@ -2,7 +2,9 @@ use fractal::{
     config::Profile,
     sap::{
         client::SapClient,
-        table::{TableDataOptions, TableDataQuery, get_table_data},
+        table::{
+            TableDataOptions, TableDataQuery, TableError, TableQueryErrorKind, get_table_data,
+        },
     },
 };
 use wiremock::{
@@ -250,6 +252,60 @@ async fn filtered_simple_mode_keeps_query_result_when_metadata_enrichment_fails(
     assert_eq!(result.columns[0].sap_type, None);
     assert_eq!(result.columns[0].length, None);
     assert_eq!(result.rows, vec![vec!["0000000001".to_owned()]]);
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn filtered_simple_mode_structures_unknown_columns_with_metadata_suggestions() {
+    let server = MockServer::start().await;
+    mount_discovery(&server, "query-error-csrf", "query-error-test").await;
+
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/datapreview/freestyle"))
+        .and(body_string("SELECT EVNT_ID\nFROM ZDEMO_EVENT_LOG"))
+        .respond_with(ResponseTemplate::new(400).set_body_string(
+            r"<error><message>Unknown column name &quot;EVNT_ID&quot;.</message></error>",
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/datapreview/ddic"))
+        .and(query_param("rowNumber", "1"))
+        .and(query_param("ddicEntityName", "ZDEMO_EVENT_LOG"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"<dataPreview:tableData xmlns:dataPreview="http://www.sap.com/adt/dataPreview"><dataPreview:columns><dataPreview:metadata dataPreview:name="EVENT_ID" dataPreview:type="N" dataPreview:colType="NUMC" dataPreview:length="10"/><dataPreview:dataSet/></dataPreview:columns><dataPreview:columns><dataPreview:metadata dataPreview:name="STATUS" dataPreview:type="C" dataPreview:colType="CHAR" dataPreview:length="10"/><dataPreview:dataSet/></dataPreview:columns></dataPreview:tableData>"#,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let profile = profile(server.uri());
+    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let error = get_table_data(
+        &mut client,
+        "ZDEMO_EVENT_LOG",
+        &TableDataOptions {
+            query: TableDataQuery::Simple {
+                fields: vec!["EVNT_ID".to_owned()],
+                where_clause: None,
+            },
+            offset: 0,
+            limit: 1,
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), "table_query_unknown_column");
+    let TableError::Query { query, .. } = &error else {
+        panic!("expected a structured query error");
+    };
+    assert_eq!(query.kind, TableQueryErrorKind::UnknownColumn);
+    assert_eq!(query.identifier.as_deref(), Some("EVNT_ID"));
+    assert_eq!(query.suggestions, vec!["EVENT_ID"]);
+    assert!(error.hint().unwrap().contains("EVENT_ID"));
     server.verify().await;
 }
 

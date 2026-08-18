@@ -1,6 +1,8 @@
 use reqwest::header::{HeaderMap, HeaderValue};
 
-use super::{TableColumn, TableDataResult, TableError, parse_table_data};
+use super::{
+    TableColumn, TableDataResult, TableError, error::classify_query_error, parse_table_data,
+};
 use crate::sap::client::{SapClient, SapError};
 
 const DDIC_PREVIEW_PATH: &str = "/sap/bc/adt/datapreview/ddic";
@@ -123,17 +125,28 @@ pub async fn get_table_data(
                 post_ddic_preview(sap, &entity, 1),
             );
 
-            let mut result = parse_table_data(&preview?)?;
-            if let Ok(metadata_xml) = metadata
-                && let Ok(metadata_result) = parse_table_data(&metadata_xml)
-            {
+            let metadata_result = metadata
+                .ok()
+                .and_then(|metadata_xml| parse_table_data(&metadata_xml).ok());
+            let mut result = match preview {
+                Ok(preview_xml) => parse_table_data(&preview_xml)?,
+                Err(error) => {
+                    let columns = metadata_result
+                        .as_ref()
+                        .map_or(&[][..], |metadata| metadata.columns.as_slice());
+                    return Err(classify_query_error(error, columns));
+                }
+            };
+            if let Some(metadata_result) = metadata_result {
                 merge_column_metadata(&mut result.columns, &metadata_result.columns);
             }
             result
         }
         TableDataQuery::Full(query) => {
             let query = validate_full_query(query)?;
-            let xml = post_freestyle_preview(sap, &break_sql_lines(query), row_count).await?;
+            let xml = post_freestyle_preview(sap, &break_sql_lines(query), row_count)
+                .await
+                .map_err(|error| classify_query_error(error, &[]))?;
             parse_table_data(&xml)?
         }
     };

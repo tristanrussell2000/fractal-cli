@@ -711,6 +711,7 @@ dependencies = [
  "futures",
  "keyring",
  "keyring-core",
+ "regex",
  "reqwest",
  "roxmltree",
  "rpassword",
