@@ -25,31 +25,11 @@ const SQL_BREAK_KEYWORDS: [&str; 13] = [
     "UNION",
 ];
 
-/// Selects how a table-data request is expressed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TableDataQuery {
-    /// Builds a basic SELECT from a field list and optional WHERE fragment.
-    Simple {
-        fields: Vec<String>,
-        where_clause: Option<String>,
-    },
-    /// Sends a complete caller-supplied SELECT statement.
-    Full(String),
-}
-
-impl Default for TableDataQuery {
-    fn default() -> Self {
-        Self::Simple {
-            fields: Vec::new(),
-            where_clause: None,
-        }
-    }
-}
-
 /// Options for fetching a locally paged table-data preview.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableDataOptions {
-    pub query: TableDataQuery,
+    pub fields: Vec<String>,
+    pub where_clause: Option<String>,
     pub offset: usize,
     pub limit: usize,
 }
@@ -57,7 +37,24 @@ pub struct TableDataOptions {
 impl Default for TableDataOptions {
     fn default() -> Self {
         Self {
-            query: TableDataQuery::default(),
+            fields: Vec::new(),
+            where_clause: None,
+            offset: 0,
+            limit: 100,
+        }
+    }
+}
+
+/// Options for running a complete, locally paged `OpenSQL` query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryOptions {
+    pub offset: usize,
+    pub limit: usize,
+}
+
+impl Default for QueryOptions {
+    fn default() -> Self {
+        Self {
             offset: 0,
             limit: 100,
         }
@@ -66,10 +63,10 @@ impl Default for TableDataOptions {
 
 /// Fetches table data through the appropriate SAP ADT preview endpoint.
 ///
-/// An unfiltered simple request uses the inexpensive DDIC endpoint. A simple
-/// request with fields or a WHERE clause, and every full query, uses the
-/// freestyle endpoint. Because SAP has no offset parameter, this requests
-/// `offset + limit` rows and applies the requested page locally.
+/// An unfiltered request uses the inexpensive DDIC endpoint. A request with
+/// fields or a WHERE clause uses the freestyle endpoint. Because SAP has no
+/// offset parameter, this requests `offset + limit` rows and applies the
+/// requested page locally.
 ///
 /// The unfiltered path concurrently requests an accurate row count. Filtered
 /// simple queries concurrently request DDIC column metadata. These enrichment
@@ -86,77 +83,79 @@ pub async fn get_table_data(
     options: &TableDataOptions,
 ) -> Result<TableDataResult, TableError> {
     let entity = validate_entity_name(entity)?;
-    let row_count = preview_row_count(options)?;
+    let row_count = preview_row_count(options.offset, options.limit)?;
     sap.establish_csrf_session().await?;
 
-    let mut result = match &options.query {
-        TableDataQuery::Simple {
-            fields,
-            where_clause,
-        } if fields.is_empty()
-            && where_clause
-                .as_deref()
-                .is_none_or(|value| value.trim().is_empty()) =>
+    let mut result = if options.fields.is_empty()
+        && options
+            .where_clause
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty())
+    {
+        let count_query = break_sql_lines(&format!("SELECT COUNT(*) AS ROW_COUNT FROM {entity}"));
+        let (preview, count) = tokio::join!(
+            post_ddic_preview(sap, &entity, row_count),
+            post_freestyle_preview(sap, &count_query, 1),
+        );
+
+        let mut result = parse_table_data(&preview?)?;
+        if let Ok(count_xml) = count
+            && let Ok(count_result) = parse_table_data(&count_xml)
+            && let Some(total_rows) = extract_count(&count_result)
         {
-            let count_query =
-                break_sql_lines(&format!("SELECT COUNT(*) AS ROW_COUNT FROM {entity}"));
-            let (preview, count) = tokio::join!(
-                post_ddic_preview(sap, &entity, row_count),
-                post_freestyle_preview(sap, &count_query, 1),
-            );
+            result.total_rows = Some(total_rows);
+        }
+        result
+    } else {
+        let query = build_simple_query(&entity, &options.fields, options.where_clause.as_deref())?;
+        let query = break_sql_lines(&query);
+        let (preview, metadata) = tokio::join!(
+            post_freestyle_preview(sap, &query, row_count),
+            post_ddic_preview(sap, &entity, 1),
+        );
 
-            let mut result = parse_table_data(&preview?)?;
-            if let Ok(count_xml) = count
-                && let Ok(count_result) = parse_table_data(&count_xml)
-                && let Some(total_rows) = extract_count(&count_result)
-            {
-                result.total_rows = Some(total_rows);
+        let metadata_result = metadata
+            .ok()
+            .and_then(|metadata_xml| parse_table_data(&metadata_xml).ok());
+        let mut result = match preview {
+            Ok(preview_xml) => parse_table_data(&preview_xml)?,
+            Err(error) => {
+                let columns = metadata_result
+                    .as_ref()
+                    .map_or(&[][..], |metadata| metadata.columns.as_slice());
+                return Err(classify_query_error(error, columns));
             }
-            result
+        };
+        if let Some(metadata_result) = metadata_result {
+            merge_column_metadata(&mut result.columns, &metadata_result.columns);
         }
-        TableDataQuery::Simple {
-            fields,
-            where_clause,
-        } => {
-            let query = build_simple_query(&entity, fields, where_clause.as_deref())?;
-            let query = break_sql_lines(&query);
-            let (preview, metadata) = tokio::join!(
-                post_freestyle_preview(sap, &query, row_count),
-                post_ddic_preview(sap, &entity, 1),
-            );
-
-            let metadata_result = metadata
-                .ok()
-                .and_then(|metadata_xml| parse_table_data(&metadata_xml).ok());
-            let mut result = match preview {
-                Ok(preview_xml) => parse_table_data(&preview_xml)?,
-                Err(error) => {
-                    let columns = metadata_result
-                        .as_ref()
-                        .map_or(&[][..], |metadata| metadata.columns.as_slice());
-                    return Err(classify_query_error(error, columns));
-                }
-            };
-            if let Some(metadata_result) = metadata_result {
-                merge_column_metadata(&mut result.columns, &metadata_result.columns);
-            }
-            result
-        }
-        TableDataQuery::Full(query) => {
-            let query = validate_full_query(query)?;
-            let xml = post_freestyle_preview(sap, &break_sql_lines(query), row_count)
-                .await
-                .map_err(|error| classify_query_error(error, &[]))?;
-            parse_table_data(&xml)?
-        }
+        result
     };
 
-    result.rows = result
-        .rows
-        .into_iter()
-        .skip(options.offset)
-        .take(options.limit)
-        .collect();
+    apply_local_page(&mut result, options.offset, options.limit);
+    Ok(result)
+}
+
+/// Runs a complete caller-supplied `OpenSQL` SELECT through SAP's freestyle
+/// preview endpoint and applies local paging.
+///
+/// # Errors
+///
+/// Returns [`TableError`] when validation, the SAP request, or XML parsing
+/// fails.
+pub async fn run_query(
+    sap: &mut SapClient,
+    query: &str,
+    options: &QueryOptions,
+) -> Result<TableDataResult, TableError> {
+    let query = validate_full_query(query)?;
+    let row_count = preview_row_count(options.offset, options.limit)?;
+    sap.establish_csrf_session().await?;
+    let xml = post_freestyle_preview(sap, &break_sql_lines(query), row_count)
+        .await
+        .map_err(|error| classify_query_error(error, &[]))?;
+    let mut result = parse_table_data(&xml)?;
+    apply_local_page(&mut result, options.offset, options.limit);
     Ok(result)
 }
 
@@ -223,8 +222,8 @@ fn merge_column_metadata(columns: &mut [TableColumn], metadata: &[TableColumn]) 
     }
 }
 
-fn preview_row_count(options: &TableDataOptions) -> Result<usize, TableError> {
-    let requested = options.offset.saturating_add(options.limit);
+fn preview_row_count(offset: usize, limit: usize) -> Result<usize, TableError> {
+    let requested = offset.saturating_add(limit);
     if requested > MAX_PREVIEW_ROWS {
         return Err(TableError::PreviewRangeTooLarge {
             requested,
@@ -232,6 +231,14 @@ fn preview_row_count(options: &TableDataOptions) -> Result<usize, TableError> {
         });
     }
     Ok(requested.max(1))
+}
+
+fn apply_local_page(result: &mut TableDataResult, offset: usize, limit: usize) {
+    result.rows = std::mem::take(&mut result.rows)
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .collect();
 }
 
 fn build_simple_query(
@@ -601,13 +608,8 @@ mod tests {
 
     #[test]
     fn rejects_preview_ranges_above_the_endpoint_limit() {
-        let options = TableDataOptions {
-            offset: 4_950,
-            limit: 100,
-            ..TableDataOptions::default()
-        };
         assert_eq!(
-            preview_row_count(&options).unwrap_err().code(),
+            preview_row_count(4_950, 100).unwrap_err().code(),
             "table_preview_range_too_large"
         );
     }

@@ -2,9 +2,7 @@ use fractal::{
     config::Profile,
     sap::{
         client::SapClient,
-        table::{
-            TableDataOptions, TableDataQuery, TableError, TableQueryErrorKind, get_table_data,
-        },
+        table::{TableDataOptions, TableError, TableQueryErrorKind, get_table_data},
     },
 };
 use wiremock::{
@@ -80,9 +78,9 @@ async fn unfiltered_simple_mode_uses_ddic_preview_and_pages_locally() {
         &mut client,
         " zdemo_event_log ",
         &TableDataOptions {
-            query: TableDataQuery::default(),
             offset: 1,
             limit: 2,
+            ..TableDataOptions::default()
         },
     )
     .await
@@ -140,10 +138,8 @@ async fn filtered_simple_mode_builds_and_posts_a_freestyle_query() {
         &mut client,
         "ZDEMO_EVENT_LOG",
         &TableDataOptions {
-            query: TableDataQuery::Simple {
-                fields: vec!["event_id".to_owned(), "status".to_owned()],
-                where_clause: Some("STATUS='OPEN'".to_owned()),
-            },
+            fields: vec!["event_id".to_owned(), "status".to_owned()],
+            where_clause: Some("STATUS='OPEN'".to_owned()),
             offset: 0,
             limit: 2,
         },
@@ -193,9 +189,9 @@ async fn unfiltered_simple_mode_keeps_preview_when_count_enrichment_fails() {
         &mut client,
         "ZDEMO_EVENT_LOG",
         &TableDataOptions {
-            query: TableDataQuery::default(),
             offset: 0,
             limit: 1,
+            ..TableDataOptions::default()
         },
     )
     .await
@@ -238,10 +234,8 @@ async fn filtered_simple_mode_keeps_query_result_when_metadata_enrichment_fails(
         &mut client,
         "ZDEMO_EVENT_LOG",
         &TableDataOptions {
-            query: TableDataQuery::Simple {
-                fields: vec!["EVENT_ID".to_owned()],
-                where_clause: Some("STATUS='OPEN'".to_owned()),
-            },
+            fields: vec!["EVENT_ID".to_owned()],
+            where_clause: Some("STATUS='OPEN'".to_owned()),
             offset: 0,
             limit: 1,
         },
@@ -287,10 +281,8 @@ async fn filtered_simple_mode_structures_unknown_columns_with_metadata_suggestio
         &mut client,
         "ZDEMO_EVENT_LOG",
         &TableDataOptions {
-            query: TableDataQuery::Simple {
-                fields: vec!["EVNT_ID".to_owned()],
-                where_clause: None,
-            },
+            fields: vec!["EVNT_ID".to_owned()],
+            where_clause: None,
             offset: 0,
             limit: 1,
         },
@@ -306,52 +298,5 @@ async fn filtered_simple_mode_structures_unknown_columns_with_metadata_suggestio
     assert_eq!(query.identifier.as_deref(), Some("EVNT_ID"));
     assert_eq!(query.suggestions, vec!["EVENT_ID"]);
     assert!(error.hint().unwrap().contains("EVENT_ID"));
-    server.verify().await;
-}
-
-#[tokio::test]
-async fn full_query_mode_preserves_literals_while_breaking_clause_lines() {
-    let server = MockServer::start().await;
-    mount_discovery(&server, "query-csrf", "query-test").await;
-
-    let query =
-        "SELECT EVENT_ID FROM ZDEMO_EVENT_LOG WHERE NOTE = 'FROM WHERE' ORDER   BY EVENT_ID";
-    let expected_body =
-        "SELECT EVENT_ID\nFROM ZDEMO_EVENT_LOG\nWHERE NOTE = 'FROM WHERE'\nORDER   BY EVENT_ID";
-    Mock::given(method("POST"))
-        .and(path("/sap/bc/adt/datapreview/freestyle"))
-        .and(query_param("rowNumber", "1"))
-        .and(query_param("dataAging", "true"))
-        .and(query_param("sap-client", "100"))
-        .and(header("content-type", "text/plain; charset=utf-8"))
-        .and(header("x-csrf-token", "query-csrf"))
-        .and(header("cookie", "SAP_SESSIONID=query-test"))
-        .and(body_string(expected_body))
-        .respond_with(ResponseTemplate::new(200).set_body_string(
-            r#"<dataPreview:tableData xmlns:dataPreview="http://www.sap.com/adt/dataPreview"><dataPreview:totalRows>1</dataPreview:totalRows><dataPreview:executedQueryString>SELECT EVENT_ID FROM ZDEMO_EVENT_LOG WHERE NOTE = 'FROM WHERE' ORDER BY EVENT_ID</dataPreview:executedQueryString><dataPreview:columns><dataPreview:metadata dataPreview:name="EVENT_ID"/><dataPreview:dataSet><dataPreview:data>0000000001</dataPreview:data></dataPreview:dataSet></dataPreview:columns></dataPreview:tableData>"#,
-        ))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let profile = profile(server.uri());
-    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let result = get_table_data(
-        &mut client,
-        "ZDEMO_EVENT_LOG",
-        &TableDataOptions {
-            query: TableDataQuery::Full(query.to_owned()),
-            offset: 0,
-            limit: 1,
-        },
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(result.rows, vec![vec!["0000000001".to_owned()]]);
-    assert_eq!(
-        result.executed_query.as_deref(),
-        Some("SELECT EVENT_ID FROM ZDEMO_EVENT_LOG WHERE NOTE = 'FROM WHERE' ORDER BY EVENT_ID")
-    );
     server.verify().await;
 }

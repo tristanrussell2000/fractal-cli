@@ -3,7 +3,7 @@ mod fetch;
 mod parse;
 
 pub use error::{TableError, TableQueryError, TableQueryErrorKind};
-pub use fetch::{TableDataOptions, TableDataQuery, get_table_data};
+pub use fetch::{QueryOptions, TableDataOptions, get_table_data, run_query};
 pub use parse::parse_table_data;
 
 /// One column's metadata from a `dataPreview` response.

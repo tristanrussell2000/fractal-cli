@@ -126,7 +126,7 @@ impl TableError {
                 "Field names may only contain letters, digits, and underscore.".to_owned(),
             ),
             Self::WhereContainsSemicolon => Some(
-                "Semicolons are rejected to prevent multi-statement injection; express the filter as a single WHERE fragment, or use --query for a full statement."
+                "Semicolons are rejected to prevent multi-statement injection; express the filter as a single WHERE fragment, or use `fractal query` for a full statement."
                     .to_owned(),
             ),
             Self::QueryRequired => Some("Provide a complete SELECT statement.".to_owned()),

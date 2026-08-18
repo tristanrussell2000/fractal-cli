@@ -11,6 +11,7 @@ use commands::object::{
     print_object_kinds,
 };
 use commands::package::{package_items, package_tree};
+use commands::query::{print_query, query};
 use commands::system::{print_system_list, system_list, system_test};
 use commands::table::{print_table_data, table_data};
 use output::{
@@ -72,6 +73,10 @@ async fn main() {
                 output,
             )
             .await
+        }
+        Command::Query(args) => {
+            run_and_print_with_async(|| query(cli.profile.as_deref(), args), print_query, output)
+                .await
         }
     };
 

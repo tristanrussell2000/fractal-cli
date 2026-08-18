@@ -48,6 +48,8 @@ pub enum Command {
         #[command(subcommand)]
         command: TableCommand,
     },
+    /// Run a complete `OpenSQL` SELECT statement.
+    Query(QueryArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -127,7 +129,7 @@ pub enum ObjectCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum TableCommand {
-    /// Preview rows using a simple selection or complete `OpenSQL` query.
+    /// Preview rows from one table or view.
     Data(TableDataArgs),
 }
 
@@ -135,19 +137,25 @@ pub enum TableCommand {
 pub struct TableDataArgs {
     /// DDIC table or view name.
     pub(crate) name: String,
-    /// Comma-separated fields for simple mode. Omit to select every field.
-    #[arg(long, conflicts_with = "query")]
+    /// Comma-separated fields to select. Omit to select every field.
+    #[arg(long)]
     pub(crate) fields: Option<String>,
-    /// `OpenSQL` WHERE fragment for simple mode.
-    #[arg(long = "where", conflicts_with = "query")]
+    /// `OpenSQL` WHERE fragment.
+    #[arg(long = "where")]
     pub(crate) where_clause: Option<String>,
+    /// Number of matching rows to skip locally.
+    #[arg(long, default_value_t = 0)]
+    pub(crate) offset: usize,
+    /// Maximum number of rows to return.
+    #[arg(long, default_value_t = 100)]
+    pub(crate) limit: usize,
+}
+
+#[derive(Debug, Args)]
+pub struct QueryArgs {
     /// Complete `OpenSQL` SELECT statement. Use `-` to read it from standard input.
-    #[arg(
-        long,
-        allow_hyphen_values = true,
-        conflicts_with_all = ["fields", "where_clause"]
-    )]
-    pub(crate) query: Option<String>,
+    #[arg(allow_hyphen_values = true)]
+    pub(crate) query: String,
     /// Number of matching rows to skip locally.
     #[arg(long, default_value_t = 0)]
     pub(crate) offset: usize,

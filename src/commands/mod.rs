@@ -1,8 +1,11 @@
 pub mod auth;
 pub mod object;
 pub mod package;
+pub mod query;
 pub mod system;
 pub mod table;
+
+mod tabular;
 
 use crate::command_error::CommandError;
 use fractal::{config, credentials, sap::client::SapClient};
