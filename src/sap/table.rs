@@ -1,7 +1,9 @@
+mod ddl;
 mod error;
 mod fetch;
 mod parse;
 
+pub use ddl::{TableDdl, TableDdlField, TableDdlParseError, parse_table_ddl};
 pub use error::{TableError, TableQueryError, TableQueryErrorKind};
 pub use fetch::{QueryOptions, TableDataOptions, get_table_data, run_query};
 pub use parse::parse_table_data;
