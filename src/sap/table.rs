@@ -1,11 +1,15 @@
 mod ddl;
 mod error;
 mod fetch;
+mod metadata;
 mod parse;
 
 pub use ddl::{TableDdl, TableDdlField, TableDdlParseError, parse_table_ddl};
 pub use error::{TableError, TableQueryError, TableQueryErrorKind};
-pub use fetch::{QueryOptions, TableDataOptions, get_table_data, get_table_ddl, run_query};
+pub use fetch::{
+    QueryOptions, TableDataOptions, get_table_data, get_table_ddl, get_table_metadata, run_query,
+};
+pub use metadata::{TableFieldMetadata, TableMetadata};
 pub use parse::parse_table_data;
 
 /// One column's metadata from a `dataPreview` response.

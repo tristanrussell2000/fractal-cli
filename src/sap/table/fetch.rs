@@ -1,8 +1,8 @@
 use reqwest::header::{HeaderMap, HeaderValue};
 
 use super::{
-    TableColumn, TableDataResult, TableDdl, TableError, error::classify_query_error,
-    parse_table_data, parse_table_ddl,
+    TableColumn, TableDataResult, TableDdl, TableError, TableMetadata, error::classify_query_error,
+    metadata::merge_table_metadata, parse_table_data, parse_table_ddl,
 };
 use crate::sap::{
     adt::{ByteRangeOptions, get_source},
@@ -72,13 +72,41 @@ impl Default for QueryOptions {
 ///
 /// Returns [`TableError`] when the entity name is invalid, SAP cannot return
 /// the source, or the response is not a complete supported table definition.
-pub async fn get_table_ddl(sap: &mut SapClient, entity: &str) -> Result<TableDdl, TableError> {
+pub async fn get_table_ddl(sap: &SapClient, entity: &str) -> Result<TableDdl, TableError> {
     let entity = validate_entity_name(entity)?;
     let uri = table_adt_uri(&entity);
     let source = get_source(sap, &uri, ByteRangeOptions::default())
         .await
         .map_err(TableError::DdlSource)?;
     parse_table_ddl(&source.content).map_err(TableError::from)
+}
+
+/// Fetches a table's DDL and DDIC preview metadata and combines their fields.
+///
+/// The independent source and preview requests run concurrently after the
+/// read-only POST session is established. DDL defines field order, declared
+/// types, and key membership; preview metadata adds effective type, length,
+/// and description where SAP returns a matching column.
+///
+/// # Errors
+///
+/// Returns [`TableError`] when validation, session setup, either SAP request,
+/// DDL parsing, or preview XML parsing fails.
+pub async fn get_table_metadata(
+    sap: &mut SapClient,
+    entity: &str,
+) -> Result<TableMetadata, TableError> {
+    let entity = validate_entity_name(entity)?;
+    sap.establish_csrf_session().await?;
+
+    let (ddl, columns) = tokio::join!(get_table_ddl(sap, &entity), get_ddic_columns(sap, &entity),);
+
+    Ok(merge_table_metadata(ddl?, &columns?))
+}
+
+async fn get_ddic_columns(sap: &SapClient, entity: &str) -> Result<Vec<TableColumn>, TableError> {
+    let xml = post_ddic_preview(sap, entity, 1).await?;
+    Ok(parse_table_data(&xml)?.columns)
 }
 
 fn table_adt_uri(entity: &str) -> String {

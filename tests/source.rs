@@ -32,9 +32,9 @@ async fn fetches_complete_source_and_pages_utf8_safely() {
         .await;
 
     let profile = profile(server.uri());
-    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let client = SapClient::new(&profile, "password".to_owned()).unwrap();
     let first = get_source(
-        &mut client,
+        &client,
         "/sap/bc/adt/oo/classes/zcl_test",
         ByteRangeOptions {
             offset: 0,
@@ -52,7 +52,7 @@ async fn fetches_complete_source_and_pages_utf8_safely() {
     assert_eq!(first.next_offset, Some(3));
 
     let second = get_source(
-        &mut client,
+        &client,
         "/sap/bc/adt/oo/classes/zcl_test",
         ByteRangeOptions {
             offset: first.next_offset.unwrap(),
@@ -69,9 +69,9 @@ async fn fetches_complete_source_and_pages_utf8_safely() {
 #[tokio::test]
 async fn rejects_invalid_source_uris_before_http() {
     let profile = profile("http://127.0.0.1:1".to_owned());
-    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let client = SapClient::new(&profile, "password".to_owned()).unwrap();
 
-    let error = get_source(&mut client, "not-an-adt-uri", ByteRangeOptions::default())
+    let error = get_source(&client, "not-an-adt-uri", ByteRangeOptions::default())
         .await
         .unwrap_err();
     assert!(matches!(error, AdtError::InvalidUri(_)));
@@ -80,10 +80,10 @@ async fn rejects_invalid_source_uris_before_http() {
 #[tokio::test]
 async fn rejects_doubled_source_suffix_and_known_no_source_kinds() {
     let profile = profile("http://127.0.0.1:1".to_owned());
-    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let client = SapClient::new(&profile, "password".to_owned()).unwrap();
 
     let doubled = get_source(
-        &mut client,
+        &client,
         "/sap/bc/adt/oo/classes/zcl_test/source/main",
         ByteRangeOptions::default(),
     )
@@ -92,7 +92,7 @@ async fn rejects_doubled_source_suffix_and_known_no_source_kinds() {
     assert!(matches!(doubled, AdtError::DoubledSourceSuffix(_)));
 
     let domain = get_source(
-        &mut client,
+        &client,
         "/sap/bc/adt/ddic/domains/zdomain",
         ByteRangeOptions::default(),
     )

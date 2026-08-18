@@ -401,7 +401,7 @@ pub struct ByteRangeResult {
 /// Returns [`AdtError`] for invalid or unsupported object URIs, SAP request
 /// failures, or malformed source responses.
 pub async fn get_source(
-    sap: &mut SapClient,
+    sap: &SapClient,
     uri: &str,
     options: ByteRangeOptions,
 ) -> Result<ByteRangeResult, AdtError> {
@@ -415,7 +415,7 @@ pub async fn get_source(
     }
 
     let source_uri = format!("{}{}", uri.trim_end_matches('/'), SOURCE_SUFFIX);
-    let source = sap.get_text(&source_uri).await?;
+    let source = sap.get_text_with_query_read_only(&source_uri, &[]).await?;
     page_text(&source, options)
 }
 

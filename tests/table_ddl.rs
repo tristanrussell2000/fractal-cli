@@ -38,10 +38,8 @@ define table zsample_record {
         .mount(&server)
         .await;
 
-    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let ddl = get_table_ddl(&mut client, " zsample_record ")
-        .await
-        .unwrap();
+    let client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let ddl = get_table_ddl(&client, " zsample_record ").await.unwrap();
 
     assert_eq!(ddl.name, "zsample_record");
     assert_eq!(ddl.fields.len(), 2);
@@ -66,8 +64,8 @@ async fn encodes_namespaced_table_names_as_one_adt_path_component() {
         .mount(&server)
         .await;
 
-    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let ddl = get_table_ddl(&mut client, "/SAMPLE/RECORD").await.unwrap();
+    let client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let ddl = get_table_ddl(&client, "/SAMPLE/RECORD").await.unwrap();
 
     assert_eq!(ddl.name, "/sample/record");
     server.verify().await;
@@ -75,13 +73,13 @@ async fn encodes_namespaced_table_names_as_one_adt_path_component() {
 
 #[tokio::test]
 async fn rejects_invalid_table_names_before_requesting_source() {
-    let mut client = SapClient::new(
+    let client = SapClient::new(
         &profile("http://127.0.0.1:1".to_owned()),
         "password".to_owned(),
     )
     .unwrap();
 
-    let error = get_table_ddl(&mut client, "zsample_record;delete")
+    let error = get_table_ddl(&client, "zsample_record;delete")
         .await
         .unwrap_err();
 
@@ -101,10 +99,8 @@ async fn identifies_malformed_table_source_as_a_ddl_parse_error() {
         .mount(&server)
         .await;
 
-    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let error = get_table_ddl(&mut client, "ZSAMPLE_BROKEN")
-        .await
-        .unwrap_err();
+    let client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let error = get_table_ddl(&client, "ZSAMPLE_BROKEN").await.unwrap_err();
 
     assert!(matches!(
         &error,
@@ -124,10 +120,8 @@ async fn preserves_sap_errors_from_the_source_request() {
         .mount(&server)
         .await;
 
-    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let error = get_table_ddl(&mut client, "ZSAMPLE_MISSING")
-        .await
-        .unwrap_err();
+    let client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let error = get_table_ddl(&client, "ZSAMPLE_MISSING").await.unwrap_err();
 
     assert!(matches!(&error, TableError::DdlSource(_)));
     assert_eq!(error.code(), "not_found");

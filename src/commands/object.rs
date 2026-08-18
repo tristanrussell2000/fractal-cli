@@ -186,9 +186,9 @@ pub async fn object_source(
     explicit_profile: Option<&str>,
     args: &SourceArgs,
 ) -> Result<ObjectSourceResultOutput, CommandError> {
-    let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
+    let (profile_name, _profile, client) = connect(explicit_profile).await?;
     let result = fractal::sap::adt::get_source(
-        &mut client,
+        &client,
         &args.uri,
         ByteRangeOptions {
             offset: args.offset,
