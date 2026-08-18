@@ -1,13 +1,18 @@
 use reqwest::header::{HeaderMap, HeaderValue};
 
 use super::{
-    TableColumn, TableDataResult, TableError, error::classify_query_error, parse_table_data,
+    TableColumn, TableDataResult, TableDdl, TableError, error::classify_query_error,
+    parse_table_data, parse_table_ddl,
 };
-use crate::sap::client::{SapClient, SapError};
+use crate::sap::{
+    adt::{ByteRangeOptions, get_source},
+    client::{SapClient, SapError},
+};
 
 const DDIC_PREVIEW_PATH: &str = "/sap/bc/adt/datapreview/ddic";
 const FREESTYLE_PREVIEW_PATH: &str = "/sap/bc/adt/datapreview/freestyle";
 const MAX_PREVIEW_ROWS: usize = 5_000;
+const TABLE_ADT_PATH: &str = "/sap/bc/adt/ddic/tables";
 
 const SQL_BREAK_KEYWORDS: [&str; 13] = [
     "INNER JOIN",
@@ -59,6 +64,26 @@ impl Default for QueryOptions {
             limit: 100,
         }
     }
+}
+
+/// Fetches and parses the complete DDL source for one DDIC table.
+///
+/// # Errors
+///
+/// Returns [`TableError`] when the entity name is invalid, SAP cannot return
+/// the source, or the response is not a complete supported table definition.
+pub async fn get_table_ddl(sap: &mut SapClient, entity: &str) -> Result<TableDdl, TableError> {
+    let entity = validate_entity_name(entity)?;
+    let uri = table_adt_uri(&entity);
+    let source = get_source(sap, &uri, ByteRangeOptions::default())
+        .await
+        .map_err(TableError::DdlSource)?;
+    parse_table_ddl(&source.content).map_err(TableError::from)
+}
+
+fn table_adt_uri(entity: &str) -> String {
+    let path_name = entity.to_ascii_lowercase().replace('/', "%2f");
+    format!("{TABLE_ADT_PATH}/{path_name}")
 }
 
 /// Fetches table data through the appropriate SAP ADT preview endpoint.
@@ -526,6 +551,18 @@ mod tests {
     fn builds_a_star_query_with_no_fields_or_where() {
         let sql = build_simple_query("ztable", &[], None).unwrap();
         assert_eq!(sql, "SELECT * FROM ZTABLE");
+    }
+
+    #[test]
+    fn builds_table_adt_uris_for_plain_and_namespaced_names() {
+        assert_eq!(
+            table_adt_uri("ZSAMPLE_RECORD"),
+            "/sap/bc/adt/ddic/tables/zsample_record"
+        );
+        assert_eq!(
+            table_adt_uri("/SAMPLE/RECORD"),
+            "/sap/bc/adt/ddic/tables/%2fsample%2frecord"
+        );
     }
 
     #[test]
