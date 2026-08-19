@@ -9,8 +9,8 @@ use crate::{
     output::{OutputFormat, print_result},
 };
 use fractal::sap::table::{
-    TableDataOptions, TableDataResult, TableFieldMetadata, TableMetadata, get_table_data,
-    get_table_metadata,
+    TableDataOptions, TableDataResult, TableFieldMetadata, TableMetadata, TableMetadataOptions,
+    get_table_data, get_table_metadata,
 };
 
 #[derive(Debug, Serialize)]
@@ -33,6 +33,7 @@ pub struct TableMetadataResultOutput {
     ok: bool,
     profile: String,
     entity: String,
+    total_rows: Option<u64>,
     field_count: usize,
     key_field_count: usize,
     fields: Vec<TableFieldMetadataOutput>,
@@ -71,7 +72,14 @@ pub async fn table_metadata(
     args: &TableMetadataArgs,
 ) -> Result<TableMetadataResultOutput, CommandError> {
     let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
-    let result = get_table_metadata(&mut client, &args.name).await?;
+    let result = get_table_metadata(
+        &mut client,
+        &args.name,
+        &TableMetadataOptions {
+            include_row_count: args.count,
+        },
+    )
+    .await?;
     Ok(map_table_metadata_result(profile_name, result))
 }
 
@@ -134,6 +142,7 @@ fn map_table_metadata_result(profile: String, result: TableMetadata) -> TableMet
         ok: true,
         profile,
         entity: result.entity,
+        total_rows: result.total_rows,
         field_count: fields.len(),
         key_field_count,
         fields,
@@ -196,6 +205,9 @@ fn render_table_metadata_readable(result: &TableMetadataResultOutput) -> String 
         "fields: {} (key fields: {})",
         result.field_count, result.key_field_count
     );
+    if let Some(total_rows) = result.total_rows {
+        let _ = writeln!(output, "rows: {total_rows}");
+    }
 
     let columns = [
         metadata_column("KEY"),
@@ -327,16 +339,18 @@ mod tests {
     }
 
     #[test]
-    fn parses_table_metadata_name_without_counting_options() {
-        let args = metadata_args(
+    fn parses_optional_table_metadata_count() {
+        let without_count = metadata_args(
             Cli::try_parse_from(["fractal", "table", "metadata", "ZSAMPLE_RECORD"]).unwrap(),
         );
-
-        assert_eq!(args.name, "ZSAMPLE_RECORD");
-        assert!(
-            Cli::try_parse_from(["fractal", "table", "metadata", "ZSAMPLE_RECORD", "--count",])
-                .is_err()
+        let with_count = metadata_args(
+            Cli::try_parse_from(["fractal", "table", "metadata", "ZSAMPLE_RECORD", "--count"])
+                .unwrap(),
         );
+
+        assert_eq!(without_count.name, "ZSAMPLE_RECORD");
+        assert!(!without_count.count);
+        assert!(with_count.count);
     }
 
     #[test]
@@ -403,6 +417,7 @@ mod tests {
             "development".to_owned(),
             TableMetadata {
                 entity: "zsample_record".to_owned(),
+                total_rows: Some(42),
                 fields: vec![
                     TableFieldMetadata {
                         name: "client".to_owned(),
@@ -428,6 +443,7 @@ mod tests {
 
         assert!(result.ok);
         assert_eq!(result.entity, "zsample_record");
+        assert_eq!(result.total_rows, Some(42));
         assert_eq!(result.field_count, 2);
         assert_eq!(result.key_field_count, 1);
         assert_eq!(result.fields[0].declared_type, "abap.clnt");
@@ -435,6 +451,7 @@ mod tests {
         let rendered = render_table_metadata_readable(&result);
         assert!(rendered.contains("entity: zsample_record"));
         assert!(rendered.contains("fields: 2 (key fields: 1)"));
+        assert!(rendered.contains("rows: 42"));
         assert!(rendered.contains("DECLARED TYPE"));
         assert!(rendered.contains("abap.clnt"));
         assert!(rendered.contains("zsample_status"));
@@ -443,6 +460,7 @@ mod tests {
         let json = serde_json::to_value(&result).unwrap();
         assert_eq!(json["field_count"], 2);
         assert_eq!(json["key_field_count"], 1);
+        assert_eq!(json["total_rows"], 42);
         assert_eq!(json["fields"][0]["is_key"], true);
         assert_eq!(json["fields"][1]["description"], "Status");
     }

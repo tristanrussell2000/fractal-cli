@@ -157,6 +157,9 @@ pub struct TableDataArgs {
 pub struct TableMetadataArgs {
     /// DDIC table name.
     pub(crate) name: String,
+    /// Run an accurate, potentially expensive `COUNT(*)` query.
+    #[arg(long)]
+    pub(crate) count: bool,
 }
 
 #[derive(Debug, Args)]

@@ -66,6 +66,13 @@ impl Default for QueryOptions {
     }
 }
 
+/// Options for fetching combined table metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TableMetadataOptions {
+    /// Run an additional accurate `COUNT(*)` query.
+    pub include_row_count: bool,
+}
+
 /// Fetches and parses the complete DDL source for one DDIC table.
 ///
 /// # Errors
@@ -84,29 +91,57 @@ pub async fn get_table_ddl(sap: &SapClient, entity: &str) -> Result<TableDdl, Ta
 /// Fetches a table's DDL and DDIC preview metadata and combines their fields.
 ///
 /// The independent source and preview requests run concurrently after the
-/// read-only POST session is established. DDL defines field order, declared
+/// read-only POST session is established. When requested, the accurate count
+/// query joins those concurrent requests. DDL defines field order, declared
 /// types, and key membership; preview metadata adds effective type, length,
 /// and description where SAP returns a matching column.
 ///
 /// # Errors
 ///
-/// Returns [`TableError`] when validation, session setup, either SAP request,
-/// DDL parsing, or preview XML parsing fails.
+/// Returns [`TableError`] when validation, session setup, a required SAP
+/// request, DDL parsing, preview XML parsing, or requested count parsing fails.
 pub async fn get_table_metadata(
     sap: &mut SapClient,
     entity: &str,
+    options: &TableMetadataOptions,
 ) -> Result<TableMetadata, TableError> {
     let entity = validate_entity_name(entity)?;
     sap.establish_csrf_session().await?;
 
-    let (ddl, columns) = tokio::join!(get_table_ddl(sap, &entity), get_ddic_columns(sap, &entity),);
+    let (ddl, columns, total_rows) = tokio::join!(
+        get_table_ddl(sap, &entity),
+        get_ddic_columns(sap, &entity),
+        get_optional_row_count(sap, &entity, options.include_row_count),
+    );
 
-    Ok(merge_table_metadata(ddl?, &columns?))
+    let columns = columns?;
+    let mut metadata = merge_table_metadata(ddl?, &columns);
+    metadata.total_rows = total_rows?;
+    Ok(metadata)
 }
 
 async fn get_ddic_columns(sap: &SapClient, entity: &str) -> Result<Vec<TableColumn>, TableError> {
     let xml = post_ddic_preview(sap, entity, 1).await?;
     Ok(parse_table_data(&xml)?.columns)
+}
+
+async fn get_optional_row_count(
+    sap: &SapClient,
+    entity: &str,
+    include_row_count: bool,
+) -> Result<Option<u64>, TableError> {
+    if !include_row_count {
+        return Ok(None);
+    }
+
+    get_table_row_count(sap, entity).await.map(Some)
+}
+
+async fn get_table_row_count(sap: &SapClient, entity: &str) -> Result<u64, TableError> {
+    let query = break_sql_lines(&format!("SELECT COUNT(*) AS ROW_COUNT FROM {entity}"));
+    let xml = post_freestyle_preview(sap, &query, 1).await?;
+    let result = parse_table_data(&xml)?;
+    extract_count(&result).ok_or(TableError::CountMissing)
 }
 
 fn table_adt_uri(entity: &str) -> String {
@@ -145,17 +180,13 @@ pub async fn get_table_data(
             .as_deref()
             .is_none_or(|value| value.trim().is_empty())
     {
-        let count_query = break_sql_lines(&format!("SELECT COUNT(*) AS ROW_COUNT FROM {entity}"));
         let (preview, count) = tokio::join!(
             post_ddic_preview(sap, &entity, row_count),
-            post_freestyle_preview(sap, &count_query, 1),
+            get_table_row_count(sap, &entity),
         );
 
         let mut result = parse_table_data(&preview?)?;
-        if let Ok(count_xml) = count
-            && let Ok(count_result) = parse_table_data(&count_xml)
-            && let Some(total_rows) = extract_count(&count_result)
-        {
+        if let Ok(total_rows) = count {
             result.total_rows = Some(total_rows);
         }
         result

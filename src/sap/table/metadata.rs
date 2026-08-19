@@ -18,6 +18,7 @@ pub struct TableFieldMetadata {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableMetadata {
     pub entity: String,
+    pub total_rows: Option<u64>,
     pub fields: Vec<TableFieldMetadata>,
 }
 
@@ -48,6 +49,7 @@ pub(super) fn merge_table_metadata(ddl: TableDdl, columns: &[TableColumn]) -> Ta
 
     TableMetadata {
         entity: ddl.name,
+        total_rows: None,
         fields,
     }
 }
@@ -94,6 +96,7 @@ mod tests {
         );
 
         assert_eq!(result.entity, "zsample_record");
+        assert_eq!(result.total_rows, None);
         assert_eq!(result.fields[0].name, "client");
         assert!(result.fields[0].is_key);
         assert_eq!(result.fields[0].col_type.as_deref(), Some("CLNT"));

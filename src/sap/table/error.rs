@@ -79,6 +79,8 @@ pub enum TableError {
     },
     #[error("could not parse table data response: {0}")]
     Parse(String),
+    #[error("SAP's table count response did not contain a numeric row count")]
+    CountMissing,
     #[error("invalid DDIC entity name: {0}")]
     InvalidEntityName(String),
     #[error("invalid field name: {0}")]
@@ -106,6 +108,7 @@ impl TableError {
             Self::DdlParse(_) => "table_ddl_parse_error",
             Self::Query { query, .. } => query.kind.code(),
             Self::Parse(_) => "table_response_parse_error",
+            Self::CountMissing => "table_count_response_error",
             Self::InvalidEntityName(_) => "invalid_table_entity_name",
             Self::InvalidFieldName(_) => "invalid_table_field_name",
             Self::WhereContainsSemicolon => "where_contains_semicolon",
@@ -128,6 +131,10 @@ impl TableError {
             Self::Query { query, .. } => Some(query_hint(query)),
             Self::Parse(_) => Some(
                 "The SAP table data response did not match the expected dataPreview format."
+                    .to_owned(),
+            ),
+            Self::CountMissing => Some(
+                "Retry the count; if it persists, inspect the freestyle dataPreview response."
                     .to_owned(),
             ),
             Self::InvalidEntityName(_) => Some(

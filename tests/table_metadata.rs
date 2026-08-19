@@ -2,12 +2,12 @@ use fractal::{
     config::Profile,
     sap::{
         client::SapClient,
-        table::{TableError, get_table_metadata},
+        table::{TableError, TableMetadataOptions, get_table_metadata},
     },
 };
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
-    matchers::{basic_auth, header, method, path, query_param},
+    matchers::{basic_auth, body_string, header, method, path, query_param},
 };
 
 fn profile(base_url: String) -> Profile {
@@ -53,12 +53,7 @@ define table zsample_record {
         .await;
 }
 
-#[tokio::test]
-async fn fetches_and_combines_ddl_with_ddic_preview_metadata() {
-    let server = MockServer::start().await;
-    mount_discovery(&server).await;
-    mount_source(&server).await;
-
+async fn mount_ddic_preview(server: &MockServer) {
     Mock::given(method("POST"))
         .and(path("/sap/bc/adt/datapreview/ddic"))
         .and(query_param("rowNumber", "1"))
@@ -71,15 +66,28 @@ async fn fetches_and_combines_ddl_with_ddic_preview_metadata() {
             r#"<dataPreview:tableData xmlns:dataPreview="http://www.sap.com/adt/dataPreview"><dataPreview:name>ZSAMPLE_RECORD</dataPreview:name><dataPreview:columns><dataPreview:metadata dataPreview:name="STATUS" dataPreview:type="C" dataPreview:description="Status" dataPreview:colType="CHAR" dataPreview:length="12"/></dataPreview:columns><dataPreview:columns><dataPreview:metadata dataPreview:name="CLIENT" dataPreview:type="C" dataPreview:description="Client" dataPreview:colType="CLNT" dataPreview:length="3"/></dataPreview:columns></dataPreview:tableData>"#,
         ))
         .expect(1)
-        .mount(&server)
+        .mount(server)
         .await;
+}
+
+#[tokio::test]
+async fn fetches_and_combines_ddl_with_ddic_preview_metadata() {
+    let server = MockServer::start().await;
+    mount_discovery(&server).await;
+    mount_source(&server).await;
+    mount_ddic_preview(&server).await;
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let metadata = get_table_metadata(&mut client, " zsample_record ")
-        .await
-        .unwrap();
+    let metadata = get_table_metadata(
+        &mut client,
+        " zsample_record ",
+        &TableMetadataOptions::default(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(metadata.entity, "zsample_record");
+    assert_eq!(metadata.total_rows, None);
     assert_eq!(metadata.fields.len(), 2);
     assert_eq!(metadata.fields[0].name, "client");
     assert!(metadata.fields[0].is_key);
@@ -89,6 +97,77 @@ async fn fetches_and_combines_ddl_with_ddic_preview_metadata() {
     assert_eq!(metadata.fields[1].name, "status");
     assert_eq!(metadata.fields[1].declared_type, "zsample_status");
     assert_eq!(metadata.fields[1].description.as_deref(), Some("Status"));
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn includes_an_accurate_row_count_only_when_requested() {
+    let server = MockServer::start().await;
+    mount_discovery(&server).await;
+    mount_source(&server).await;
+    mount_ddic_preview(&server).await;
+
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/datapreview/freestyle"))
+        .and(query_param("rowNumber", "1"))
+        .and(query_param("dataAging", "true"))
+        .and(query_param("sap-client", "903"))
+        .and(header("x-csrf-token", "metadata-csrf"))
+        .and(header("cookie", "SAP_SESSIONID=metadata-test"))
+        .and(body_string(
+            "SELECT COUNT(*) AS ROW_COUNT\nFROM ZSAMPLE_RECORD",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"<dataPreview:tableData xmlns:dataPreview="http://www.sap.com/adt/dataPreview"><dataPreview:columns><dataPreview:metadata dataPreview:name="ROW_COUNT"/><dataPreview:dataSet><dataPreview:data>42</dataPreview:data></dataPreview:dataSet></dataPreview:columns></dataPreview:tableData>"#,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let metadata = get_table_metadata(
+        &mut client,
+        "ZSAMPLE_RECORD",
+        &TableMetadataOptions {
+            include_row_count: true,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(metadata.total_rows, Some(42));
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn reports_a_requested_count_without_a_numeric_value() {
+    let server = MockServer::start().await;
+    mount_discovery(&server).await;
+    mount_source(&server).await;
+    mount_ddic_preview(&server).await;
+
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/datapreview/freestyle"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"<dataPreview:tableData xmlns:dataPreview="http://www.sap.com/adt/dataPreview"><dataPreview:columns><dataPreview:metadata dataPreview:name="ROW_COUNT"/><dataPreview:dataSet><dataPreview:data>not-a-number</dataPreview:data></dataPreview:dataSet></dataPreview:columns></dataPreview:tableData>"#,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let error = get_table_metadata(
+        &mut client,
+        "ZSAMPLE_RECORD",
+        &TableMetadataOptions {
+            include_row_count: true,
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert!(matches!(error, TableError::CountMissing));
+    assert_eq!(error.code(), "table_count_response_error");
     server.verify().await;
 }
 
@@ -106,9 +185,13 @@ async fn reports_malformed_ddic_preview_metadata() {
         .await;
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let error = get_table_metadata(&mut client, "ZSAMPLE_RECORD")
-        .await
-        .unwrap_err();
+    let error = get_table_metadata(
+        &mut client,
+        "ZSAMPLE_RECORD",
+        &TableMetadataOptions::default(),
+    )
+    .await
+    .unwrap_err();
 
     assert!(matches!(error, TableError::Parse(_)));
     server.verify().await;
