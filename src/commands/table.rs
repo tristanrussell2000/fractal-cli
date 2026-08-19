@@ -3,12 +3,15 @@ use std::fmt::Write as _;
 use serde::Serialize;
 
 use crate::{
-    cli::TableDataArgs,
+    cli::{TableDataArgs, TableMetadataArgs},
     command_error::CommandError,
     commands::{connect, tabular},
     output::{OutputFormat, print_result},
 };
-use fractal::sap::table::{TableDataOptions, TableDataResult, get_table_data};
+use fractal::sap::table::{
+    TableDataOptions, TableDataResult, TableFieldMetadata, TableMetadata, get_table_data,
+    get_table_metadata,
+};
 
 #[derive(Debug, Serialize)]
 pub struct TableDataResultOutput {
@@ -23,6 +26,27 @@ pub struct TableDataResultOutput {
     executed_query: Option<String>,
     columns: Vec<tabular::ColumnOutput>,
     rows: Vec<Vec<String>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TableMetadataResultOutput {
+    ok: bool,
+    profile: String,
+    entity: String,
+    field_count: usize,
+    key_field_count: usize,
+    fields: Vec<TableFieldMetadataOutput>,
+}
+
+#[derive(Debug, Serialize)]
+struct TableFieldMetadataOutput {
+    name: String,
+    declared_type: String,
+    is_key: bool,
+    sap_type: Option<String>,
+    col_type: Option<String>,
+    length: Option<u32>,
+    description: Option<String>,
 }
 
 pub async fn table_data(
@@ -40,6 +64,15 @@ pub async fn table_data(
         args.limit,
         result,
     ))
+}
+
+pub async fn table_metadata(
+    explicit_profile: Option<&str>,
+    args: &TableMetadataArgs,
+) -> Result<TableMetadataResultOutput, CommandError> {
+    let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
+    let result = get_table_metadata(&mut client, &args.name).await?;
+    Ok(map_table_metadata_result(profile_name, result))
 }
 
 fn table_options_from_args(args: &TableDataArgs) -> TableDataOptions {
@@ -89,6 +122,36 @@ fn map_table_data_result(
     }
 }
 
+fn map_table_metadata_result(profile: String, result: TableMetadata) -> TableMetadataResultOutput {
+    let fields: Vec<_> = result
+        .fields
+        .into_iter()
+        .map(map_table_field_metadata)
+        .collect();
+    let key_field_count = fields.iter().filter(|field| field.is_key).count();
+
+    TableMetadataResultOutput {
+        ok: true,
+        profile,
+        entity: result.entity,
+        field_count: fields.len(),
+        key_field_count,
+        fields,
+    }
+}
+
+fn map_table_field_metadata(field: TableFieldMetadata) -> TableFieldMetadataOutput {
+    TableFieldMetadataOutput {
+        name: field.name,
+        declared_type: field.declared_type,
+        is_key: field.is_key,
+        sap_type: field.sap_type,
+        col_type: field.col_type,
+        length: field.length,
+        description: field.description,
+    }
+}
+
 pub fn print_table_data(result: &TableDataResultOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
         print_result(result, output);
@@ -96,6 +159,15 @@ pub fn print_table_data(result: &TableDataResultOutput, output: OutputFormat) {
     }
 
     print!("{}", render_table_data_readable(result));
+}
+
+pub fn print_table_metadata(result: &TableMetadataResultOutput, output: OutputFormat) {
+    if matches!(output, OutputFormat::Json) {
+        print_result(result, output);
+        return;
+    }
+
+    print!("{}", render_table_metadata_readable(result));
 }
 
 fn render_table_data_readable(result: &TableDataResultOutput) -> String {
@@ -116,13 +188,63 @@ fn render_table_data_readable(result: &TableDataResultOutput) -> String {
     output
 }
 
+fn render_table_metadata_readable(result: &TableMetadataResultOutput) -> String {
+    let mut output = String::new();
+    let _ = writeln!(output, "entity: {}", result.entity);
+    let _ = writeln!(
+        output,
+        "fields: {} (key fields: {})",
+        result.field_count, result.key_field_count
+    );
+
+    let columns = [
+        metadata_column("KEY"),
+        metadata_column("FIELD"),
+        metadata_column("DECLARED TYPE"),
+        metadata_column("SAP TYPE"),
+        metadata_column("COLUMN TYPE"),
+        metadata_column("LENGTH"),
+        metadata_column("DESCRIPTION"),
+    ];
+    let rows: Vec<_> = result
+        .fields
+        .iter()
+        .map(|field| {
+            vec![
+                if field.is_key { "yes" } else { "" }.to_owned(),
+                field.name.clone(),
+                field.declared_type.clone(),
+                field.sap_type.clone().unwrap_or_default(),
+                field.col_type.clone().unwrap_or_default(),
+                field
+                    .length
+                    .map(|length| length.to_string())
+                    .unwrap_or_default(),
+                field.description.clone().unwrap_or_default(),
+            ]
+        })
+        .collect();
+    output.push_str(&tabular::render_grid(&columns, &rows));
+    output
+}
+
+fn metadata_column(name: &str) -> tabular::ColumnOutput {
+    tabular::ColumnOutput {
+        name: name.to_owned(),
+        sap_type: None,
+        col_type: None,
+        length: None,
+        description: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
 
     use super::*;
     use crate::cli::{Cli, Command, TableCommand};
-    use fractal::sap::table::TableColumn;
+    use fractal::sap::table::{TableColumn, TableFieldMetadata, TableMetadata};
 
     fn table_args(cli: Cli) -> TableDataArgs {
         let Command::Table {
@@ -130,6 +252,16 @@ mod tests {
         } = cli.command
         else {
             panic!("expected table data command");
+        };
+        args
+    }
+
+    fn metadata_args(cli: Cli) -> TableMetadataArgs {
+        let Command::Table {
+            command: TableCommand::Metadata(args),
+        } = cli.command
+        else {
+            panic!("expected table metadata command");
         };
         args
     }
@@ -195,6 +327,19 @@ mod tests {
     }
 
     #[test]
+    fn parses_table_metadata_name_without_counting_options() {
+        let args = metadata_args(
+            Cli::try_parse_from(["fractal", "table", "metadata", "ZSAMPLE_RECORD"]).unwrap(),
+        );
+
+        assert_eq!(args.name, "ZSAMPLE_RECORD");
+        assert!(
+            Cli::try_parse_from(["fractal", "table", "metadata", "ZSAMPLE_RECORD", "--count",])
+                .is_err()
+        );
+    }
+
+    #[test]
     fn maps_table_results_and_paging_metadata() {
         let result = map_table_data_result(
             "development".to_owned(),
@@ -250,5 +395,55 @@ mod tests {
         assert!(rendered.contains("rows: 1 of 1"));
         assert!(rendered.contains("EVENT_ID"));
         assert!(rendered.contains("0000000001"));
+    }
+
+    #[test]
+    fn maps_and_renders_table_metadata() {
+        let result = map_table_metadata_result(
+            "development".to_owned(),
+            TableMetadata {
+                entity: "zsample_record".to_owned(),
+                fields: vec![
+                    TableFieldMetadata {
+                        name: "client".to_owned(),
+                        declared_type: "abap.clnt".to_owned(),
+                        is_key: true,
+                        sap_type: Some("C".to_owned()),
+                        col_type: Some("CLNT".to_owned()),
+                        length: Some(3),
+                        description: Some("Client".to_owned()),
+                    },
+                    TableFieldMetadata {
+                        name: "status".to_owned(),
+                        declared_type: "zsample_status".to_owned(),
+                        is_key: false,
+                        sap_type: Some("C".to_owned()),
+                        col_type: Some("CHAR".to_owned()),
+                        length: Some(12),
+                        description: Some("Status".to_owned()),
+                    },
+                ],
+            },
+        );
+
+        assert!(result.ok);
+        assert_eq!(result.entity, "zsample_record");
+        assert_eq!(result.field_count, 2);
+        assert_eq!(result.key_field_count, 1);
+        assert_eq!(result.fields[0].declared_type, "abap.clnt");
+
+        let rendered = render_table_metadata_readable(&result);
+        assert!(rendered.contains("entity: zsample_record"));
+        assert!(rendered.contains("fields: 2 (key fields: 1)"));
+        assert!(rendered.contains("DECLARED TYPE"));
+        assert!(rendered.contains("abap.clnt"));
+        assert!(rendered.contains("zsample_status"));
+        assert!(rendered.contains("Status"));
+
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["field_count"], 2);
+        assert_eq!(json["key_field_count"], 1);
+        assert_eq!(json["fields"][0]["is_key"], true);
+        assert_eq!(json["fields"][1]["description"], "Status");
     }
 }

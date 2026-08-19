@@ -13,7 +13,7 @@ use commands::object::{
 use commands::package::{package_items, package_tree};
 use commands::query::{print_query, query};
 use commands::system::{print_system_list, system_list, system_test};
-use commands::table::{print_table_data, table_data};
+use commands::table::{print_table_data, print_table_metadata, table_data, table_metadata};
 use output::{
     default_output_format, run_and_print, run_and_print_async, run_and_print_with,
     run_and_print_with_async,
@@ -70,6 +70,16 @@ async fn main() {
             run_and_print_with_async(
                 || table_data(cli.profile.as_deref(), args),
                 print_table_data,
+                output,
+            )
+            .await
+        }
+        Command::Table {
+            command: TableCommand::Metadata(args),
+        } => {
+            run_and_print_with_async(
+                || table_metadata(cli.profile.as_deref(), args),
+                print_table_metadata,
                 output,
             )
             .await

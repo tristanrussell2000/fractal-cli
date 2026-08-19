@@ -131,6 +131,8 @@ pub enum ObjectCommand {
 pub enum TableCommand {
     /// Preview rows from one table or view.
     Data(TableDataArgs),
+    /// Show fields, keys, declared types, and DDIC column metadata for one table.
+    Metadata(TableMetadataArgs),
 }
 
 #[derive(Debug, Args)]
@@ -149,6 +151,12 @@ pub struct TableDataArgs {
     /// Maximum number of rows to return.
     #[arg(long, default_value_t = 100)]
     pub(crate) limit: usize,
+}
+
+#[derive(Debug, Args)]
+pub struct TableMetadataArgs {
+    /// DDIC table name.
+    pub(crate) name: String,
 }
 
 #[derive(Debug, Args)]
