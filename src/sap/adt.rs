@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use super::client::{SapClient, SapError};
 use super::{find_child, non_empty_attribute};
-use crate::config::Profile;
+use crate::{config::Profile, pattern::glob_matches};
 
 const SEARCH_PATH: &str = "/sap/bc/adt/repository/informationsystem/search";
 const USAGES_PATH: &str = "/sap/bc/adt/repository/informationsystem/usageReferences";
@@ -828,39 +828,6 @@ fn matches_scope(hit: &ObjectSearchHit, patterns: &[String]) -> bool {
         .as_deref()
         .or(Some(hit.name.as_str()))
         .is_some_and(|value| patterns.iter().any(|pattern| glob_matches(pattern, value)))
-}
-
-fn glob_matches(pattern: &str, value: &str) -> bool {
-    let pattern = pattern.to_ascii_uppercase();
-    let value = value.to_ascii_uppercase();
-    let pattern = pattern.as_bytes();
-    let value = value.as_bytes();
-    let mut p = 0;
-    let mut v = 0;
-    let mut star = None;
-    let mut retry = 0;
-
-    while v < value.len() {
-        if p < pattern.len() && pattern[p] == value[v] {
-            p += 1;
-            v += 1;
-        } else if p < pattern.len() && pattern[p] == b'*' {
-            star = Some(p);
-            p += 1;
-            retry = v;
-        } else if let Some(star_position) = star {
-            p = star_position + 1;
-            retry += 1;
-            v = retry;
-        } else {
-            return false;
-        }
-    }
-
-    while p < pattern.len() && pattern[p] == b'*' {
-        p += 1;
-    }
-    p == pattern.len()
 }
 
 #[cfg(test)]
