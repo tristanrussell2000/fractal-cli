@@ -1,14 +1,18 @@
 use std::string::FromUtf8Error;
 
+use reqwest::header::{HeaderMap, HeaderValue};
 use thiserror::Error;
 
 use super::{
     adt::RepositoryKind,
     client::{SapClient, SapError},
 };
-use crate::edit::source_sha256;
+use crate::edit::{EditError, PatchPlan, plan_patch, source_sha256, validate_customer_namespace};
 
 const SOURCE_SUFFIX: &str = "/source/main";
+const STATEFUL_SESSION_HEADER: &str = "X-sap-adt-sessiontype";
+const LOCK_RESULT_MEDIA_TYPE: &str =
+    "application/vnd.sap.as+xml; charset=UTF-8; dataname=com.sap.adt.lock.Result";
 
 /// A source-based ADT object family supported by the safe-edit workflow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +111,41 @@ pub struct AdtSourceReadResult {
     pub bytes: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EditableAdtObjectIdentity {
+    object_type: EditableAdtObjectType,
+    name: String,
+    object_uri: String,
+    source_uri: String,
+}
+
+/// One exact source replacement to perform while holding an ADT object lock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AtomicAdtSourcePatchRequest {
+    pub object_type: EditableAdtObjectType,
+    pub name: String,
+    pub find: String,
+    pub replace: String,
+    pub expected_sha256: Option<String>,
+}
+
+/// The source versions observed before and after an atomic ADT patch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AtomicAdtSourcePatchResult {
+    pub object_type: EditableAdtObjectType,
+    pub name: String,
+    pub object_uri: String,
+    pub source_uri: String,
+    pub original_sha256: String,
+    pub proposed_sha256: String,
+    pub stored_sha256: String,
+    pub original_bytes: usize,
+    pub proposed_bytes: usize,
+    pub stored_bytes: usize,
+    pub replacements: usize,
+    pub stored_source: String,
+}
+
 /// A deterministic failure while identifying or reading editable ADT source.
 #[derive(Debug, Error)]
 pub enum AdtSourceReadError {
@@ -123,6 +162,29 @@ pub enum AdtSourceReadError {
         #[source]
         source: FromUtf8Error,
     },
+}
+
+/// A failure during the guarded ADT lock/read/patch/write/unlock workflow.
+#[derive(Debug, Error)]
+pub enum AtomicAdtSourcePatchError {
+    #[error("invalid editable ADT object: {0}")]
+    InvalidObject(#[source] AdtSourceReadError),
+    #[error(transparent)]
+    Namespace(EditError),
+    #[error("could not acquire an ADT edit lock: {0}")]
+    Lock(#[source] SapError),
+    #[error("SAP returned an edit lock response without a lock handle: {response_excerpt}")]
+    LockHandleMissing { response_excerpt: String },
+    #[error("could not read the current editable source while its ADT lock was held: {0}")]
+    LockedSourceRead(#[source] AdtSourceReadError),
+    #[error(transparent)]
+    Patch(EditError),
+    #[error("could not write the patched source through its ADT lock: {0}")]
+    SourceWrite(#[source] SapError),
+    #[error("the patch operation completed, but the ADT object lock could not be released: {0}")]
+    Unlock(#[source] SapError),
+    #[error("the patched source was written, but SAP's stored source could not be re-read: {0}")]
+    StoredSourceRead(#[source] AdtSourceReadError),
 }
 
 impl AdtSourceReadError {
@@ -164,6 +226,58 @@ impl AdtSourceReadError {
     }
 }
 
+impl AtomicAdtSourcePatchError {
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidObject(error) => error.code(),
+            Self::Namespace(error) | Self::Patch(error) => error.code(),
+            Self::Lock(_) => "edit_lock_failed",
+            Self::LockHandleMissing { .. } => "edit_lock_response_invalid",
+            Self::LockedSourceRead(_) => "edit_locked_source_read_failed",
+            Self::SourceWrite(_) => "edit_source_write_failed",
+            Self::Unlock(_) => "edit_unlock_failed",
+            Self::StoredSourceRead(_) => "edit_source_verification_failed",
+        }
+    }
+
+    #[must_use]
+    pub fn hint(&self) -> String {
+        match self {
+            Self::InvalidObject(error) | Self::LockedSourceRead(error) => error.hint(),
+            Self::Namespace(error) | Self::Patch(error) => error.hint(),
+            Self::Lock(_) => {
+                "Close any editor or process holding the object lock, then retry the patch."
+                    .to_owned()
+            }
+            Self::LockHandleMissing { .. } => {
+                "SAP accepted the lock request but returned an unexpected ADT lock payload."
+                    .to_owned()
+            }
+            Self::SourceWrite(error) => error.hint().to_owned(),
+            Self::Unlock(_) => {
+                "The source operation may have succeeded, but the SAP lock may remain; close or unlock the object before retrying."
+                    .to_owned()
+            }
+            Self::StoredSourceRead(_) => {
+                "The write and unlock succeeded, but its stored result could not be verified; re-read the inactive source before making another change."
+                    .to_owned()
+            }
+        }
+    }
+
+    #[must_use]
+    pub const fn sap_error(&self) -> Option<&SapError> {
+        match self {
+            Self::InvalidObject(error)
+            | Self::LockedSourceRead(error)
+            | Self::StoredSourceRead(error) => error.sap_error(),
+            Self::Lock(error) | Self::SourceWrite(error) | Self::Unlock(error) => Some(error),
+            Self::Namespace(_) | Self::LockHandleMissing { .. } | Self::Patch(_) => None,
+        }
+    }
+}
+
 /// Fetches the complete active or inactive source for a constrained ADT object.
 ///
 /// The SHA-256 is calculated over the exact valid UTF-8 bytes returned by SAP.
@@ -180,31 +294,256 @@ pub async fn read_adt_source_for_edit(
     name: &str,
     version: AdtSourceVersion,
 ) -> Result<AdtSourceReadResult, AdtSourceReadError> {
-    let name = validate_object_name(name)?;
-    let path_name = name.to_ascii_lowercase().replace('/', "%2f");
-    let object_uri = format!("{}/{path_name}", object_type.base_path());
-    let source_uri = format!("{object_uri}{SOURCE_SUFFIX}");
+    let identity = editable_object_identity(object_type, name)?;
+    read_adt_source(sap, &identity, version, HeaderMap::new()).await
+}
+
+/// Applies one exact literal patch while holding a native ADT object lock.
+///
+/// The current editable source is read only after the lock is acquired. An
+/// expected SHA-256 is therefore optional: when supplied it provides an
+/// explicit stale-read check, while ordinary callers can safely patch the
+/// locked source without carrying revision state between commands.
+///
+/// Unlock is attempted after every operation that follows successful lock
+/// acquisition. If both the operation and unlock fail, the operation error is
+/// returned because it is the primary cause. After a successful write and
+/// unlock, the source is fetched again so the returned hash describes what SAP
+/// actually stored, including any normalization performed by the backend.
+///
+/// # Errors
+///
+/// Returns [`AtomicAdtSourcePatchError`] for identity or namespace validation,
+/// lock/session failures, stale revisions, unsafe patch anchors, source writes,
+/// unlock failures, or failed post-write verification.
+pub async fn patch_adt_source_atomically(
+    sap: &mut SapClient,
+    customer_namespaces: &[String],
+    request: &AtomicAdtSourcePatchRequest,
+) -> Result<AtomicAdtSourcePatchResult, AtomicAdtSourcePatchError> {
+    let identity = editable_object_identity(request.object_type, &request.name)
+        .map_err(AtomicAdtSourcePatchError::InvalidObject)?;
+    validate_customer_namespace(&identity.name, customer_namespaces)
+        .map_err(AtomicAdtSourcePatchError::Namespace)?;
+
+    let lock = acquire_adt_object_lock(sap, &identity.object_uri).await?;
+    let operation = patch_source_while_locked(sap, &identity, &lock, request).await;
+    let unlock = release_adt_object_lock(sap, &identity.object_uri, &lock).await;
+
+    let (original, plan) = match operation {
+        Err(primary) => {
+            // Cleanup errors must not replace the error that caused the write
+            // workflow to abort, but release was still attempted above.
+            let _ = unlock;
+            return Err(primary);
+        }
+        Ok(value) => {
+            unlock?;
+            value
+        }
+    };
+
+    let stored = read_adt_source_for_edit(
+        sap,
+        identity.object_type,
+        &identity.name,
+        AdtSourceVersion::Inactive,
+    )
+    .await
+    .map_err(AtomicAdtSourcePatchError::StoredSourceRead)?;
+
+    Ok(AtomicAdtSourcePatchResult {
+        object_type: identity.object_type,
+        name: identity.name,
+        object_uri: identity.object_uri,
+        source_uri: identity.source_uri,
+        original_sha256: original.sha256,
+        proposed_sha256: plan.updated_sha256,
+        stored_sha256: stored.sha256,
+        original_bytes: original.bytes,
+        proposed_bytes: plan.updated_bytes,
+        stored_bytes: stored.bytes,
+        replacements: plan.replacements,
+        stored_source: stored.source,
+    })
+}
+
+async fn read_adt_source(
+    sap: &SapClient,
+    identity: &EditableAdtObjectIdentity,
+    version: AdtSourceVersion,
+    headers: HeaderMap,
+) -> Result<AdtSourceReadResult, AdtSourceReadError> {
     let response_bytes = sap
-        .get_bytes_with_query(&source_uri, &[("version", version.as_str())])
+        .get_bytes_with_query_and_headers(
+            &identity.source_uri,
+            &[("version", version.as_str())],
+            headers,
+        )
         .await?;
     let bytes = response_bytes.len();
     let source = String::from_utf8(response_bytes).map_err(|source| {
         AdtSourceReadError::InvalidSourceEncoding {
-            object_type: object_type.as_str(),
-            name: name.clone(),
+            object_type: identity.object_type.as_str(),
+            name: identity.name.clone(),
             source,
         }
     })?;
 
     Ok(AdtSourceReadResult {
-        object_type,
-        name,
-        object_uri,
-        source_uri,
+        object_type: identity.object_type,
+        name: identity.name.clone(),
+        object_uri: identity.object_uri.clone(),
+        source_uri: identity.source_uri.clone(),
         requested_version: version,
         sha256: source_sha256(&source),
         source,
         bytes,
+    })
+}
+
+async fn patch_source_while_locked(
+    sap: &mut SapClient,
+    identity: &EditableAdtObjectIdentity,
+    lock: &AdtObjectLock,
+    request: &AtomicAdtSourcePatchRequest,
+) -> Result<(AdtSourceReadResult, PatchPlan), AtomicAdtSourcePatchError> {
+    let original = read_adt_source(
+        sap,
+        identity,
+        AdtSourceVersion::Inactive,
+        stateful_session_headers(),
+    )
+    .await
+    .map_err(AtomicAdtSourcePatchError::LockedSourceRead)?;
+    let expected_sha256 = request
+        .expected_sha256
+        .as_deref()
+        .unwrap_or(&original.sha256);
+    let plan = plan_patch(
+        &original.source,
+        &request.find,
+        &request.replace,
+        expected_sha256,
+    )
+    .map_err(AtomicAdtSourcePatchError::Patch)?;
+
+    write_adt_source(sap, identity, lock, &plan.updated_source).await?;
+    Ok((original, plan))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AdtObjectLock {
+    handle: String,
+}
+
+async fn acquire_adt_object_lock(
+    sap: &mut SapClient,
+    object_uri: &str,
+) -> Result<AdtObjectLock, AtomicAdtSourcePatchError> {
+    let mut headers = stateful_session_headers();
+    headers.insert("Accept", HeaderValue::from_static(LOCK_RESULT_MEDIA_TYPE));
+    let response = sap
+        .post_text(
+            object_uri,
+            &[("_action", "LOCK"), ("accessMode", "MODIFY")],
+            None,
+            headers,
+        )
+        .await
+        .map_err(AtomicAdtSourcePatchError::Lock)?;
+    let handle = parse_lock_handle(&response).ok_or_else(|| {
+        AtomicAdtSourcePatchError::LockHandleMissing {
+            response_excerpt: response.chars().take(400).collect(),
+        }
+    })?;
+    Ok(AdtObjectLock { handle })
+}
+
+async fn release_adt_object_lock(
+    sap: &mut SapClient,
+    object_uri: &str,
+    lock: &AdtObjectLock,
+) -> Result<(), AtomicAdtSourcePatchError> {
+    sap.post_text(
+        object_uri,
+        &[("_action", "UNLOCK"), ("lockHandle", &lock.handle)],
+        None,
+        stateful_session_headers(),
+    )
+    .await
+    .map(|_| ())
+    .map_err(AtomicAdtSourcePatchError::Unlock)
+}
+
+async fn write_adt_source(
+    sap: &mut SapClient,
+    identity: &EditableAdtObjectIdentity,
+    lock: &AdtObjectLock,
+    source: &str,
+) -> Result<(), AtomicAdtSourcePatchError> {
+    let mut headers = stateful_session_headers();
+    headers.insert(
+        "Content-Type",
+        HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    sap.put_text(
+        &identity.source_uri,
+        &[("lockHandle", &lock.handle)],
+        source,
+        headers,
+    )
+    .await
+    .map(|_| ())
+    .map_err(AtomicAdtSourcePatchError::SourceWrite)
+}
+
+fn stateful_session_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        STATEFUL_SESSION_HEADER,
+        HeaderValue::from_static("stateful"),
+    );
+    headers
+}
+
+fn parse_lock_handle(response: &str) -> Option<String> {
+    let document = roxmltree::Document::parse(response).ok()?;
+    document.descendants().find_map(|node| {
+        if !node.is_element() {
+            return None;
+        }
+        if node.tag_name().name().eq_ignore_ascii_case("LOCK_HANDLE") {
+            return node
+                .text()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
+        }
+        node.attributes().find_map(|attribute| {
+            attribute
+                .name()
+                .eq_ignore_ascii_case("lockHandle")
+                .then(|| attribute.value().trim())
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        })
+    })
+}
+
+fn editable_object_identity(
+    object_type: EditableAdtObjectType,
+    name: &str,
+) -> Result<EditableAdtObjectIdentity, AdtSourceReadError> {
+    let name = validate_object_name(name)?;
+    let path_name = name.to_ascii_lowercase().replace('/', "%2f");
+    let object_uri = format!("{}/{path_name}", object_type.base_path());
+    let source_uri = format!("{object_uri}{SOURCE_SUFFIX}");
+    Ok(EditableAdtObjectIdentity {
+        object_type,
+        name,
+        object_uri,
+        source_uri,
     })
 }
 
@@ -314,6 +653,29 @@ mod tests {
                 validate_object_name(name),
                 Err(AdtSourceReadError::InvalidObjectName(_))
             ));
+        }
+    }
+
+    #[test]
+    fn parses_lock_handles_from_element_text_or_attributes() {
+        assert_eq!(
+            parse_lock_handle("<lock><LOCK_HANDLE> handle-1 </LOCK_HANDLE></lock>").as_deref(),
+            Some("handle-1")
+        );
+        assert_eq!(
+            parse_lock_handle(r#"<lock lockHandle="handle-2"/>"#).as_deref(),
+            Some("handle-2")
+        );
+    }
+
+    #[test]
+    fn rejects_missing_blank_and_malformed_lock_handles() {
+        for response in [
+            "<lock/>",
+            "<lock><LOCK_HANDLE> </LOCK_HANDLE></lock>",
+            "not XML",
+        ] {
+            assert_eq!(parse_lock_handle(response), None);
         }
     }
 }

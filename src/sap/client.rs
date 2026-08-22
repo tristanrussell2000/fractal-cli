@@ -192,20 +192,17 @@ impl SapClient {
         })
     }
 
-    /// Fetches a response body without performing text decoding.
+    /// Fetches response bytes with caller-provided headers.
     ///
-    /// This is used when callers must validate the response encoding and hash
-    /// the exact bytes returned by SAP.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SapError`] for URL, network, HTTP, or response-body failures.
-    pub async fn get_bytes_with_query(
+    /// This is kept inside the SAP layer for workflows, such as ADT editing,
+    /// that must keep a read in the same explicitly stateful session as a lock.
+    pub(crate) async fn get_bytes_with_query_and_headers(
         &self,
         path: &str,
         query: &[(&str, &str)],
+        headers: HeaderMap,
     ) -> Result<Vec<u8>, SapError> {
-        let (_, response) = self.get_read_only(path, query, HeaderMap::new()).await?;
+        let (_, response) = self.get_read_only(path, query, headers).await?;
         response
             .bytes()
             .await
@@ -214,6 +211,47 @@ impl SapClient {
                 url: self.base_url.to_string(),
                 message: format!("could not read SAP response body: {error}"),
             })
+    }
+
+    /// Sends a text PUT request using the SAP session and CSRF token.
+    ///
+    /// The CSRF token is fetched through ADT discovery when this client does not
+    /// already have one. Caller-provided headers are preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SapError`] when the CSRF handshake, request, or response fails.
+    pub async fn put_text(
+        &mut self,
+        path: &str,
+        query: &[(&str, &str)],
+        body: &str,
+        headers: HeaderMap,
+    ) -> Result<String, SapError> {
+        self.ensure_csrf().await?;
+        let url = self.request_url(path, query)?;
+        let request = self
+            .http
+            .put(url.clone())
+            .headers(headers)
+            .basic_auth(&self.username, Some(&self.password))
+            .body(body.to_owned());
+        let response = self
+            .apply_session_headers(request, true)
+            .send()
+            .await
+            .map_err(|error| SapError::Network {
+                url: url.to_string(),
+                message: describe_network_error(&error),
+            })?;
+        if !response.status().is_success() {
+            return Err(http_error(url, response).await);
+        }
+        self.capture_csrf_token(&response);
+        response.text().await.map_err(|error| SapError::Network {
+            url: self.base_url.to_string(),
+            message: format!("could not read SAP response body: {error}"),
+        })
     }
 
     /// Sends a text POST request using the SAP session and CSRF token.
