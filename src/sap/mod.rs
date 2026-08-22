@@ -1,5 +1,6 @@
 pub mod adt;
 pub mod client;
+pub mod edit;
 pub mod package;
 pub mod table;
 

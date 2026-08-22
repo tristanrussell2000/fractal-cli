@@ -192,6 +192,30 @@ impl SapClient {
         })
     }
 
+    /// Fetches a response body without performing text decoding.
+    ///
+    /// This is used when callers must validate the response encoding and hash
+    /// the exact bytes returned by SAP.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SapError`] for URL, network, HTTP, or response-body failures.
+    pub async fn get_bytes_with_query(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+    ) -> Result<Vec<u8>, SapError> {
+        let (_, response) = self.get_read_only(path, query, HeaderMap::new()).await?;
+        response
+            .bytes()
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(|error| SapError::Network {
+                url: self.base_url.to_string(),
+                message: format!("could not read SAP response body: {error}"),
+            })
+    }
+
     /// Sends a text POST request using the SAP session and CSRF token.
     ///
     /// The CSRF token is fetched through ADT discovery when this client does not
