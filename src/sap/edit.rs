@@ -12,7 +12,7 @@ const SOURCE_SUFFIX: &str = "/source/main";
 
 /// A source-based ADT object family supported by the safe-edit workflow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EditObjectType {
+pub enum EditableAdtObjectType {
     Class,
     Interface,
     Program,
@@ -20,16 +20,16 @@ pub enum EditObjectType {
     Table,
 }
 
-impl EditObjectType {
+impl EditableAdtObjectType {
     /// Parses a logical repository type such as `CLAS` or `DDLS`.
     ///
     /// # Errors
     ///
-    /// Returns [`EditSourceError::UnsupportedObjectType`] when the type does
+    /// Returns [`AdtSourceReadError::UnsupportedObjectType`] when the type does
     /// not have a source mapping in the initial safe-edit implementation.
-    pub fn parse(value: &str) -> Result<Self, EditSourceError> {
+    pub fn parse(value: &str) -> Result<Self, AdtSourceReadError> {
         let kind = RepositoryKind::parse(value.trim())
-            .map_err(|_| EditSourceError::UnsupportedObjectType(value.to_owned()))?;
+            .map_err(|_| AdtSourceReadError::UnsupportedObjectType(value.to_owned()))?;
         Self::try_from(kind)
     }
 
@@ -60,8 +60,8 @@ impl EditObjectType {
     }
 }
 
-impl TryFrom<RepositoryKind> for EditObjectType {
-    type Error = EditSourceError;
+impl TryFrom<RepositoryKind> for EditableAdtObjectType {
+    type Error = AdtSourceReadError;
 
     fn try_from(kind: RepositoryKind) -> Result<Self, Self::Error> {
         match kind {
@@ -70,7 +70,7 @@ impl TryFrom<RepositoryKind> for EditObjectType {
             RepositoryKind::Prog => Ok(Self::Program),
             RepositoryKind::Ddls => Ok(Self::DdlSource),
             RepositoryKind::Tabl => Ok(Self::Table),
-            unsupported => Err(EditSourceError::UnsupportedObjectType(
+            unsupported => Err(AdtSourceReadError::UnsupportedObjectType(
                 unsupported.as_str().to_owned(),
             )),
         }
@@ -79,12 +79,12 @@ impl TryFrom<RepositoryKind> for EditObjectType {
 
 /// The stored source version requested from SAP.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EditSourceVersion {
+pub enum AdtSourceVersion {
     Active,
     Inactive,
 }
 
-impl EditSourceVersion {
+impl AdtSourceVersion {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -96,12 +96,12 @@ impl EditSourceVersion {
 
 /// Complete source and concurrency metadata returned by the edit-read boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EditSource {
-    pub object_type: EditObjectType,
+pub struct AdtSourceReadResult {
+    pub object_type: EditableAdtObjectType,
     pub name: String,
     pub object_uri: String,
     pub source_uri: String,
-    pub version: EditSourceVersion,
+    pub requested_version: AdtSourceVersion,
     pub source: String,
     pub sha256: String,
     pub bytes: usize,
@@ -109,7 +109,7 @@ pub struct EditSource {
 
 /// A deterministic failure while identifying or reading editable ADT source.
 #[derive(Debug, Error)]
-pub enum EditSourceError {
+pub enum AdtSourceReadError {
     #[error(transparent)]
     Sap(#[from] SapError),
     #[error("unsupported edit source object type '{0}'")]
@@ -125,7 +125,7 @@ pub enum EditSourceError {
     },
 }
 
-impl EditSourceError {
+impl AdtSourceReadError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
@@ -172,14 +172,14 @@ impl EditSourceError {
 ///
 /// # Errors
 ///
-/// Returns [`EditSourceError`] when the object name is invalid, SAP rejects the
+/// Returns [`AdtSourceReadError`] when the object name is invalid, SAP rejects the
 /// request, or the source response is not valid UTF-8.
-pub async fn get_edit_source(
+pub async fn read_adt_source_for_edit(
     sap: &SapClient,
-    object_type: EditObjectType,
+    object_type: EditableAdtObjectType,
     name: &str,
-    version: EditSourceVersion,
-) -> Result<EditSource, EditSourceError> {
+    version: AdtSourceVersion,
+) -> Result<AdtSourceReadResult, AdtSourceReadError> {
     let name = validate_object_name(name)?;
     let path_name = name.to_ascii_lowercase().replace('/', "%2f");
     let object_uri = format!("{}/{path_name}", object_type.base_path());
@@ -189,26 +189,26 @@ pub async fn get_edit_source(
         .await?;
     let bytes = response_bytes.len();
     let source = String::from_utf8(response_bytes).map_err(|source| {
-        EditSourceError::InvalidSourceEncoding {
+        AdtSourceReadError::InvalidSourceEncoding {
             object_type: object_type.as_str(),
             name: name.clone(),
             source,
         }
     })?;
 
-    Ok(EditSource {
+    Ok(AdtSourceReadResult {
         object_type,
         name,
         object_uri,
         source_uri,
-        version,
+        requested_version: version,
         sha256: source_sha256(&source),
         source,
         bytes,
     })
 }
 
-fn validate_object_name(name: &str) -> Result<String, EditSourceError> {
+fn validate_object_name(name: &str) -> Result<String, AdtSourceReadError> {
     let trimmed = name.trim();
     let characters_are_valid = trimmed
         .chars()
@@ -224,7 +224,7 @@ fn validate_object_name(name: &str) -> Result<String, EditSourceError> {
     if !trimmed.is_empty() && characters_are_valid && namespace_shape_is_valid {
         Ok(trimmed.to_ascii_uppercase())
     } else {
-        Err(EditSourceError::InvalidObjectName(name.to_owned()))
+        Err(AdtSourceReadError::InvalidObjectName(name.to_owned()))
     }
 }
 
@@ -235,11 +235,20 @@ mod tests {
     #[test]
     fn maps_every_initial_object_type_to_a_fixed_adt_root() {
         let cases = [
-            (EditObjectType::Class, "/sap/bc/adt/oo/classes"),
-            (EditObjectType::Interface, "/sap/bc/adt/oo/interfaces"),
-            (EditObjectType::Program, "/sap/bc/adt/programs/programs"),
-            (EditObjectType::DdlSource, "/sap/bc/adt/ddic/ddl/sources"),
-            (EditObjectType::Table, "/sap/bc/adt/ddic/tables"),
+            (EditableAdtObjectType::Class, "/sap/bc/adt/oo/classes"),
+            (
+                EditableAdtObjectType::Interface,
+                "/sap/bc/adt/oo/interfaces",
+            ),
+            (
+                EditableAdtObjectType::Program,
+                "/sap/bc/adt/programs/programs",
+            ),
+            (
+                EditableAdtObjectType::DdlSource,
+                "/sap/bc/adt/ddic/ddl/sources",
+            ),
+            (EditableAdtObjectType::Table, "/sap/bc/adt/ddic/tables"),
         ];
 
         for (object_type, expected) in cases {
@@ -250,39 +259,39 @@ mod tests {
     #[test]
     fn parses_supported_types_case_insensitively() {
         assert_eq!(
-            EditObjectType::parse(" clas ").unwrap(),
-            EditObjectType::Class
+            EditableAdtObjectType::parse(" clas ").unwrap(),
+            EditableAdtObjectType::Class
         );
         assert_eq!(
-            EditObjectType::parse("ddls").unwrap(),
-            EditObjectType::DdlSource
+            EditableAdtObjectType::parse("ddls").unwrap(),
+            EditableAdtObjectType::DdlSource
         );
     }
 
     #[test]
     fn converts_only_the_supported_repository_kind_subset() {
         assert_eq!(
-            EditObjectType::try_from(RepositoryKind::Prog).unwrap(),
-            EditObjectType::Program
+            EditableAdtObjectType::try_from(RepositoryKind::Prog).unwrap(),
+            EditableAdtObjectType::Program
         );
 
-        let error = EditObjectType::try_from(RepositoryKind::Doma).unwrap_err();
+        let error = EditableAdtObjectType::try_from(RepositoryKind::Doma).unwrap_err();
         assert!(matches!(
             error,
-            EditSourceError::UnsupportedObjectType(kind) if kind == "DOMA"
+            AdtSourceReadError::UnsupportedObjectType(kind) if kind == "DOMA"
         ));
     }
 
     #[test]
     fn rejects_unsupported_types() {
-        let error = EditObjectType::parse("DOMA").unwrap_err();
+        let error = EditableAdtObjectType::parse("DOMA").unwrap_err();
 
         assert_eq!(error.code(), "unsupported_edit_object_type");
         assert!(error.hint().contains("CLAS"));
 
         assert!(matches!(
-            EditObjectType::parse("NOT_A_KIND"),
-            Err(EditSourceError::UnsupportedObjectType(kind)) if kind == "NOT_A_KIND"
+            EditableAdtObjectType::parse("NOT_A_KIND"),
+            Err(AdtSourceReadError::UnsupportedObjectType(kind)) if kind == "NOT_A_KIND"
         ));
     }
 
@@ -303,7 +312,7 @@ mod tests {
         for name in ["", "ZCL-EXAMPLE", "ACME/EXAMPLE", "/ACME/", "/A/B/C"] {
             assert!(matches!(
                 validate_object_name(name),
-                Err(EditSourceError::InvalidObjectName(_))
+                Err(AdtSourceReadError::InvalidObjectName(_))
             ));
         }
     }

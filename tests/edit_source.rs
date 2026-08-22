@@ -3,7 +3,9 @@ use fractal::{
     edit::source_sha256,
     sap::{
         client::SapClient,
-        edit::{EditObjectType, EditSourceError, EditSourceVersion, get_edit_source},
+        edit::{
+            AdtSourceReadError, AdtSourceVersion, EditableAdtObjectType, read_adt_source_for_edit,
+        },
     },
 };
 use wiremock::{
@@ -34,23 +36,23 @@ async fn fetches_complete_active_class_source_with_exact_hash_metadata() {
         .await;
 
     let client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let result = get_edit_source(
+    let result = read_adt_source_for_edit(
         &client,
-        EditObjectType::Class,
+        EditableAdtObjectType::Class,
         " zcl_example ",
-        EditSourceVersion::Active,
+        AdtSourceVersion::Active,
     )
     .await
     .unwrap();
 
-    assert_eq!(result.object_type, EditObjectType::Class);
+    assert_eq!(result.object_type, EditableAdtObjectType::Class);
     assert_eq!(result.name, "ZCL_EXAMPLE");
     assert_eq!(result.object_uri, "/sap/bc/adt/oo/classes/zcl_example");
     assert_eq!(
         result.source_uri,
         "/sap/bc/adt/oo/classes/zcl_example/source/main"
     );
-    assert_eq!(result.version, EditSourceVersion::Active);
+    assert_eq!(result.requested_version, AdtSourceVersion::Active);
     assert_eq!(result.source, source);
     assert_eq!(result.bytes, source.len());
     assert_eq!(result.sha256, source_sha256(source));
@@ -72,17 +74,17 @@ async fn requests_inactive_namespaced_ddl_source_with_an_encoded_name() {
         .await;
 
     let client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let result = get_edit_source(
+    let result = read_adt_source_for_edit(
         &client,
-        EditObjectType::DdlSource,
+        EditableAdtObjectType::DdlSource,
         "/ACME/EXAMPLE",
-        EditSourceVersion::Inactive,
+        AdtSourceVersion::Inactive,
     )
     .await
     .unwrap();
 
     assert_eq!(result.name, "/ACME/EXAMPLE");
-    assert_eq!(result.version, EditSourceVersion::Inactive);
+    assert_eq!(result.requested_version, AdtSourceVersion::Inactive);
     assert_eq!(result.source, source);
     server.verify().await;
 }
@@ -95,16 +97,16 @@ async fn rejects_an_invalid_name_before_an_http_request() {
     )
     .unwrap();
 
-    let error = get_edit_source(
+    let error = read_adt_source_for_edit(
         &client,
-        EditObjectType::Program,
+        EditableAdtObjectType::Program,
         "ZREPORT;DELETE",
-        EditSourceVersion::Active,
+        AdtSourceVersion::Active,
     )
     .await
     .unwrap_err();
 
-    assert!(matches!(error, EditSourceError::InvalidObjectName(_)));
+    assert!(matches!(error, AdtSourceReadError::InvalidObjectName(_)));
     assert_eq!(error.code(), "invalid_edit_object_name");
 }
 
@@ -120,18 +122,18 @@ async fn rejects_non_utf8_source_without_hashing_decoded_replacement_text() {
         .await;
 
     let client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let error = get_edit_source(
+    let error = read_adt_source_for_edit(
         &client,
-        EditObjectType::Program,
+        EditableAdtObjectType::Program,
         "ZBAD",
-        EditSourceVersion::Inactive,
+        AdtSourceVersion::Inactive,
     )
     .await
     .unwrap_err();
 
     assert!(matches!(
         error,
-        EditSourceError::InvalidSourceEncoding { .. }
+        AdtSourceReadError::InvalidSourceEncoding { .. }
     ));
     assert_eq!(error.code(), "edit_source_encoding_error");
     server.verify().await;
@@ -149,16 +151,16 @@ async fn preserves_sap_errors_from_the_source_request() {
         .await;
 
     let client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let error = get_edit_source(
+    let error = read_adt_source_for_edit(
         &client,
-        EditObjectType::Interface,
+        EditableAdtObjectType::Interface,
         "ZIF_MISSING",
-        EditSourceVersion::Active,
+        AdtSourceVersion::Active,
     )
     .await
     .unwrap_err();
 
-    assert!(matches!(error, EditSourceError::Sap(_)));
+    assert!(matches!(error, AdtSourceReadError::Sap(_)));
     assert_eq!(error.code(), "not_found");
     assert!(error.sap_error().is_some());
     server.verify().await;

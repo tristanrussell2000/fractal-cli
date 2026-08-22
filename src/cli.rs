@@ -1,4 +1,4 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::output::OutputFormat;
 
@@ -50,6 +50,11 @@ pub enum Command {
     },
     /// Run a complete `OpenSQL` SELECT statement.
     Query(QueryArgs),
+    /// Read and safely edit supported source-based repository objects.
+    Edit {
+        #[command(subcommand)]
+        command: EditCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -133,6 +138,31 @@ pub enum TableCommand {
     Data(TableDataArgs),
     /// Show fields, keys, declared types, and DDIC column metadata for one table.
     Metadata(TableMetadataArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum EditCommand {
+    /// Read complete source and revision metadata for a future edit.
+    Read(EditSourceReadArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct EditSourceReadArgs {
+    /// Source object type: CLAS, INTF, PROG, DDLS, or TABL.
+    #[arg(long = "type")]
+    pub(crate) object_type: String,
+    /// ABAP repository object name.
+    #[arg(long)]
+    pub(crate) name: String,
+    /// Stored source version to request. If inactive does not exist, SAP returns active source.
+    #[arg(long, value_enum, default_value = "active")]
+    pub(crate) version: EditSourceReadVersionArg,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum EditSourceReadVersionArg {
+    Active,
+    Inactive,
 }
 
 #[derive(Debug, Args)]

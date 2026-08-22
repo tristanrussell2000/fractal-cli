@@ -1,6 +1,9 @@
 use fractal::{
     config, credentials,
-    sap::{adt::AdtError, client::SapError, package::PackageError, table::TableError},
+    sap::{
+        adt::AdtError, client::SapError, edit::AdtSourceReadError, package::PackageError,
+        table::TableError,
+    },
 };
 
 #[derive(Debug)]
@@ -9,6 +12,7 @@ pub enum CommandError {
     Credential(credentials::CredentialError),
     Sap(SapError),
     Adt(AdtError),
+    AdtSourceRead(AdtSourceReadError),
     Package(PackageError),
     Table(TableError),
     Message {
@@ -57,6 +61,7 @@ impl CommandError {
             },
             Self::Sap(error) => error.code(),
             Self::Adt(error) => error.code(),
+            Self::AdtSourceRead(error) => error.code(),
             Self::Package(error) => match error {
                 PackageError::Sap(error) => error.code(),
                 PackageError::Parse(_) => "package_response_parse_error",
@@ -74,6 +79,10 @@ impl CommandError {
                 Some(SapError::Http { status, .. }) => Some(status.as_u16()),
                 _ => None,
             },
+            Self::AdtSourceRead(error) => match error.sap_error() {
+                Some(SapError::Http { status, .. }) => Some(status.as_u16()),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -84,6 +93,7 @@ impl CommandError {
             Self::Credential(error) => error.to_string(),
             Self::Sap(error) => error.to_string(),
             Self::Adt(error) => error.to_string(),
+            Self::AdtSourceRead(error) => error.to_string(),
             Self::Package(error) => error.to_string(),
             Self::Table(error) => error.to_string(),
             Self::Message { message, .. } => message.clone(),
@@ -104,6 +114,7 @@ impl CommandError {
                 Some(error.hint().to_owned())
             }
             Self::Adt(error) => error.hint(),
+            Self::AdtSourceRead(error) => Some(error.hint()),
             Self::Package(PackageError::Parse(_)) => Some(
                 "The SAP package response did not match the expected nodestructure format."
                     .to_owned(),
@@ -138,6 +149,12 @@ impl From<AdtError> for CommandError {
     }
 }
 
+impl From<AdtSourceReadError> for CommandError {
+    fn from(error: AdtSourceReadError) -> Self {
+        Self::AdtSourceRead(error)
+    }
+}
+
 impl From<PackageError> for CommandError {
     fn from(error: PackageError) -> Self {
         Self::Package(error)
@@ -169,6 +186,7 @@ mod tests {
     use super::CommandError;
     use fractal::sap::{
         client::{SapError, SapErrorKind},
+        edit::AdtSourceReadError,
         table::{TableError, TableQueryError, TableQueryErrorKind},
     };
 
@@ -219,5 +237,24 @@ mod tests {
         assert_eq!(error.status(), Some(400));
         assert!(error.message().contains("EVNT_ID"));
         assert!(error.hint().unwrap().contains("EVENT_ID"));
+    }
+
+    #[test]
+    fn preserves_edit_source_validation_and_sap_errors() {
+        let validation =
+            CommandError::from(AdtSourceReadError::UnsupportedObjectType("DOMA".to_owned()));
+        assert_eq!(validation.code(), "unsupported_edit_object_type");
+        assert_eq!(validation.status(), None);
+        assert!(validation.hint().unwrap().contains("CLAS"));
+
+        let sap = CommandError::from(AdtSourceReadError::Sap(SapError::Http {
+            kind: SapErrorKind::NotFound,
+            status: reqwest::StatusCode::NOT_FOUND,
+            url: "https://sap.example/sap/bc/adt/oo/classes/zmissing/source/main".to_owned(),
+            message: "Object not found".to_owned(),
+        }));
+        assert_eq!(sap.code(), "not_found");
+        assert_eq!(sap.status(), Some(404));
+        assert!(sap.message().contains("Object not found"));
     }
 }

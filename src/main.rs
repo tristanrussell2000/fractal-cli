@@ -4,8 +4,12 @@ mod commands;
 mod output;
 
 use clap::Parser;
-use cli::{AuthCommand, Cli, Command, ObjectCommand, PackageCommand, SystemCommand, TableCommand};
+use cli::{
+    AuthCommand, Cli, Command, EditCommand, ObjectCommand, PackageCommand, SystemCommand,
+    TableCommand,
+};
 use commands::auth::{auth_list, auth_login, auth_remove};
+use commands::edit_read::{edit_source_read, print_edit_source_read};
 use commands::object::{
     object_info, object_kinds, object_search, object_source, object_usages, object_xml,
     print_object_kinds,
@@ -87,6 +91,16 @@ async fn main() {
         Command::Query(args) => {
             run_and_print_with_async(|| query(cli.profile.as_deref(), args), print_query, output)
                 .await
+        }
+        Command::Edit {
+            command: EditCommand::Read(args),
+        } => {
+            run_and_print_with_async(
+                || edit_source_read(cli.profile.as_deref(), args),
+                print_edit_source_read,
+                output,
+            )
+            .await
         }
     };
 
