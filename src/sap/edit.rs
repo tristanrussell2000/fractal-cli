@@ -112,11 +112,11 @@ pub struct AdtSourceReadResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct EditableAdtObjectIdentity {
-    object_type: EditableAdtObjectType,
-    name: String,
-    object_uri: String,
-    source_uri: String,
+pub(super) struct EditableAdtObjectIdentity {
+    pub(super) object_type: EditableAdtObjectType,
+    pub(super) name: String,
+    pub(super) object_uri: String,
+    pub(super) source_uri: String,
 }
 
 /// One exact source replacement to preview or perform against an ADT object.
@@ -731,7 +731,7 @@ fn parse_lock_handle(response: &str) -> Option<String> {
     })
 }
 
-fn editable_object_identity(
+pub(super) fn editable_object_identity(
     object_type: EditableAdtObjectType,
     name: &str,
 ) -> Result<EditableAdtObjectIdentity, AdtSourceReadError> {

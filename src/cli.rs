@@ -146,6 +146,8 @@ pub enum EditCommand {
     Read(EditSourceReadArgs),
     /// Replace one exact source fragment and save the result as inactive source.
     Patch(EditSourcePatchArgs),
+    /// Run SAP's syntax checker against a stored source version.
+    Check(EditSourceCheckArgs),
 }
 
 #[derive(Debug, Args)]
@@ -158,13 +160,26 @@ pub struct EditSourceReadArgs {
     pub(crate) name: String,
     /// Stored source version to request. If inactive does not exist, SAP returns active source.
     #[arg(long, value_enum, default_value = "active")]
-    pub(crate) version: EditSourceReadVersionArg,
+    pub(crate) version: EditSourceVersionArg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum EditSourceReadVersionArg {
+pub enum EditSourceVersionArg {
     Active,
     Inactive,
+}
+
+#[derive(Debug, Args)]
+pub struct EditSourceCheckArgs {
+    /// Source object type: CLAS, INTF, PROG, DDLS, or TABL.
+    #[arg(long = "type")]
+    pub(crate) object_type: String,
+    /// ABAP repository object name.
+    #[arg(long)]
+    pub(crate) name: String,
+    /// Stored source version to check.
+    #[arg(long, value_enum, default_value = "inactive")]
+    pub(crate) version: EditSourceVersionArg,
 }
 
 #[derive(Debug, Args)]

@@ -5,6 +5,7 @@ use fractal::{
         client::SapError,
         edit::{AdtSourcePatchError, AdtSourceReadError},
         package::PackageError,
+        source_check::AdtSourceCheckError,
         table::TableError,
     },
 };
@@ -17,6 +18,7 @@ pub enum CommandError {
     Adt(AdtError),
     AdtSourceRead(AdtSourceReadError),
     AdtSourcePatch(AdtSourcePatchError),
+    AdtSourceCheck(AdtSourceCheckError),
     Package(PackageError),
     Table(TableError),
     Message {
@@ -67,6 +69,7 @@ impl CommandError {
             Self::Adt(error) => error.code(),
             Self::AdtSourceRead(error) => error.code(),
             Self::AdtSourcePatch(error) => error.code(),
+            Self::AdtSourceCheck(error) => error.code(),
             Self::Package(error) => match error {
                 PackageError::Sap(error) => error.code(),
                 PackageError::Parse(_) => "package_response_parse_error",
@@ -92,6 +95,10 @@ impl CommandError {
                 Some(SapError::Http { status, .. }) => Some(status.as_u16()),
                 _ => None,
             },
+            Self::AdtSourceCheck(error) => match error.sap_error() {
+                Some(SapError::Http { status, .. }) => Some(status.as_u16()),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -104,6 +111,7 @@ impl CommandError {
             Self::Adt(error) => error.to_string(),
             Self::AdtSourceRead(error) => error.to_string(),
             Self::AdtSourcePatch(error) => error.to_string(),
+            Self::AdtSourceCheck(error) => error.to_string(),
             Self::Package(error) => error.to_string(),
             Self::Table(error) => error.to_string(),
             Self::Message { message, .. } => message.clone(),
@@ -126,6 +134,7 @@ impl CommandError {
             Self::Adt(error) => error.hint(),
             Self::AdtSourceRead(error) => Some(error.hint()),
             Self::AdtSourcePatch(error) => Some(error.hint()),
+            Self::AdtSourceCheck(error) => Some(error.hint()),
             Self::Package(PackageError::Parse(_)) => Some(
                 "The SAP package response did not match the expected nodestructure format."
                     .to_owned(),
@@ -172,6 +181,12 @@ impl From<AdtSourcePatchError> for CommandError {
     }
 }
 
+impl From<AdtSourceCheckError> for CommandError {
+    fn from(error: AdtSourceCheckError) -> Self {
+        Self::AdtSourceCheck(error)
+    }
+}
+
 impl From<PackageError> for CommandError {
     fn from(error: PackageError) -> Self {
         Self::Package(error)
@@ -206,6 +221,7 @@ mod tests {
         sap::{
             client::{SapError, SapErrorKind},
             edit::{AdtSourcePatchError, AdtSourceReadError},
+            source_check::AdtSourceCheckError,
             table::{TableError, TableQueryError, TableQueryErrorKind},
         },
     };
@@ -302,5 +318,20 @@ mod tests {
         assert_eq!(lock.code(), "edit_lock_failed");
         assert_eq!(lock.status(), Some(409));
         assert!(lock.message().contains("Object is locked"));
+    }
+
+    #[test]
+    fn preserves_source_check_stage_and_http_status() {
+        let error = CommandError::from(AdtSourceCheckError::Sap(SapError::Http {
+            kind: SapErrorKind::Forbidden,
+            status: StatusCode::FORBIDDEN,
+            url: "https://sap.example/sap/bc/adt/checkruns".to_owned(),
+            message: "Check authorization missing".to_owned(),
+        }));
+
+        assert_eq!(error.code(), "edit_source_check_failed");
+        assert_eq!(error.status(), Some(403));
+        assert!(error.message().contains("Check authorization missing"));
+        assert!(error.hint().is_some());
     }
 }

@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 use serde::Serialize;
 
 use crate::{
-    cli::{EditSourceReadArgs, EditSourceReadVersionArg},
+    cli::{EditSourceReadArgs, EditSourceVersionArg},
     command_error::CommandError,
     commands::connect,
     output::{OutputFormat, print_result},
@@ -47,10 +47,10 @@ pub fn print_edit_source_read(result: &EditSourceReadOutput, output: OutputForma
     print!("{}", render_edit_source_readable(result));
 }
 
-const fn map_source_version(version: EditSourceReadVersionArg) -> AdtSourceVersion {
+pub(super) const fn map_source_version(version: EditSourceVersionArg) -> AdtSourceVersion {
     match version {
-        EditSourceReadVersionArg::Active => AdtSourceVersion::Active,
-        EditSourceReadVersionArg::Inactive => AdtSourceVersion::Inactive,
+        EditSourceVersionArg::Active => AdtSourceVersion::Active,
+        EditSourceVersionArg::Inactive => AdtSourceVersion::Inactive,
     }
 }
 
@@ -120,7 +120,7 @@ mod tests {
 
         assert_eq!(args.object_type, "clas");
         assert_eq!(args.name, "ZCL_EXAMPLE");
-        assert_eq!(args.version, EditSourceReadVersionArg::Active);
+        assert_eq!(args.version, EditSourceVersionArg::Active);
     }
 
     #[test]
@@ -140,7 +140,7 @@ mod tests {
             .unwrap(),
         );
 
-        assert_eq!(args.version, EditSourceReadVersionArg::Inactive);
+        assert_eq!(args.version, EditSourceVersionArg::Inactive);
     }
 
     #[test]
