@@ -119,23 +119,41 @@ struct EditableAdtObjectIdentity {
     source_uri: String,
 }
 
-/// One exact source replacement to perform while holding an ADT object lock.
+/// One exact source replacement to preview or perform against an ADT object.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AtomicAdtSourcePatchRequest {
+pub struct AdtSourcePatchRequest {
     pub object_type: EditableAdtObjectType,
     pub name: String,
     pub find: String,
     pub replace: String,
     pub expected_sha256: Option<String>,
+    pub transport: Option<String>,
 }
 
-/// The source versions observed before and after an atomic ADT patch.
+/// A non-mutating patch plan based on the source currently returned by SAP.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AtomicAdtSourcePatchResult {
+pub struct AdtSourcePatchPreview {
     pub object_type: EditableAdtObjectType,
     pub name: String,
     pub object_uri: String,
     pub source_uri: String,
+    pub transport: Option<String>,
+    pub original_sha256: String,
+    pub proposed_sha256: String,
+    pub original_bytes: usize,
+    pub proposed_bytes: usize,
+    pub replacements: usize,
+    pub proposed_source: String,
+}
+
+/// The source versions observed before and after an atomic ADT patch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdtSourcePatchWriteResult {
+    pub object_type: EditableAdtObjectType,
+    pub name: String,
+    pub object_uri: String,
+    pub source_uri: String,
+    pub transport: Option<String>,
     pub original_sha256: String,
     pub proposed_sha256: String,
     pub stored_sha256: String,
@@ -143,6 +161,7 @@ pub struct AtomicAdtSourcePatchResult {
     pub proposed_bytes: usize,
     pub stored_bytes: usize,
     pub replacements: usize,
+    pub proposed_source: String,
     pub stored_source: String,
 }
 
@@ -166,21 +185,33 @@ pub enum AdtSourceReadError {
 
 /// A failure during the guarded ADT lock/read/patch/write/unlock workflow.
 #[derive(Debug, Error)]
-pub enum AtomicAdtSourcePatchError {
+pub enum AdtSourcePatchError {
     #[error("invalid editable ADT object: {0}")]
     InvalidObject(#[source] AdtSourceReadError),
     #[error(transparent)]
     Namespace(EditError),
-    #[error("could not acquire an ADT edit lock: {0}")]
-    Lock(#[source] SapError),
+    #[error("invalid transport request '{0}'")]
+    InvalidTransportRequest(String),
+    #[error("could not acquire an ADT edit lock: {source}")]
+    Lock {
+        transport: Option<String>,
+        #[source]
+        source: SapError,
+    },
     #[error("SAP returned an edit lock response without a lock handle: {response_excerpt}")]
     LockHandleMissing { response_excerpt: String },
     #[error("could not read the current editable source while its ADT lock was held: {0}")]
     LockedSourceRead(#[source] AdtSourceReadError),
+    #[error("could not read the current editable source for a patch preview: {0}")]
+    PreviewSourceRead(#[source] AdtSourceReadError),
     #[error(transparent)]
     Patch(EditError),
-    #[error("could not write the patched source through its ADT lock: {0}")]
-    SourceWrite(#[source] SapError),
+    #[error("could not write the patched source through its ADT lock: {source}")]
+    SourceWrite {
+        transport: Option<String>,
+        #[source]
+        source: SapError,
+    },
     #[error("the patch operation completed, but the ADT object lock could not be released: {0}")]
     Unlock(#[source] SapError),
     #[error("the patched source was written, but SAP's stored source could not be re-read: {0}")]
@@ -226,16 +257,18 @@ impl AdtSourceReadError {
     }
 }
 
-impl AtomicAdtSourcePatchError {
+impl AdtSourcePatchError {
     #[must_use]
-    pub fn code(&self) -> &'static str {
+    pub const fn code(&self) -> &'static str {
         match self {
             Self::InvalidObject(error) => error.code(),
             Self::Namespace(error) | Self::Patch(error) => error.code(),
-            Self::Lock(_) => "edit_lock_failed",
+            Self::InvalidTransportRequest(_) => "invalid_transport_request",
+            Self::Lock { .. } => "edit_lock_failed",
             Self::LockHandleMissing { .. } => "edit_lock_response_invalid",
             Self::LockedSourceRead(_) => "edit_locked_source_read_failed",
-            Self::SourceWrite(_) => "edit_source_write_failed",
+            Self::PreviewSourceRead(_) => "edit_preview_source_read_failed",
+            Self::SourceWrite { .. } => "edit_source_write_failed",
             Self::Unlock(_) => "edit_unlock_failed",
             Self::StoredSourceRead(_) => "edit_source_verification_failed",
         }
@@ -244,17 +277,27 @@ impl AtomicAdtSourcePatchError {
     #[must_use]
     pub fn hint(&self) -> String {
         match self {
-            Self::InvalidObject(error) | Self::LockedSourceRead(error) => error.hint(),
+            Self::InvalidObject(error)
+            | Self::LockedSourceRead(error)
+            | Self::PreviewSourceRead(error) => error.hint(),
             Self::Namespace(error) | Self::Patch(error) => error.hint(),
-            Self::Lock(_) => {
-                "Close any editor or process holding the object lock, then retry the patch."
+            Self::InvalidTransportRequest(_) => {
+                "Use a transport request identifier containing 1-20 ASCII letters or digits, for example DE3K900575."
                     .to_owned()
             }
+            Self::Lock { transport, source } => transport_failure_hint(transport.as_deref(), source)
+                .unwrap_or_else(|| {
+                    "Close any editor or process holding the object lock, then retry the patch."
+                        .to_owned()
+                }),
             Self::LockHandleMissing { .. } => {
                 "SAP accepted the lock request but returned an unexpected ADT lock payload."
                     .to_owned()
             }
-            Self::SourceWrite(error) => error.hint().to_owned(),
+            Self::SourceWrite { transport, source } => {
+                transport_failure_hint(transport.as_deref(), source)
+                    .unwrap_or_else(|| source.hint().to_owned())
+            }
             Self::Unlock(_) => {
                 "The source operation may have succeeded, but the SAP lock may remain; close or unlock the object before retrying."
                     .to_owned()
@@ -271,9 +314,15 @@ impl AtomicAdtSourcePatchError {
         match self {
             Self::InvalidObject(error)
             | Self::LockedSourceRead(error)
+            | Self::PreviewSourceRead(error)
             | Self::StoredSourceRead(error) => error.sap_error(),
-            Self::Lock(error) | Self::SourceWrite(error) | Self::Unlock(error) => Some(error),
-            Self::Namespace(_) | Self::LockHandleMissing { .. } | Self::Patch(_) => None,
+            Self::Lock { source, .. } | Self::SourceWrite { source, .. } | Self::Unlock(source) => {
+                Some(source)
+            }
+            Self::Namespace(_)
+            | Self::InvalidTransportRequest(_)
+            | Self::LockHandleMissing { .. }
+            | Self::Patch(_) => None,
         }
     }
 }
@@ -313,20 +362,21 @@ pub async fn read_adt_source_for_edit(
 ///
 /// # Errors
 ///
-/// Returns [`AtomicAdtSourcePatchError`] for identity or namespace validation,
+/// Returns [`AdtSourcePatchError`] for identity or namespace validation,
 /// lock/session failures, stale revisions, unsafe patch anchors, source writes,
 /// unlock failures, or failed post-write verification.
 pub async fn patch_adt_source_atomically(
     sap: &mut SapClient,
     customer_namespaces: &[String],
-    request: &AtomicAdtSourcePatchRequest,
-) -> Result<AtomicAdtSourcePatchResult, AtomicAdtSourcePatchError> {
+    request: &AdtSourcePatchRequest,
+) -> Result<AdtSourcePatchWriteResult, AdtSourcePatchError> {
     let identity = editable_object_identity(request.object_type, &request.name)
-        .map_err(AtomicAdtSourcePatchError::InvalidObject)?;
+        .map_err(AdtSourcePatchError::InvalidObject)?;
     validate_customer_namespace(&identity.name, customer_namespaces)
-        .map_err(AtomicAdtSourcePatchError::Namespace)?;
+        .map_err(AdtSourcePatchError::Namespace)?;
+    let transport = validate_transport_request(request.transport.as_deref())?;
 
-    let lock = acquire_adt_object_lock(sap, &identity.object_uri).await?;
+    let lock = acquire_adt_object_lock(sap, &identity.object_uri, transport.as_deref()).await?;
     let operation = patch_source_while_locked(sap, &identity, &lock, request).await;
     let unlock = release_adt_object_lock(sap, &identity.object_uri, &lock).await;
 
@@ -350,13 +400,14 @@ pub async fn patch_adt_source_atomically(
         AdtSourceVersion::Inactive,
     )
     .await
-    .map_err(AtomicAdtSourcePatchError::StoredSourceRead)?;
+    .map_err(AdtSourcePatchError::StoredSourceRead)?;
 
-    Ok(AtomicAdtSourcePatchResult {
+    Ok(AdtSourcePatchWriteResult {
         object_type: identity.object_type,
         name: identity.name,
         object_uri: identity.object_uri,
         source_uri: identity.source_uri,
+        transport,
         original_sha256: original.sha256,
         proposed_sha256: plan.updated_sha256,
         stored_sha256: stored.sha256,
@@ -364,7 +415,64 @@ pub async fn patch_adt_source_atomically(
         proposed_bytes: plan.updated_bytes,
         stored_bytes: stored.bytes,
         replacements: plan.replacements,
+        proposed_source: plan.updated_source,
         stored_source: stored.source,
+    })
+}
+
+/// Plans one exact source patch without locking, writing, or activating.
+///
+/// The preview is based on the inactive source requested at the time of this
+/// call. A later write still acquires a lock and repeats the read and planning
+/// steps, so preview success is not a promise that a subsequent patch can be
+/// applied unchanged.
+///
+/// # Errors
+///
+/// Returns [`AdtSourcePatchError`] for identity or namespace validation,
+/// source reads, stale revisions, or unsafe patch anchors.
+pub async fn preview_adt_source_patch(
+    sap: &SapClient,
+    customer_namespaces: &[String],
+    request: &AdtSourcePatchRequest,
+) -> Result<AdtSourcePatchPreview, AdtSourcePatchError> {
+    let identity = editable_object_identity(request.object_type, &request.name)
+        .map_err(AdtSourcePatchError::InvalidObject)?;
+    validate_customer_namespace(&identity.name, customer_namespaces)
+        .map_err(AdtSourcePatchError::Namespace)?;
+    let transport = validate_transport_request(request.transport.as_deref())?;
+    let original = read_adt_source_for_edit(
+        sap,
+        identity.object_type,
+        &identity.name,
+        AdtSourceVersion::Inactive,
+    )
+    .await
+    .map_err(AdtSourcePatchError::PreviewSourceRead)?;
+    let expected_sha256 = request
+        .expected_sha256
+        .as_deref()
+        .unwrap_or(&original.sha256);
+    let plan = plan_patch(
+        &original.source,
+        &request.find,
+        &request.replace,
+        expected_sha256,
+    )
+    .map_err(AdtSourcePatchError::Patch)?;
+
+    Ok(AdtSourcePatchPreview {
+        object_type: identity.object_type,
+        name: identity.name,
+        object_uri: identity.object_uri,
+        source_uri: identity.source_uri,
+        transport,
+        original_sha256: original.sha256,
+        proposed_sha256: plan.updated_sha256,
+        original_bytes: original.bytes,
+        proposed_bytes: plan.updated_bytes,
+        replacements: plan.replacements,
+        proposed_source: plan.updated_source,
     })
 }
 
@@ -406,8 +514,8 @@ async fn patch_source_while_locked(
     sap: &mut SapClient,
     identity: &EditableAdtObjectIdentity,
     lock: &AdtObjectLock,
-    request: &AtomicAdtSourcePatchRequest,
-) -> Result<(AdtSourceReadResult, PatchPlan), AtomicAdtSourcePatchError> {
+    request: &AdtSourcePatchRequest,
+) -> Result<(AdtSourceReadResult, PatchPlan), AdtSourcePatchError> {
     let original = read_adt_source(
         sap,
         identity,
@@ -415,7 +523,7 @@ async fn patch_source_while_locked(
         stateful_session_headers(),
     )
     .await
-    .map_err(AtomicAdtSourcePatchError::LockedSourceRead)?;
+    .map_err(AdtSourcePatchError::LockedSourceRead)?;
     let expected_sha256 = request
         .expected_sha256
         .as_deref()
@@ -426,7 +534,7 @@ async fn patch_source_while_locked(
         &request.replace,
         expected_sha256,
     )
-    .map_err(AtomicAdtSourcePatchError::Patch)?;
+    .map_err(AdtSourcePatchError::Patch)?;
 
     write_adt_source(sap, identity, lock, &plan.updated_source).await?;
     Ok((original, plan))
@@ -435,36 +543,63 @@ async fn patch_source_while_locked(
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AdtObjectLock {
     handle: String,
+    transport: Option<String>,
 }
 
 async fn acquire_adt_object_lock(
     sap: &mut SapClient,
     object_uri: &str,
-) -> Result<AdtObjectLock, AtomicAdtSourcePatchError> {
+    transport: Option<&str>,
+) -> Result<AdtObjectLock, AdtSourcePatchError> {
+    let response = match request_adt_object_lock(sap, object_uri, transport).await {
+        Ok(response) => response,
+        Err(error)
+            if transport
+                .is_some_and(|transport| is_same_transport_lock_conflict(&error, transport)) =>
+        {
+            request_adt_object_lock(sap, object_uri, None)
+                .await
+                .map_err(|source| AdtSourcePatchError::Lock {
+                    transport: transport.map(str::to_owned),
+                    source,
+                })?
+        }
+        Err(source) => {
+            return Err(AdtSourcePatchError::Lock {
+                transport: transport.map(str::to_owned),
+                source,
+            });
+        }
+    };
+    let handle =
+        parse_lock_handle(&response).ok_or_else(|| AdtSourcePatchError::LockHandleMissing {
+            response_excerpt: response.chars().take(400).collect(),
+        })?;
+    Ok(AdtObjectLock {
+        handle,
+        transport: transport.map(str::to_owned),
+    })
+}
+
+async fn request_adt_object_lock(
+    sap: &mut SapClient,
+    object_uri: &str,
+    transport: Option<&str>,
+) -> Result<String, SapError> {
     let mut headers = stateful_session_headers();
     headers.insert("Accept", HeaderValue::from_static(LOCK_RESULT_MEDIA_TYPE));
-    let response = sap
-        .post_text(
-            object_uri,
-            &[("_action", "LOCK"), ("accessMode", "MODIFY")],
-            None,
-            headers,
-        )
-        .await
-        .map_err(AtomicAdtSourcePatchError::Lock)?;
-    let handle = parse_lock_handle(&response).ok_or_else(|| {
-        AtomicAdtSourcePatchError::LockHandleMissing {
-            response_excerpt: response.chars().take(400).collect(),
-        }
-    })?;
-    Ok(AdtObjectLock { handle })
+    let mut query = vec![("_action", "LOCK"), ("accessMode", "MODIFY")];
+    if let Some(transport) = transport {
+        query.push(("corrNr", transport));
+    }
+    sap.post_text(object_uri, &query, None, headers).await
 }
 
 async fn release_adt_object_lock(
     sap: &mut SapClient,
     object_uri: &str,
     lock: &AdtObjectLock,
-) -> Result<(), AtomicAdtSourcePatchError> {
+) -> Result<(), AdtSourcePatchError> {
     sap.post_text(
         object_uri,
         &[("_action", "UNLOCK"), ("lockHandle", &lock.handle)],
@@ -473,7 +608,7 @@ async fn release_adt_object_lock(
     )
     .await
     .map(|_| ())
-    .map_err(AtomicAdtSourcePatchError::Unlock)
+    .map_err(AdtSourcePatchError::Unlock)
 }
 
 async fn write_adt_source(
@@ -481,21 +616,23 @@ async fn write_adt_source(
     identity: &EditableAdtObjectIdentity,
     lock: &AdtObjectLock,
     source: &str,
-) -> Result<(), AtomicAdtSourcePatchError> {
+) -> Result<(), AdtSourcePatchError> {
     let mut headers = stateful_session_headers();
     headers.insert(
         "Content-Type",
         HeaderValue::from_static("text/plain; charset=utf-8"),
     );
-    sap.put_text(
-        &identity.source_uri,
-        &[("lockHandle", &lock.handle)],
-        source,
-        headers,
-    )
-    .await
-    .map(|_| ())
-    .map_err(AtomicAdtSourcePatchError::SourceWrite)
+    let mut query = vec![("lockHandle", lock.handle.as_str())];
+    if let Some(transport) = &lock.transport {
+        query.push(("corrNr", transport));
+    }
+    sap.put_text(&identity.source_uri, &query, source, headers)
+        .await
+        .map(|_| ())
+        .map_err(|source| AdtSourcePatchError::SourceWrite {
+            transport: lock.transport.clone(),
+            source,
+        })
 }
 
 fn stateful_session_headers() -> HeaderMap {
@@ -505,6 +642,69 @@ fn stateful_session_headers() -> HeaderMap {
         HeaderValue::from_static("stateful"),
     );
     headers
+}
+
+fn validate_transport_request(
+    transport: Option<&str>,
+) -> Result<Option<String>, AdtSourcePatchError> {
+    let Some(transport) = transport else {
+        return Ok(None);
+    };
+    let trimmed = transport.trim();
+    if (1..=20).contains(&trimmed.len()) && trimmed.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    {
+        Ok(Some(trimmed.to_ascii_uppercase()))
+    } else {
+        Err(AdtSourcePatchError::InvalidTransportRequest(
+            transport.to_owned(),
+        ))
+    }
+}
+
+fn is_same_transport_lock_conflict(error: &SapError, transport: &str) -> bool {
+    let Some(message) = sap_error_message(error) else {
+        return false;
+    };
+    message.to_ascii_uppercase().contains("ALREADY LOCKED")
+        && transport_request_from_sap_error(error)
+            .is_some_and(|existing| existing.eq_ignore_ascii_case(transport))
+}
+
+fn transport_failure_hint(transport: Option<&str>, error: &SapError) -> Option<String> {
+    let existing = transport_request_from_sap_error(error)?;
+    match transport {
+        None => Some(format!(
+            "SAP reports that the object belongs to transport {existing}. Retry with --transport {existing} if that is the intended parent change request."
+        )),
+        Some(requested) if requested.eq_ignore_ascii_case(&existing) => Some(format!(
+            "SAP still refused transport {existing}. Confirm that it is the parent change request rather than a task and that your user may write to it."
+        )),
+        Some(requested) => Some(format!(
+            "SAP reports that the object belongs to transport {existing}, not the requested transport {requested}. Use the correct parent request or reassign the object in SAP."
+        )),
+    }
+}
+
+fn transport_request_from_sap_error(error: &SapError) -> Option<String> {
+    let message = sap_error_message(error)?.to_ascii_uppercase();
+    if !message.contains("LOCKED") {
+        return None;
+    }
+    ["REQUEST ", "TRANSPORT "].into_iter().find_map(|marker| {
+        let after_marker = message.split_once(marker)?.1;
+        let candidate = after_marker
+            .chars()
+            .take_while(char::is_ascii_alphanumeric)
+            .collect::<String>();
+        (!candidate.is_empty()).then_some(candidate)
+    })
+}
+
+fn sap_error_message(error: &SapError) -> Option<&str> {
+    match error {
+        SapError::Http { message, .. } => Some(message),
+        _ => None,
+    }
 }
 
 fn parse_lock_handle(response: &str) -> Option<String> {

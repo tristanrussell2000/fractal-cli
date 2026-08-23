@@ -144,6 +144,8 @@ pub enum TableCommand {
 pub enum EditCommand {
     /// Read complete source and revision metadata for a future edit.
     Read(EditSourceReadArgs),
+    /// Replace one exact source fragment and save the result as inactive source.
+    Patch(EditSourcePatchArgs),
 }
 
 #[derive(Debug, Args)]
@@ -163,6 +165,31 @@ pub struct EditSourceReadArgs {
 pub enum EditSourceReadVersionArg {
     Active,
     Inactive,
+}
+
+#[derive(Debug, Args)]
+pub struct EditSourcePatchArgs {
+    /// Source object type: CLAS, INTF, PROG, DDLS, or TABL.
+    #[arg(long = "type")]
+    pub(crate) object_type: String,
+    /// ABAP repository object name.
+    #[arg(long)]
+    pub(crate) name: String,
+    /// Exact literal source text that must occur once.
+    #[arg(long, allow_hyphen_values = true)]
+    pub(crate) find: String,
+    /// Replacement source text.
+    #[arg(long, allow_hyphen_values = true)]
+    pub(crate) replace: String,
+    /// Only patch source matching this SHA-256 from a previous read or preview.
+    #[arg(long)]
+    pub(crate) expected_sha256: Option<String>,
+    /// Parent CTS change request to associate with the write, for example DE3K900575.
+    #[arg(long)]
+    pub(crate) transport: Option<String>,
+    /// Validate and preview the change without locking or writing the object.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
 }
 
 #[derive(Debug, Args)]

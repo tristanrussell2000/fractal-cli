@@ -1,7 +1,10 @@
 use fractal::{
     config, credentials,
     sap::{
-        adt::AdtError, client::SapError, edit::AdtSourceReadError, package::PackageError,
+        adt::AdtError,
+        client::SapError,
+        edit::{AdtSourcePatchError, AdtSourceReadError},
+        package::PackageError,
         table::TableError,
     },
 };
@@ -13,6 +16,7 @@ pub enum CommandError {
     Sap(SapError),
     Adt(AdtError),
     AdtSourceRead(AdtSourceReadError),
+    AdtSourcePatch(AdtSourcePatchError),
     Package(PackageError),
     Table(TableError),
     Message {
@@ -62,6 +66,7 @@ impl CommandError {
             Self::Sap(error) => error.code(),
             Self::Adt(error) => error.code(),
             Self::AdtSourceRead(error) => error.code(),
+            Self::AdtSourcePatch(error) => error.code(),
             Self::Package(error) => match error {
                 PackageError::Sap(error) => error.code(),
                 PackageError::Parse(_) => "package_response_parse_error",
@@ -83,6 +88,10 @@ impl CommandError {
                 Some(SapError::Http { status, .. }) => Some(status.as_u16()),
                 _ => None,
             },
+            Self::AdtSourcePatch(error) => match error.sap_error() {
+                Some(SapError::Http { status, .. }) => Some(status.as_u16()),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -94,6 +103,7 @@ impl CommandError {
             Self::Sap(error) => error.to_string(),
             Self::Adt(error) => error.to_string(),
             Self::AdtSourceRead(error) => error.to_string(),
+            Self::AdtSourcePatch(error) => error.to_string(),
             Self::Package(error) => error.to_string(),
             Self::Table(error) => error.to_string(),
             Self::Message { message, .. } => message.clone(),
@@ -115,6 +125,7 @@ impl CommandError {
             }
             Self::Adt(error) => error.hint(),
             Self::AdtSourceRead(error) => Some(error.hint()),
+            Self::AdtSourcePatch(error) => Some(error.hint()),
             Self::Package(PackageError::Parse(_)) => Some(
                 "The SAP package response did not match the expected nodestructure format."
                     .to_owned(),
@@ -155,6 +166,12 @@ impl From<AdtSourceReadError> for CommandError {
     }
 }
 
+impl From<AdtSourcePatchError> for CommandError {
+    fn from(error: AdtSourcePatchError) -> Self {
+        Self::AdtSourcePatch(error)
+    }
+}
+
 impl From<PackageError> for CommandError {
     fn from(error: PackageError) -> Self {
         Self::Package(error)
@@ -184,10 +201,13 @@ mod tests {
     use reqwest::StatusCode;
 
     use super::CommandError;
-    use fractal::sap::{
-        client::{SapError, SapErrorKind},
-        edit::AdtSourceReadError,
-        table::{TableError, TableQueryError, TableQueryErrorKind},
+    use fractal::{
+        edit::EditError,
+        sap::{
+            client::{SapError, SapErrorKind},
+            edit::{AdtSourcePatchError, AdtSourceReadError},
+            table::{TableError, TableQueryError, TableQueryErrorKind},
+        },
     };
 
     #[test]
@@ -256,5 +276,31 @@ mod tests {
         assert_eq!(sap.code(), "not_found");
         assert_eq!(sap.status(), Some(404));
         assert!(sap.message().contains("Object not found"));
+    }
+
+    #[test]
+    fn preserves_patch_stage_codes_hints_and_http_statuses() {
+        let namespace = CommandError::from(AdtSourcePatchError::Namespace(
+            EditError::ObjectOutsideCustomerNamespaces {
+                name: "SAP_STANDARD".to_owned(),
+                namespaces: vec!["Z*".to_owned()],
+            },
+        ));
+        assert_eq!(namespace.code(), "object_outside_customer_namespaces");
+        assert_eq!(namespace.status(), None);
+        assert!(namespace.hint().unwrap().contains("Z*"));
+
+        let lock = CommandError::from(AdtSourcePatchError::Lock {
+            transport: None,
+            source: SapError::Http {
+                kind: SapErrorKind::Other,
+                status: StatusCode::CONFLICT,
+                url: "https://sap.example/sap/bc/adt/programs/programs/zsample".to_owned(),
+                message: "Object is locked".to_owned(),
+            },
+        });
+        assert_eq!(lock.code(), "edit_lock_failed");
+        assert_eq!(lock.status(), Some(409));
+        assert!(lock.message().contains("Object is locked"));
     }
 }

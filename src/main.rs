@@ -9,6 +9,7 @@ use cli::{
     TableCommand,
 };
 use commands::auth::{auth_list, auth_login, auth_remove};
+use commands::edit_patch::{edit_source_patch, print_edit_source_patch};
 use commands::edit_read::{edit_source_read, print_edit_source_read};
 use commands::object::{
     object_info, object_kinds, object_search, object_source, object_usages, object_xml,
@@ -98,6 +99,16 @@ async fn main() {
             run_and_print_with_async(
                 || edit_source_read(cli.profile.as_deref(), args),
                 print_edit_source_read,
+                output,
+            )
+            .await
+        }
+        Command::Edit {
+            command: EditCommand::Patch(args),
+        } => {
+            run_and_print_with_async(
+                || edit_source_patch(cli.profile.as_deref(), args),
+                print_edit_source_patch,
                 output,
             )
             .await
