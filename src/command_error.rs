@@ -4,6 +4,7 @@ use fractal::{
         adt::AdtError,
         client::SapError,
         edit::{AdtSourcePatchError, AdtSourceReadError},
+        editable_source::EditableAdtSourceTargetError,
         package::PackageError,
         source_activation::AdtSourceActivationError,
         source_check::AdtSourceCheckError,
@@ -20,6 +21,7 @@ pub enum CommandError {
     Sap(SapError),
     Adt(AdtError),
     AdtSourceRead(AdtSourceReadError),
+    EditableAdtSourceTarget(EditableAdtSourceTargetError),
     AdtSourcePatch(AdtSourcePatchError),
     AdtSourceCheck(AdtSourceCheckError),
     AdtSourceActivation(AdtSourceActivationError),
@@ -74,6 +76,7 @@ impl CommandError {
             Self::Sap(error) => error.code(),
             Self::Adt(error) => error.code(),
             Self::AdtSourceRead(error) => error.code(),
+            Self::EditableAdtSourceTarget(error) => error.code(),
             Self::AdtSourcePatch(error) => error.code(),
             Self::AdtSourceCheck(error) => error.code(),
             Self::AdtSourceActivation(error) => error.code(),
@@ -100,6 +103,7 @@ impl CommandError {
                 Some(SapError::Http { status, .. }) => Some(status.as_u16()),
                 _ => None,
             },
+            Self::EditableAdtSourceTarget(_) => None,
             Self::AdtSourcePatch(error) => match error.sap_error() {
                 Some(SapError::Http { status, .. }) => Some(status.as_u16()),
                 _ => None,
@@ -131,6 +135,7 @@ impl CommandError {
             Self::Sap(error) => error.to_string(),
             Self::Adt(error) => error.to_string(),
             Self::AdtSourceRead(error) => error.to_string(),
+            Self::EditableAdtSourceTarget(error) => error.to_string(),
             Self::AdtSourcePatch(error) => error.to_string(),
             Self::AdtSourceCheck(error) => error.to_string(),
             Self::AdtSourceActivation(error) => error.to_string(),
@@ -157,6 +162,7 @@ impl CommandError {
             }
             Self::Adt(error) => error.hint(),
             Self::AdtSourceRead(error) => Some(error.hint()),
+            Self::EditableAdtSourceTarget(error) => Some(error.hint()),
             Self::AdtSourcePatch(error) => Some(error.hint()),
             Self::AdtSourceCheck(error) => Some(error.hint()),
             Self::AdtSourceActivation(error) => Some(error.hint()),
@@ -199,6 +205,12 @@ impl From<AdtError> for CommandError {
 impl From<AdtSourceReadError> for CommandError {
     fn from(error: AdtSourceReadError) -> Self {
         Self::AdtSourceRead(error)
+    }
+}
+
+impl From<EditableAdtSourceTargetError> for CommandError {
+    fn from(error: EditableAdtSourceTargetError) -> Self {
+        Self::EditableAdtSourceTarget(error)
     }
 }
 
@@ -262,16 +274,17 @@ mod tests {
 
     use super::CommandError;
     use fractal::{
-        edit::EditError,
         sap::{
             client::{SapError, SapErrorKind},
             edit::{AdtSourcePatchError, AdtSourceReadError},
+            editable_source::{AdtEditTargetValidationError, EditableAdtSourceTargetError},
             source_activation::AdtSourceActivationError,
             source_check::AdtSourceCheckError,
             source_discard::AdtInactiveSourceDiscardError,
             source_replace::AdtSourceReplacementError,
             table::{TableError, TableQueryError, TableQueryErrorKind},
         },
+        source_change::CustomerNamespaceError,
     };
 
     #[test]
@@ -325,8 +338,9 @@ mod tests {
 
     #[test]
     fn preserves_edit_source_validation_and_sap_errors() {
-        let validation =
-            CommandError::from(AdtSourceReadError::UnsupportedObjectType("DOMA".to_owned()));
+        let validation = CommandError::from(EditableAdtSourceTargetError::UnsupportedObjectType(
+            "DOMA".to_owned(),
+        ));
         assert_eq!(validation.code(), "unsupported_edit_object_type");
         assert_eq!(validation.status(), None);
         assert!(validation.hint().unwrap().contains("CLAS"));
@@ -344,11 +358,11 @@ mod tests {
 
     #[test]
     fn preserves_patch_stage_codes_hints_and_http_statuses() {
-        let namespace = CommandError::from(AdtSourcePatchError::Namespace(
-            EditError::ObjectOutsideCustomerNamespaces {
+        let namespace = CommandError::from(AdtSourcePatchError::Validation(
+            AdtEditTargetValidationError::Namespace(CustomerNamespaceError {
                 name: "SAP_STANDARD".to_owned(),
                 namespaces: vec!["Z*".to_owned()],
-            },
+            }),
         ));
         assert_eq!(namespace.code(), "object_outside_customer_namespaces");
         assert_eq!(namespace.status(), None);
