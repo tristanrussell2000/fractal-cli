@@ -4,6 +4,7 @@ use thiserror::Error;
 use super::{
     client::{SapClient, SapError},
     edit::{AdtSourceReadError, AdtSourceVersion, EditableAdtObjectType, editable_object_identity},
+    find_attribute_value,
 };
 
 const CHECKRUNS_PATH: &str = "/sap/bc/adt/checkruns";
@@ -60,6 +61,34 @@ pub enum AdtSourceCheckError {
     Parse(#[source] roxmltree::Error),
 }
 
+#[derive(Debug, Error)]
+pub enum AdtInactiveSourceProbeError {
+    #[error("SAP inactive-object lookup failed: {0}")]
+    Sap(#[from] SapError),
+    #[error("SAP returned malformed inactive-object XML: {0}")]
+    Parse(#[from] roxmltree::Error),
+}
+
+impl AdtInactiveSourceProbeError {
+    #[must_use]
+    pub const fn sap_error(&self) -> Option<&SapError> {
+        match self {
+            Self::Sap(error) => Some(error),
+            Self::Parse(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn hint(&self) -> String {
+        match self {
+            Self::Sap(error) => error.hint().to_owned(),
+            Self::Parse(_) => {
+                "The SAP inactive-object response did not contain valid ADT XML.".to_owned()
+            }
+        }
+    }
+}
+
 impl AdtSourceCheckError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -111,11 +140,22 @@ pub async fn check_adt_stored_source(
     let identity =
         editable_object_identity(object_type, name).map_err(AdtSourceCheckError::InvalidObject)?;
     let inactive_version_exists = if version == AdtSourceVersion::Inactive {
-        probe_inactive_version(sap, &identity.object_uri).await
+        probe_inactive_adt_source(sap, &identity.object_uri)
+            .await
+            .ok()
     } else {
         None
     };
 
+    check_adt_source_by_identity(sap, &identity, version, inactive_version_exists).await
+}
+
+pub(super) async fn check_adt_source_by_identity(
+    sap: &mut SapClient,
+    identity: &super::edit::EditableAdtObjectIdentity,
+    version: AdtSourceVersion,
+    inactive_version_exists: Option<bool>,
+) -> Result<AdtSourceCheckResult, AdtSourceCheckError> {
     if inactive_version_exists == Some(false) {
         let messages = vec![AdtSourceCheckMessage {
             severity: AdtSourceCheckSeverity::Info,
@@ -125,9 +165,9 @@ pub async fn check_adt_stored_source(
         }];
         return Ok(AdtSourceCheckResult {
             object_type: identity.object_type,
-            name: identity.name,
-            object_uri: identity.object_uri,
-            source_uri: identity.source_uri,
+            name: identity.name.clone(),
+            object_uri: identity.object_uri.clone(),
+            source_uri: identity.source_uri.clone(),
             requested_version: version,
             check_executed: false,
             inactive_version_exists,
@@ -162,9 +202,9 @@ pub async fn check_adt_stored_source(
 
     Ok(AdtSourceCheckResult {
         object_type: identity.object_type,
-        name: identity.name,
-        object_uri: identity.object_uri,
-        source_uri: identity.source_uri,
+        name: identity.name.clone(),
+        object_uri: identity.object_uri.clone(),
+        source_uri: identity.source_uri.clone(),
         requested_version: version,
         check_executed: true,
         inactive_version_exists,
@@ -176,13 +216,25 @@ pub async fn check_adt_stored_source(
     })
 }
 
-async fn probe_inactive_version(sap: &SapClient, object_uri: &str) -> Option<bool> {
-    let response = sap.get_text(INACTIVE_OBJECTS_PATH).await.ok()?;
-    Some(
-        response
-            .to_ascii_lowercase()
-            .contains(&object_uri.to_ascii_lowercase()),
-    )
+pub(super) async fn probe_inactive_adt_source(
+    sap: &SapClient,
+    object_uri: &str,
+) -> Result<bool, AdtInactiveSourceProbeError> {
+    let response = sap.get_text(INACTIVE_OBJECTS_PATH).await?;
+    inactive_object_response_contains_uri(&response, object_uri)
+}
+
+fn inactive_object_response_contains_uri(
+    response: &str,
+    object_uri: &str,
+) -> Result<bool, AdtInactiveSourceProbeError> {
+    let document = roxmltree::Document::parse(response)?;
+    Ok(document.descendants().any(|node| {
+        node.attributes().any(|attribute| {
+            attribute.name().eq_ignore_ascii_case("uri")
+                && attribute.value().eq_ignore_ascii_case(object_uri)
+        })
+    }))
 }
 
 fn build_checkrun_request(source_uri: &str, version: AdtSourceVersion) -> String {
@@ -205,11 +257,11 @@ fn parse_checkrun_response(response: &str) -> Result<ParsedCheckrunResponse, Adt
         .descendants()
         .filter(|node| node.is_element() && node.tag_name().name() == "checkMessage")
         .filter_map(|node| {
-            let text = attribute(node, "shortText")?.trim();
+            let text = find_attribute_value(node, "shortText")?.trim();
             if text.is_empty() {
                 return None;
             }
-            let raw_type = attribute(node, "type").unwrap_or_default();
+            let raw_type = find_attribute_value(node, "type").unwrap_or_default();
             let raw_type = raw_type.to_ascii_uppercase();
             let severity = if raw_type.starts_with('E') || raw_type.starts_with('A') {
                 AdtSourceCheckSeverity::Error
@@ -218,7 +270,7 @@ fn parse_checkrun_response(response: &str) -> Result<ParsedCheckrunResponse, Adt
             } else {
                 AdtSourceCheckSeverity::Info
             };
-            let line = attribute(node, "line").and_then(|line| line.parse().ok());
+            let line = find_attribute_value(node, "line").and_then(|line| line.parse().ok());
             Some(AdtSourceCheckMessage {
                 severity,
                 text: text.to_owned(),
@@ -241,12 +293,6 @@ fn parse_checkrun_response(response: &str) -> Result<ParsedCheckrunResponse, Adt
         infos,
         messages,
     })
-}
-
-fn attribute<'a, 'input>(node: roxmltree::Node<'a, 'input>, name: &str) -> Option<&'a str> {
-    node.attributes()
-        .find(|attribute| attribute.name() == name)
-        .map(|attribute| attribute.value())
 }
 
 #[cfg(test)]
@@ -289,5 +335,21 @@ mod tests {
             parse_checkrun_response("<not-closed>"),
             Err(AdtSourceCheckError::Parse(_))
         ));
+    }
+
+    #[test]
+    fn inactive_object_probe_matches_complete_uris_not_prefixes() {
+        let response = r#"<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
+            <adtcore:objectReference adtcore:uri="/sap/bc/adt/oo/classes/zcl_sample2"/>
+        </adtcore:objectReferences>"#;
+
+        assert!(
+            !inactive_object_response_contains_uri(response, "/sap/bc/adt/oo/classes/zcl_sample")
+                .unwrap()
+        );
+        assert!(
+            inactive_object_response_contains_uri(response, "/SAP/BC/ADT/OO/CLASSES/ZCL_SAMPLE2")
+                .unwrap()
+        );
     }
 }

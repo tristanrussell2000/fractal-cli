@@ -9,6 +9,7 @@ use cli::{
     TableCommand,
 };
 use commands::auth::{auth_list, auth_login, auth_remove};
+use commands::edit_activate::{edit_source_activate, print_edit_source_activate};
 use commands::edit_check::{edit_source_check, print_edit_source_check};
 use commands::edit_patch::{edit_source_patch, print_edit_source_patch};
 use commands::edit_read::{edit_source_read, print_edit_source_read};
@@ -120,6 +121,16 @@ async fn main() {
             run_and_print_with_async(
                 || edit_source_check(cli.profile.as_deref(), args),
                 print_edit_source_check,
+                output,
+            )
+            .await
+        }
+        Command::Edit {
+            command: EditCommand::Activate(args),
+        } => {
+            run_and_print_with_async(
+                || edit_source_activate(cli.profile.as_deref(), args),
+                print_edit_source_activate,
                 output,
             )
             .await

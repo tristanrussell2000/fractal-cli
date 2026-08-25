@@ -148,6 +148,8 @@ pub enum EditCommand {
     Patch(EditSourcePatchArgs),
     /// Run SAP's syntax checker against a stored source version.
     Check(EditSourceCheckArgs),
+    /// Activate and verify an object's stored inactive source.
+    Activate(EditSourceActivateArgs),
 }
 
 #[derive(Debug, Args)]
@@ -180,6 +182,19 @@ pub struct EditSourceCheckArgs {
     /// Stored source version to check.
     #[arg(long, value_enum, default_value = "inactive")]
     pub(crate) version: EditSourceVersionArg,
+}
+
+#[derive(Debug, Args)]
+pub struct EditSourceActivateArgs {
+    /// Source object type: CLAS, INTF, PROG, DDLS, or TABL.
+    #[arg(long = "type")]
+    pub(crate) object_type: String,
+    /// ABAP repository object name.
+    #[arg(long)]
+    pub(crate) name: String,
+    /// Parent CTS change request to attach before activation, for example DE3K900575.
+    #[arg(long)]
+    pub(crate) transport: Option<String>,
 }
 
 #[derive(Debug, Args)]

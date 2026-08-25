@@ -2,6 +2,7 @@ pub mod adt;
 pub mod client;
 pub mod edit;
 pub mod package;
+pub mod source_activation;
 pub mod source_check;
 pub mod table;
 
@@ -12,6 +13,17 @@ pub mod table;
 pub(crate) fn non_empty_attribute(value: Option<&str>) -> Option<String> {
     let value = value?.trim();
     (!value.is_empty()).then(|| value.to_owned())
+}
+
+/// Returns an XML attribute value by local name, independent of its namespace
+/// prefix. SAP may bind the same ADT schema under different prefixes.
+pub(crate) fn find_attribute_value<'a, 'input>(
+    node: roxmltree::Node<'a, 'input>,
+    name: &str,
+) -> Option<&'a str> {
+    node.attributes()
+        .find(|attribute| attribute.name() == name)
+        .map(|attribute| attribute.value())
 }
 
 /// Finds the first child element with the given local (namespace-stripped)

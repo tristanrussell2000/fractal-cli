@@ -374,7 +374,8 @@ pub async fn patch_adt_source_atomically(
         .map_err(AdtSourcePatchError::InvalidObject)?;
     validate_customer_namespace(&identity.name, customer_namespaces)
         .map_err(AdtSourcePatchError::Namespace)?;
-    let transport = validate_transport_request(request.transport.as_deref())?;
+    let transport = canonicalize_transport_request(request.transport.as_deref())
+        .map_err(AdtSourcePatchError::InvalidTransportRequest)?;
 
     let lock = acquire_adt_object_lock(sap, &identity.object_uri, transport.as_deref()).await?;
     let operation = patch_source_while_locked(sap, &identity, &lock, request).await;
@@ -440,7 +441,8 @@ pub async fn preview_adt_source_patch(
         .map_err(AdtSourcePatchError::InvalidObject)?;
     validate_customer_namespace(&identity.name, customer_namespaces)
         .map_err(AdtSourcePatchError::Namespace)?;
-    let transport = validate_transport_request(request.transport.as_deref())?;
+    let transport = canonicalize_transport_request(request.transport.as_deref())
+        .map_err(AdtSourcePatchError::InvalidTransportRequest)?;
     let original = read_adt_source_for_edit(
         sap,
         identity.object_type,
@@ -611,6 +613,15 @@ async fn release_adt_object_lock(
     .map_err(AdtSourcePatchError::Unlock)
 }
 
+pub(super) async fn attach_adt_object_to_transport(
+    sap: &mut SapClient,
+    object_uri: &str,
+    transport: &str,
+) -> Result<(), AdtSourcePatchError> {
+    let lock = acquire_adt_object_lock(sap, object_uri, Some(transport)).await?;
+    release_adt_object_lock(sap, object_uri, &lock).await
+}
+
 async fn write_adt_source(
     sap: &mut SapClient,
     identity: &EditableAdtObjectIdentity,
@@ -644,9 +655,9 @@ fn stateful_session_headers() -> HeaderMap {
     headers
 }
 
-fn validate_transport_request(
+pub(super) fn canonicalize_transport_request(
     transport: Option<&str>,
-) -> Result<Option<String>, AdtSourcePatchError> {
+) -> Result<Option<String>, String> {
     let Some(transport) = transport else {
         return Ok(None);
     };
@@ -655,9 +666,7 @@ fn validate_transport_request(
     {
         Ok(Some(trimmed.to_ascii_uppercase()))
     } else {
-        Err(AdtSourcePatchError::InvalidTransportRequest(
-            transport.to_owned(),
-        ))
+        Err(transport.to_owned())
     }
 }
 
