@@ -2,14 +2,14 @@ use thiserror::Error;
 
 use super::{
     client::{SapClient, SapError},
-    edit_session::{
-        AdtEditSessionError, AdtObjectLock, acquire_adt_object_lock,
-        read_adt_source_in_stateful_session, release_adt_object_lock, write_adt_source,
-    },
+    edit_session::AdtEditSessionError,
     editable_source::{
-        AdtEditTargetValidationError, AdtSourceReadError, AdtSourceReadResult, AdtSourceVersion,
-        EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
-        read_adt_source_for_edit, validate_adt_edit_target,
+        AdtEditTargetValidationError, AdtSourceReadError, AdtSourceSnapshot, AdtSourceVersion,
+        EditableAdtObjectType, ValidatedAdtEditTarget, read_adt_source_for_edit,
+        validate_adt_edit_target,
+    },
+    inactive_source_save::{
+        InactiveSourceSaveError, PlannedInactiveSourceChange, save_inactive_source_atomically,
     },
 };
 use crate::source_change::{SourceChangePlanError, SourceReplacementPlan, plan_source_replacement};
@@ -148,7 +148,7 @@ pub async fn preview_adt_source_replacement(
     )
     .await
     .map_err(AdtSourceReplacementError::PreviewSourceRead)?;
-    let plan = plan_replacement(&original, request)?;
+    let plan = plan_replacement(&original.source, request)?;
 
     Ok(AdtSourceReplacementPreview {
         object_type: identity.object_type,
@@ -182,35 +182,26 @@ pub async fn replace_adt_source_atomically(
     request: &AdtSourceReplacementRequest,
 ) -> Result<AdtSourceReplacementWriteResult, AdtSourceReplacementError> {
     let target = validate_replacement_request(customer_namespaces, request)?;
+    let saved = save_inactive_source_atomically(sap, &target, |original| {
+        let plan = plan_source_replacement(
+            &original.source,
+            &request.replacement_source,
+            request.expected_sha256.as_deref(),
+        )?;
+        Ok(PlannedInactiveSourceChange {
+            proposed: AdtSourceSnapshot::from_parts(
+                plan.replacement_source,
+                plan.replacement_sha256,
+                plan.replacement_bytes,
+            ),
+            metadata: (),
+        })
+    })
+    .await
+    .map_err(map_replacement_save_error)?;
     let identity = target.identity;
     let transport = target.transport;
-    let lock = acquire_adt_object_lock(sap, &identity.object_uri, transport.as_deref())
-        .await
-        .map_err(AdtSourceReplacementError::Session)?;
-    let operation = replace_source_while_locked(sap, &identity, &lock, request).await;
-    let unlock = release_adt_object_lock(sap, &identity.object_uri, &lock).await;
-
-    let (original, plan) = match operation {
-        Err(primary) => {
-            // Keep the operation failure primary while still attempting cleanup.
-            let _ = unlock;
-            return Err(primary);
-        }
-        Ok(value) => {
-            unlock.map_err(AdtSourceReplacementError::Session)?;
-            value
-        }
-    };
-
-    let stored = read_adt_source_for_edit(
-        sap,
-        identity.object_type,
-        &identity.name,
-        AdtSourceVersion::Inactive,
-    )
-    .await
-    .map_err(AdtSourceReplacementError::StoredSourceRead)?;
-    let sap_normalized_source = stored.source != plan.replacement_source;
+    let sap_normalized_source = saved.stored.source != saved.proposed.source;
 
     Ok(AdtSourceReplacementWriteResult {
         object_type: identity.object_type,
@@ -218,14 +209,14 @@ pub async fn replace_adt_source_atomically(
         object_uri: identity.object_uri,
         source_uri: identity.source_uri,
         transport,
-        original_sha256: original.sha256,
-        replacement_sha256: plan.replacement_sha256,
-        stored_sha256: stored.sha256,
-        original_bytes: original.bytes,
-        replacement_bytes: plan.replacement_bytes,
-        stored_bytes: stored.bytes,
-        replacement_source: plan.replacement_source,
-        stored_source: stored.source,
+        original_sha256: saved.original.sha256,
+        replacement_sha256: saved.proposed.sha256,
+        stored_sha256: saved.stored.sha256,
+        original_bytes: saved.original.bytes,
+        replacement_bytes: saved.proposed.bytes,
+        stored_bytes: saved.stored.bytes,
+        replacement_source: saved.proposed.source,
+        stored_source: saved.stored.source,
         sap_normalized_source,
     })
 }
@@ -249,29 +240,28 @@ fn validate_replacement_request(
 }
 
 fn plan_replacement(
-    original: &AdtSourceReadResult,
+    original_source: &str,
     request: &AdtSourceReplacementRequest,
 ) -> Result<SourceReplacementPlan, AdtSourceReplacementError> {
     plan_source_replacement(
-        &original.source,
+        original_source,
         &request.replacement_source,
         request.expected_sha256.as_deref(),
     )
     .map_err(AdtSourceReplacementError::Replacement)
 }
 
-async fn replace_source_while_locked(
-    sap: &mut SapClient,
-    identity: &EditableAdtSourceIdentity,
-    lock: &AdtObjectLock,
-    request: &AdtSourceReplacementRequest,
-) -> Result<(AdtSourceReadResult, SourceReplacementPlan), AdtSourceReplacementError> {
-    let original = read_adt_source_in_stateful_session(sap, identity, AdtSourceVersion::Inactive)
-        .await
-        .map_err(AdtSourceReplacementError::LockedSourceRead)?;
-    let plan = plan_replacement(&original, request)?;
-    write_adt_source(sap, identity, lock, &plan.replacement_source)
-        .await
-        .map_err(AdtSourceReplacementError::Session)?;
-    Ok((original, plan))
+fn map_replacement_save_error(
+    error: InactiveSourceSaveError<SourceChangePlanError>,
+) -> AdtSourceReplacementError {
+    match error {
+        InactiveSourceSaveError::Session(error) => AdtSourceReplacementError::Session(error),
+        InactiveSourceSaveError::LockedSourceRead(error) => {
+            AdtSourceReplacementError::LockedSourceRead(error)
+        }
+        InactiveSourceSaveError::Plan(error) => AdtSourceReplacementError::Replacement(error),
+        InactiveSourceSaveError::StoredSourceRead(error) => {
+            AdtSourceReplacementError::StoredSourceRead(error)
+        }
+    }
 }

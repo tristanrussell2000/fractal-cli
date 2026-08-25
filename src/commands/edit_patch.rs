@@ -8,9 +8,12 @@ use crate::{
     commands::connect,
     output::{OutputFormat, print_result},
 };
-use fractal::sap::edit::{
-    AdtSourcePatchPreview, AdtSourcePatchRequest, AdtSourcePatchWriteResult, EditableAdtObjectType,
-    patch_adt_source_atomically, preview_adt_source_patch,
+use fractal::sap::{
+    editable_source::EditableAdtObjectType,
+    source_patch::{
+        AdtSourcePatchPreview, AdtSourcePatchRequest, AdtSourcePatchWriteResult,
+        patch_adt_source_atomically, preview_adt_source_patch,
+    },
 };
 
 #[derive(Debug, Serialize)]

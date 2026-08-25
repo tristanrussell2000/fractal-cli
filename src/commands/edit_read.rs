@@ -8,7 +8,7 @@ use crate::{
     commands::connect,
     output::{OutputFormat, print_result},
 };
-use fractal::sap::edit::{
+use fractal::sap::editable_source::{
     AdtSourceReadResult, AdtSourceVersion, EditableAdtObjectType, read_adt_source_for_edit,
 };
 

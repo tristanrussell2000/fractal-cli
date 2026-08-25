@@ -108,6 +108,34 @@ pub struct AdtSourceReadResult {
     pub bytes: usize,
 }
 
+/// Exact source bytes and revision metadata observed at one workflow stage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AdtSourceSnapshot {
+    pub(super) source: String,
+    pub(super) sha256: String,
+    pub(super) bytes: usize,
+}
+
+impl AdtSourceSnapshot {
+    pub(super) fn from_parts(source: String, sha256: String, bytes: usize) -> Self {
+        Self {
+            source,
+            sha256,
+            bytes,
+        }
+    }
+}
+
+impl From<AdtSourceReadResult> for AdtSourceSnapshot {
+    fn from(result: AdtSourceReadResult) -> Self {
+        Self {
+            source: result.source,
+            sha256: result.sha256,
+            bytes: result.bytes,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct EditableAdtSourceIdentity {
     pub(super) object_type: EditableAdtObjectType,
@@ -299,7 +327,15 @@ pub async fn read_adt_source_for_edit(
     version: AdtSourceVersion,
 ) -> Result<AdtSourceReadResult, AdtSourceReadError> {
     let identity = editable_source_identity(object_type, name)?;
-    read_adt_source(sap, &identity, version, HeaderMap::new()).await
+    read_adt_source_by_identity(sap, &identity, version).await
+}
+
+pub(super) async fn read_adt_source_by_identity(
+    sap: &SapClient,
+    identity: &EditableAdtSourceIdentity,
+    version: AdtSourceVersion,
+) -> Result<AdtSourceReadResult, AdtSourceReadError> {
+    read_adt_source(sap, identity, version, HeaderMap::new()).await
 }
 
 pub(super) async fn read_adt_source(

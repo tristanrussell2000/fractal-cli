@@ -9,7 +9,7 @@ use crate::{
     output::{OutputFormat, print_result},
 };
 use fractal::sap::{
-    edit::EditableAdtObjectType,
+    editable_source::EditableAdtObjectType,
     source_activation::{
         AdtSourceActivationMessage, AdtSourceActivationRequest, AdtSourceActivationResult,
         activate_adt_source,
@@ -211,7 +211,7 @@ mod tests {
     use super::*;
     use crate::cli::{Cli, Command, EditCommand};
     use fractal::sap::{
-        edit::{AdtSourceVersion, EditableAdtObjectType},
+        editable_source::{AdtSourceVersion, EditableAdtObjectType},
         source_activation::{
             AdtSourceActivationMessage, AdtSourceActivationMessageSeverity,
             AdtSourceActivationResult,

@@ -1,19 +1,18 @@
 use thiserror::Error;
 
-pub use super::editable_source::{
-    AdtEditTargetValidationError, AdtSourceReadError, AdtSourceReadResult, AdtSourceVersion,
-    EditableAdtObjectType, EditableAdtSourceTargetError, TransportRequestError,
+use super::editable_source::{
+    AdtEditTargetValidationError, AdtSourceReadError, AdtSourceVersion, EditableAdtObjectType,
     read_adt_source_for_edit,
 };
 use super::{
     client::{SapClient, SapError},
-    edit_session::{
-        AdtEditSessionError, AdtObjectLock, acquire_adt_object_lock,
-        read_adt_source_in_stateful_session, release_adt_object_lock, write_adt_source,
+    edit_session::AdtEditSessionError,
+    editable_source::{AdtSourceSnapshot, validate_adt_edit_target},
+    inactive_source_save::{
+        InactiveSourceSaveError, PlannedInactiveSourceChange, save_inactive_source_atomically,
     },
-    editable_source::{EditableAdtSourceIdentity, validate_adt_edit_target},
 };
-use crate::source_change::{PatchPlan, SourceChangePlanError, plan_patch};
+use crate::source_change::{SourceChangePlanError, plan_patch};
 
 /// One exact source replacement to preview or perform against an ADT object.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,34 +145,30 @@ pub async fn patch_adt_source_atomically(
         customer_namespaces,
         request.transport.as_deref(),
     )?;
+    let saved = save_inactive_source_atomically(sap, &target, |original| {
+        let expected_sha256 = request
+            .expected_sha256
+            .as_deref()
+            .unwrap_or(&original.sha256);
+        let plan = plan_patch(
+            &original.source,
+            &request.find,
+            &request.replace,
+            expected_sha256,
+        )?;
+        Ok(PlannedInactiveSourceChange {
+            proposed: AdtSourceSnapshot::from_parts(
+                plan.updated_source,
+                plan.updated_sha256,
+                plan.updated_bytes,
+            ),
+            metadata: plan.replacements,
+        })
+    })
+    .await
+    .map_err(map_patch_save_error)?;
     let identity = target.identity;
     let transport = target.transport;
-
-    let lock = acquire_adt_object_lock(sap, &identity.object_uri, transport.as_deref()).await?;
-    let operation = patch_source_while_locked(sap, &identity, &lock, request).await;
-    let unlock = release_adt_object_lock(sap, &identity.object_uri, &lock).await;
-
-    let (original, plan) = match operation {
-        Err(primary) => {
-            // Cleanup errors must not replace the error that caused the write
-            // workflow to abort, but release was still attempted above.
-            let _ = unlock;
-            return Err(primary);
-        }
-        Ok(value) => {
-            unlock?;
-            value
-        }
-    };
-
-    let stored = read_adt_source_for_edit(
-        sap,
-        identity.object_type,
-        &identity.name,
-        AdtSourceVersion::Inactive,
-    )
-    .await
-    .map_err(AdtSourcePatchError::StoredSourceRead)?;
 
     Ok(AdtSourcePatchWriteResult {
         object_type: identity.object_type,
@@ -181,15 +176,15 @@ pub async fn patch_adt_source_atomically(
         object_uri: identity.object_uri,
         source_uri: identity.source_uri,
         transport,
-        original_sha256: original.sha256,
-        proposed_sha256: plan.updated_sha256,
-        stored_sha256: stored.sha256,
-        original_bytes: original.bytes,
-        proposed_bytes: plan.updated_bytes,
-        stored_bytes: stored.bytes,
-        replacements: plan.replacements,
-        proposed_source: plan.updated_source,
-        stored_source: stored.source,
+        original_sha256: saved.original.sha256,
+        proposed_sha256: saved.proposed.sha256,
+        stored_sha256: saved.stored.sha256,
+        original_bytes: saved.original.bytes,
+        proposed_bytes: saved.proposed.bytes,
+        stored_bytes: saved.stored.bytes,
+        replacements: saved.metadata,
+        proposed_source: saved.proposed.source,
+        stored_source: saved.stored.source,
     })
 }
 
@@ -252,27 +247,17 @@ pub async fn preview_adt_source_patch(
     })
 }
 
-async fn patch_source_while_locked(
-    sap: &mut SapClient,
-    identity: &EditableAdtSourceIdentity,
-    lock: &AdtObjectLock,
-    request: &AdtSourcePatchRequest,
-) -> Result<(AdtSourceReadResult, PatchPlan), AdtSourcePatchError> {
-    let original = read_adt_source_in_stateful_session(sap, identity, AdtSourceVersion::Inactive)
-        .await
-        .map_err(AdtSourcePatchError::LockedSourceRead)?;
-    let expected_sha256 = request
-        .expected_sha256
-        .as_deref()
-        .unwrap_or(&original.sha256);
-    let plan = plan_patch(
-        &original.source,
-        &request.find,
-        &request.replace,
-        expected_sha256,
-    )
-    .map_err(AdtSourcePatchError::Patch)?;
-
-    write_adt_source(sap, identity, lock, &plan.updated_source).await?;
-    Ok((original, plan))
+fn map_patch_save_error(
+    error: InactiveSourceSaveError<SourceChangePlanError>,
+) -> AdtSourcePatchError {
+    match error {
+        InactiveSourceSaveError::Session(error) => AdtSourcePatchError::Session(error),
+        InactiveSourceSaveError::LockedSourceRead(error) => {
+            AdtSourcePatchError::LockedSourceRead(error)
+        }
+        InactiveSourceSaveError::Plan(error) => AdtSourcePatchError::Patch(error),
+        InactiveSourceSaveError::StoredSourceRead(error) => {
+            AdtSourcePatchError::StoredSourceRead(error)
+        }
+    }
 }

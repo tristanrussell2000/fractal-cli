@@ -7,11 +7,12 @@ use fractal::{
     config::Profile,
     sap::{
         client::SapClient,
-        edit::{
-            AdtEditTargetValidationError, AdtSourcePatchError, AdtSourcePatchRequest,
-            EditableAdtObjectType, patch_adt_source_atomically, preview_adt_source_patch,
-        },
         edit_session::AdtEditSessionError,
+        editable_source::{AdtEditTargetValidationError, EditableAdtObjectType},
+        source_patch::{
+            AdtSourcePatchError, AdtSourcePatchRequest, patch_adt_source_atomically,
+            preview_adt_source_patch,
+        },
     },
     source_change::{SourceChangePlanError, source_sha256},
 };

@@ -2,7 +2,7 @@ use fractal::{
     config::Profile,
     sap::{
         client::SapClient,
-        edit::{AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceTargetError},
+        editable_source::{AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceTargetError},
         source_check::{AdtSourceCheckError, AdtSourceCheckSeverity, check_adt_stored_source},
     },
 };

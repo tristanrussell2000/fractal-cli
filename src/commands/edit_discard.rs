@@ -9,7 +9,7 @@ use crate::{
     output::{OutputFormat, print_result},
 };
 use fractal::sap::{
-    edit::EditableAdtObjectType,
+    editable_source::EditableAdtObjectType,
     source_discard::{
         AdtInactiveSourceDiscardRequest, AdtInactiveSourceDiscardResult,
         discard_inactive_adt_source,

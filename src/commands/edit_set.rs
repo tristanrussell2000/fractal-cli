@@ -9,7 +9,7 @@ use crate::{
     output::{OutputFormat, print_result},
 };
 use fractal::sap::{
-    edit::EditableAdtObjectType,
+    editable_source::EditableAdtObjectType,
     source_replace::{
         AdtSourceReplacementPreview, AdtSourceReplacementRequest, AdtSourceReplacementWriteResult,
         preview_adt_source_replacement, replace_adt_source_atomically,
@@ -223,7 +223,7 @@ mod tests {
     use std::io::Cursor;
 
     use clap::{CommandFactory, Parser};
-    use fractal::{sap::edit::EditableAdtObjectType, source_change::source_sha256};
+    use fractal::{sap::editable_source::EditableAdtObjectType, source_change::source_sha256};
 
     use super::*;
     use crate::cli::{Cli, Command, EditCommand};

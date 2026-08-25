@@ -8,7 +8,7 @@ use fractal::{
     config::Profile,
     sap::{
         client::SapClient,
-        edit::EditableAdtObjectType,
+        editable_source::EditableAdtObjectType,
         source_activation::{
             AdtSourceActivationError, AdtSourceActivationMessageSeverity,
             AdtSourceActivationRequest, activate_adt_source,

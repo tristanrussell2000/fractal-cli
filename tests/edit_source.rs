@@ -2,7 +2,7 @@ use fractal::{
     config::Profile,
     sap::{
         client::SapClient,
-        edit::{
+        editable_source::{
             AdtSourceReadError, AdtSourceVersion, EditableAdtObjectType, read_adt_source_for_edit,
         },
     },

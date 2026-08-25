@@ -3,12 +3,12 @@ use fractal::{
     sap::{
         adt::AdtError,
         client::SapError,
-        edit::{AdtSourcePatchError, AdtSourceReadError},
-        editable_source::EditableAdtSourceTargetError,
+        editable_source::{AdtSourceReadError, EditableAdtSourceTargetError},
         package::PackageError,
         source_activation::AdtSourceActivationError,
         source_check::AdtSourceCheckError,
         source_discard::AdtInactiveSourceDiscardError,
+        source_patch::AdtSourcePatchError,
         source_replace::AdtSourceReplacementError,
         table::TableError,
     },
@@ -275,14 +275,15 @@ mod tests {
     use super::CommandError;
     use fractal::sap::{
         client::{SapError, SapErrorKind},
-        edit::{AdtSourcePatchError, AdtSourceReadError},
         edit_session::AdtEditSessionError,
         editable_source::{
-            AdtEditTargetValidationError, CustomerNamespaceError, EditableAdtSourceTargetError,
+            AdtEditTargetValidationError, AdtSourceReadError, CustomerNamespaceError,
+            EditableAdtSourceTargetError,
         },
         source_activation::AdtSourceActivationError,
         source_check::AdtSourceCheckError,
         source_discard::AdtInactiveSourceDiscardError,
+        source_patch::AdtSourcePatchError,
         source_replace::AdtSourceReplacementError,
         table::{TableError, TableQueryError, TableQueryErrorKind},
     };

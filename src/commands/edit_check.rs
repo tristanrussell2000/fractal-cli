@@ -9,7 +9,7 @@ use crate::{
     output::{OutputFormat, print_result},
 };
 use fractal::sap::{
-    edit::EditableAdtObjectType,
+    editable_source::EditableAdtObjectType,
     source_check::{AdtSourceCheckMessage, AdtSourceCheckResult, check_adt_stored_source},
 };
 
@@ -122,7 +122,7 @@ mod tests {
     use super::*;
     use crate::cli::{Cli, Command, EditCommand, EditSourceVersionArg};
     use fractal::sap::{
-        edit::{AdtSourceVersion, EditableAdtObjectType},
+        editable_source::{AdtSourceVersion, EditableAdtObjectType},
         source_check::{AdtSourceCheckMessage, AdtSourceCheckResult, AdtSourceCheckSeverity},
     };
 

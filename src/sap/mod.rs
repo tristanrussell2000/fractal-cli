@@ -1,12 +1,13 @@
 pub mod adt;
 pub mod client;
-pub mod edit;
 pub mod edit_session;
 pub mod editable_source;
+mod inactive_source_save;
 pub mod package;
 pub mod source_activation;
 pub mod source_check;
 pub mod source_discard;
+pub mod source_patch;
 pub mod source_replace;
 pub mod table;
 
