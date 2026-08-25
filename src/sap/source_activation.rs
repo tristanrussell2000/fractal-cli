@@ -245,26 +245,35 @@ pub async fn activate_adt_source(
         });
     }
 
-    let inactive = read_adt_source_for_edit(
-        sap,
-        identity.object_type,
-        &identity.name,
-        AdtSourceVersion::Inactive,
-    )
-    .await
-    .map_err(AdtSourceActivationError::InactiveSourceRead)?;
-
-    let precheck =
-        check_adt_source_by_identity(sap, &identity, AdtSourceVersion::Inactive, Some(true))
-            .await
-            .map_err(AdtSourceActivationError::Precheck)?;
-    if !precheck.clean {
-        return Err(AdtSourceActivationError::PrecheckRejected {
-            errors: precheck.errors,
-            warnings: precheck.warnings,
-            messages: precheck.messages,
-        });
-    }
+    sap.establish_csrf_session()
+        .await
+        .map_err(|error| AdtSourceActivationError::Precheck(AdtSourceCheckError::Sap(error)))?;
+    let inactive_read = async {
+        read_adt_source_for_edit(
+            sap,
+            identity.object_type,
+            &identity.name,
+            AdtSourceVersion::Inactive,
+        )
+        .await
+        .map_err(AdtSourceActivationError::InactiveSourceRead)
+    };
+    let precheck_run = async {
+        let precheck =
+            check_adt_source_by_identity(sap, &identity, AdtSourceVersion::Inactive, Some(true))
+                .await
+                .map_err(AdtSourceActivationError::Precheck)?;
+        if precheck.clean {
+            Ok(precheck)
+        } else {
+            Err(AdtSourceActivationError::PrecheckRejected {
+                errors: precheck.errors,
+                warnings: precheck.warnings,
+                messages: precheck.messages,
+            })
+        }
+    };
+    let (inactive, precheck) = tokio::try_join!(inactive_read, precheck_run)?;
 
     if let Some(transport) = &transport {
         attach_adt_object_to_transport(sap, &identity.object_uri, transport)

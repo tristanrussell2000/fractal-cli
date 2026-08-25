@@ -2,7 +2,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use fractal::{
     config::Profile,
@@ -60,11 +60,24 @@ async fn mount_csrf_session(server: &MockServer) {
 }
 
 async fn mount_source_read(server: &MockServer, version: &str, source: &'static str) {
+    mount_source_read_response(
+        server,
+        version,
+        ResponseTemplate::new(200).set_body_string(source),
+    )
+    .await;
+}
+
+async fn mount_source_read_response(
+    server: &MockServer,
+    version: &str,
+    response: ResponseTemplate,
+) {
     Mock::given(method("GET"))
         .and(path(SOURCE_URI))
         .and(query_param("version", version))
         .and(query_param("sap-client", "100"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(source))
+        .respond_with(response)
         .expect(1)
         .mount(server)
         .await;
@@ -77,6 +90,10 @@ fn checkrun_body() -> String {
 }
 
 async fn mount_checkrun(server: &MockServer, response: &'static str) {
+    mount_checkrun_response(server, ResponseTemplate::new(200).set_body_string(response)).await;
+}
+
+async fn mount_checkrun_response(server: &MockServer, response: ResponseTemplate) {
     Mock::given(method("POST"))
         .and(path("/sap/bc/adt/checkruns"))
         .and(query_param("reporters", "abapCheckRun"))
@@ -92,7 +109,7 @@ async fn mount_checkrun(server: &MockServer, response: &'static str) {
             "application/vnd.sap.adt.checkmessages+xml",
         ))
         .and(body_string(checkrun_body()))
-        .respond_with(ResponseTemplate::new(200).set_body_string(response))
+        .respond_with(response)
         .expect(1)
         .mount(server)
         .await;
@@ -215,6 +232,44 @@ async fn activates_and_verifies_the_exact_inactive_source() {
         result.activation_messages[0].severity,
         AdtSourceActivationMessageSeverity::Info
     );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn reads_inactive_source_and_runs_precheck_concurrently() {
+    let server = MockServer::start().await;
+    mount_inactive_sequence(&server, false).await;
+    mount_source_read_response(
+        &server,
+        "inactive",
+        ResponseTemplate::new(200)
+            .set_body_string(SOURCE)
+            .set_delay(Duration::from_millis(500)),
+    )
+    .await;
+    mount_csrf_session(&server).await;
+    mount_checkrun_response(
+        &server,
+        ResponseTemplate::new(200)
+            .set_body_string("<checkMessageList/>")
+            .set_delay(Duration::from_millis(500)),
+    )
+    .await;
+    mount_activation(
+        &server,
+        ResponseTemplate::new(200)
+            .set_body_string(r#"<activationResult activationExecuted="true"/>"#),
+    )
+    .await;
+    mount_source_read(&server, "active", SOURCE).await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let started = Instant::now();
+    activate_adt_source(&mut client, &["Z*".to_owned()], &activation_request(None))
+        .await
+        .unwrap();
+
+    assert!(started.elapsed() < Duration::from_millis(850));
     server.verify().await;
 }
 

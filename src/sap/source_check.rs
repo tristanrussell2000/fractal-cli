@@ -147,11 +147,19 @@ pub async fn check_adt_stored_source(
         None
     };
 
+    if inactive_version_exists == Some(false) {
+        return check_adt_source_by_identity(sap, &identity, version, inactive_version_exists)
+            .await;
+    }
+    sap.establish_csrf_session()
+        .await
+        .map_err(AdtSourceCheckError::Sap)?;
     check_adt_source_by_identity(sap, &identity, version, inactive_version_exists).await
 }
 
+/// Runs a check after the caller has established CSRF/session state.
 pub(super) async fn check_adt_source_by_identity(
-    sap: &mut SapClient,
+    sap: &SapClient,
     identity: &super::edit::EditableAdtObjectIdentity,
     version: AdtSourceVersion,
     inactive_version_exists: Option<bool>,
@@ -190,7 +198,7 @@ pub(super) async fn check_adt_source_by_identity(
         HeaderValue::from_static("application/vnd.sap.adt.checkmessages+xml"),
     );
     let response = sap
-        .post_text(
+        .post_text_read_only(
             CHECKRUNS_PATH,
             &[("reporters", "abapCheckRun")],
             Some(&body),
