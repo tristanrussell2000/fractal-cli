@@ -143,6 +143,7 @@ async fn mount_activation(server: &MockServer, response: ResponseTemplate) {
 struct InactiveObjectSequence {
     calls: Arc<AtomicUsize>,
     remains_after_activation: bool,
+    post_activation_delay: Duration,
 }
 
 impl Respond for InactiveObjectSequence {
@@ -154,17 +155,31 @@ impl Respond for InactiveObjectSequence {
         } else {
             "<objects/>".to_owned()
         };
-        ResponseTemplate::new(200).set_body_string(body)
+        let response = ResponseTemplate::new(200).set_body_string(body);
+        if call > 0 && !self.post_activation_delay.is_zero() {
+            response.set_delay(self.post_activation_delay)
+        } else {
+            response
+        }
     }
 }
 
 async fn mount_inactive_sequence(server: &MockServer, remains_after_activation: bool) {
+    mount_inactive_sequence_with_post_delay(server, remains_after_activation, Duration::ZERO).await;
+}
+
+async fn mount_inactive_sequence_with_post_delay(
+    server: &MockServer,
+    remains_after_activation: bool,
+    post_activation_delay: Duration,
+) {
     Mock::given(method("GET"))
         .and(path("/sap/bc/adt/activation/inactiveobjects"))
         .and(query_param("sap-client", "100"))
         .respond_with(InactiveObjectSequence {
             calls: Arc::new(AtomicUsize::new(0)),
             remains_after_activation,
+            post_activation_delay,
         })
         .expect(2)
         .mount(server)
@@ -262,6 +277,38 @@ async fn reads_inactive_source_and_runs_precheck_concurrently() {
     )
     .await;
     mount_source_read(&server, "active", SOURCE).await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let started = Instant::now();
+    activate_adt_source(&mut client, &["Z*".to_owned()], &activation_request(None))
+        .await
+        .unwrap();
+
+    assert!(started.elapsed() < Duration::from_millis(850));
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn reads_active_source_and_probes_inactive_state_concurrently() {
+    let server = MockServer::start().await;
+    mount_inactive_sequence_with_post_delay(&server, false, Duration::from_millis(500)).await;
+    mount_source_read(&server, "inactive", SOURCE).await;
+    mount_csrf_session(&server).await;
+    mount_checkrun(&server, "<checkMessageList/>").await;
+    mount_activation(
+        &server,
+        ResponseTemplate::new(200)
+            .set_body_string(r#"<activationResult activationExecuted="true"/>"#),
+    )
+    .await;
+    mount_source_read_response(
+        &server,
+        "active",
+        ResponseTemplate::new(200)
+            .set_body_string(SOURCE)
+            .set_delay(Duration::from_millis(500)),
+    )
+    .await;
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let started = Instant::now();
