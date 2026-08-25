@@ -3,7 +3,7 @@ use thiserror::Error;
 
 use super::{
     client::{SapClient, SapError},
-    edit::{AdtSourcePatchError, attach_adt_object_to_transport},
+    edit_session::{AdtEditSessionError, attach_adt_object_to_transport},
     editable_source::{
         AdtEditTargetValidationError, AdtSourceReadError, AdtSourceVersion, EditableAdtObjectType,
         ValidatedAdtEditTarget, read_adt_source_for_edit, validate_adt_edit_target,
@@ -89,7 +89,7 @@ pub enum AdtSourceActivationError {
         messages: Vec<AdtSourceCheckMessage>,
     },
     #[error("could not attach the object to the requested transport before activation: {0}")]
-    TransportAttachment(#[source] AdtSourcePatchError),
+    TransportAttachment(#[source] AdtEditSessionError),
     #[error("the ADT activation request failed: {0}")]
     ActivationRequest(#[source] SapError),
     #[error("SAP returned malformed activation XML and the inactive version still exists: {0}")]

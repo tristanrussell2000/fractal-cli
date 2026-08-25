@@ -2,14 +2,14 @@ use thiserror::Error;
 
 use super::{
     client::{SapClient, SapError},
-    edit::{
-        AdtObjectLock, AdtSourcePatchError, acquire_adt_object_lock, release_adt_object_lock,
-        write_adt_source,
+    edit_session::{
+        AdtEditSessionError, AdtObjectLock, acquire_adt_object_lock,
+        read_adt_source_in_stateful_session, release_adt_object_lock, write_adt_source,
     },
     editable_source::{
         AdtEditTargetValidationError, AdtSourceReadError, AdtSourceReadResult, AdtSourceVersion,
         EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
-        read_adt_source_in_stateful_session, validate_adt_edit_target,
+        validate_adt_edit_target,
     },
     source_activation::{AdtSourceActivationError, activate_validated_adt_source},
     source_check::{AdtInactiveSourceProbeError, probe_inactive_adt_source},
@@ -45,8 +45,8 @@ pub struct AdtInactiveSourceDiscardResult {
 pub enum AdtInactiveSourceDiscardError {
     #[error(transparent)]
     Validation(#[from] AdtEditTargetValidationError),
-    #[error("could not acquire the ADT lock before discarding inactive source: {0}")]
-    Lock(#[source] AdtSourcePatchError),
+    #[error("ADT edit session failed while discarding inactive source: {0}")]
+    Session(#[source] AdtEditSessionError),
     #[error("could not determine whether the locked object has inactive source: {0}")]
     InactiveVersionProbe(#[source] AdtInactiveSourceProbeError),
     #[error("{object_type} object '{name}' has no inactive source to discard")]
@@ -58,8 +58,6 @@ pub enum AdtInactiveSourceDiscardError {
     ActiveSourceRead(#[source] AdtSourceReadError),
     #[error("could not read the inactive source while the discard lock was held: {0}")]
     InactiveSourceRead(#[source] AdtSourceReadError),
-    #[error("could not restore active source over inactive source: {0}")]
-    ActiveSourceRestore(#[source] AdtSourcePatchError),
     #[error("could not re-read the restored inactive source while its lock was held: {0}")]
     RestoredSourceRead(#[source] AdtSourceReadError),
     #[error(
@@ -69,10 +67,6 @@ pub enum AdtInactiveSourceDiscardError {
         active_sha256: String,
         restored_sha256: String,
     },
-    #[error(
-        "active source was restored over inactive source, but the ADT object lock could not be released: {0}"
-    )]
-    Unlock(#[source] AdtSourcePatchError),
     #[error("active source was restored over inactive source, but activation failed: {0}")]
     RestoredSourceActivation(#[source] AdtSourceActivationError),
     #[error(
@@ -89,15 +83,20 @@ impl AdtInactiveSourceDiscardError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::Validation(error) => error.code(),
-            Self::Lock(_) => "edit_discard_lock_failed",
+            Self::Session(
+                AdtEditSessionError::LockFailed { .. }
+                | AdtEditSessionError::LockHandleMissing { .. },
+            ) => "edit_discard_lock_failed",
+            Self::Session(AdtEditSessionError::SourceWriteFailed { .. }) => {
+                "edit_discard_restore_write_failed"
+            }
+            Self::Session(AdtEditSessionError::UnlockFailed(_)) => "edit_discard_unlock_failed",
             Self::InactiveVersionProbe(_) => "edit_discard_inactive_probe_failed",
             Self::NoInactiveVersion { .. } => "edit_discard_no_inactive_source",
             Self::ActiveSourceRead(_) => "edit_discard_active_read_failed",
             Self::InactiveSourceRead(_) => "edit_discard_inactive_read_failed",
-            Self::ActiveSourceRestore(_) => "edit_discard_restore_write_failed",
             Self::RestoredSourceRead(_) => "edit_discard_restore_read_failed",
             Self::RestoreVerificationMismatch { .. } => "edit_discard_restore_mismatch",
-            Self::Unlock(_) => "edit_discard_unlock_failed",
             Self::RestoredSourceActivation(_) => "edit_discard_activation_failed",
             Self::ActiveSourceChanged { .. } => "edit_discard_active_source_changed",
         }
@@ -114,17 +113,17 @@ impl AdtInactiveSourceDiscardError {
                     .to_owned()
             }
             Self::Validation(error) => error.hint(),
-            Self::Lock(error) | Self::ActiveSourceRestore(error) => error.hint(),
+            Self::Session(AdtEditSessionError::UnlockFailed(_)) => {
+                "The inactive source now contains the previous active source, but it was not activated. Release the lock, inspect the inactive version, and activate it to finish the discard."
+                    .to_owned()
+            }
+            Self::Session(error) => error.hint(),
             Self::InactiveVersionProbe(error) => error.hint(),
             Self::NoInactiveVersion { .. } => {
                 "There are no visible unactivated changes to discard.".to_owned()
             }
             Self::RestoreVerificationMismatch { .. } => {
                 "The inactive source was overwritten but not activated because SAP did not preserve the active bytes exactly. Inspect both versions in ADT before continuing."
-                    .to_owned()
-            }
-            Self::Unlock(_) => {
-                "The inactive source now contains the previous active source, but it was not activated. Release the lock, inspect the inactive version, and activate it to finish the discard."
                     .to_owned()
             }
             Self::RestoredSourceActivation(error) => format!(
@@ -144,9 +143,7 @@ impl AdtInactiveSourceDiscardError {
             Self::ActiveSourceRead(error)
             | Self::InactiveSourceRead(error)
             | Self::RestoredSourceRead(error) => error.sap_error(),
-            Self::Lock(error) | Self::ActiveSourceRestore(error) | Self::Unlock(error) => {
-                error.sap_error()
-            }
+            Self::Session(error) => error.sap_error(),
             Self::InactiveVersionProbe(error) => error.sap_error(),
             Self::RestoredSourceActivation(error) => error.sap_error(),
             Self::Validation(_)
@@ -194,7 +191,7 @@ pub async fn discard_inactive_adt_source(
 
     let lock = acquire_adt_object_lock(sap, &identity.object_uri, transport.as_deref())
         .await
-        .map_err(AdtInactiveSourceDiscardError::Lock)?;
+        .map_err(AdtInactiveSourceDiscardError::Session)?;
     let preparation = prepare_discard_while_locked(sap, &identity, &lock).await;
     let unlock = release_adt_object_lock(sap, &identity.object_uri, &lock).await;
 
@@ -205,7 +202,7 @@ pub async fn discard_inactive_adt_source(
             return Err(primary);
         }
         Ok(prepared) => {
-            unlock.map_err(AdtInactiveSourceDiscardError::Unlock)?;
+            unlock.map_err(AdtInactiveSourceDiscardError::Session)?;
             prepared
         }
     };
@@ -273,7 +270,7 @@ async fn prepare_discard_while_locked(
 
     write_adt_source(sap, identity, lock, &active_before.source)
         .await
-        .map_err(AdtInactiveSourceDiscardError::ActiveSourceRestore)?;
+        .map_err(AdtInactiveSourceDiscardError::Session)?;
     let restored_inactive =
         read_adt_source_in_stateful_session(sap, identity, AdtSourceVersion::Inactive)
             .await

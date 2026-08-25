@@ -7,6 +7,7 @@ use fractal::{
     config::Profile,
     sap::{
         client::SapClient,
+        edit_session::AdtEditSessionError,
         editable_source::{AdtEditTargetValidationError, EditableAdtObjectType},
         source_activation::AdtSourceActivationError,
         source_discard::{
@@ -424,8 +425,9 @@ async fn restore_write_failure_wins_but_unlock_is_still_attempted() {
 
     assert!(matches!(
         error,
-        AdtInactiveSourceDiscardError::ActiveSourceRestore(_)
+        AdtInactiveSourceDiscardError::Session(AdtEditSessionError::SourceWriteFailed { .. })
     ));
+    assert_eq!(error.code(), "edit_discard_restore_write_failed");
     assert!(error.to_string().contains("Source is busy"));
     server.verify().await;
 }

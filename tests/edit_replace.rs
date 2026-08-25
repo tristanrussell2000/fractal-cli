@@ -7,6 +7,7 @@ use fractal::{
     config::Profile,
     sap::{
         client::SapClient,
+        edit_session::AdtEditSessionError,
         editable_source::{AdtEditTargetValidationError, EditableAdtObjectType},
         source_replace::{
             AdtSourceReplacementError, AdtSourceReplacementRequest, preview_adt_source_replacement,
@@ -487,7 +488,10 @@ async fn write_failure_wins_even_when_unlock_also_fails() {
     .await
     .unwrap_err();
 
-    assert!(matches!(error, AdtSourceReplacementError::SourceWrite(_)));
+    assert!(matches!(
+        error,
+        AdtSourceReplacementError::Session(AdtEditSessionError::SourceWriteFailed { .. })
+    ));
     assert_eq!(error.code(), "edit_source_replacement_write_failed");
     assert!(error.to_string().contains("Complete source rejected"));
     server.verify().await;
@@ -512,7 +516,10 @@ async fn successful_write_followed_by_failed_unlock_maps_to_unlock_error() {
     .await
     .unwrap_err();
 
-    assert!(matches!(error, AdtSourceReplacementError::Unlock(_)));
+    assert!(matches!(
+        error,
+        AdtSourceReplacementError::Session(AdtEditSessionError::UnlockFailed(_))
+    ));
     assert_eq!(error.code(), "edit_source_replacement_unlock_failed");
     server.verify().await;
 }

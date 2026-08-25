@@ -11,6 +11,7 @@ use fractal::{
             AdtEditTargetValidationError, AdtSourcePatchError, AdtSourcePatchRequest,
             EditableAdtObjectType, patch_adt_source_atomically, preview_adt_source_patch,
         },
+        edit_session::AdtEditSessionError,
     },
     source_change::{SourceChangePlanError, source_sha256},
 };
@@ -388,7 +389,10 @@ async fn does_not_retry_a_lock_held_by_a_different_transport() {
         .await
         .unwrap_err();
 
-    assert!(matches!(error, AdtSourcePatchError::Lock { .. }));
+    assert!(matches!(
+        error,
+        AdtSourcePatchError::Session(AdtEditSessionError::LockFailed { .. })
+    ));
     assert!(error.hint().contains("DE3K900999"));
     assert!(error.hint().contains("DE3K900575"));
     assert_eq!(server.received_requests().await.unwrap().len(), 2);
@@ -438,7 +442,10 @@ async fn suggests_the_request_named_by_sap_when_transport_was_omitted() {
             .await
             .unwrap_err();
 
-    assert!(matches!(error, AdtSourcePatchError::SourceWrite { .. }));
+    assert!(matches!(
+        error,
+        AdtSourcePatchError::Session(AdtEditSessionError::SourceWriteFailed { .. })
+    ));
     assert!(error.hint().contains("--transport DE3K900575"));
     server.verify().await;
 }
@@ -484,7 +491,10 @@ async fn reports_lock_contention_without_reading_or_unlocking() {
             .await
             .unwrap_err();
 
-    assert!(matches!(error, AdtSourcePatchError::Lock { .. }));
+    assert!(matches!(
+        error,
+        AdtSourcePatchError::Session(AdtEditSessionError::LockFailed { .. })
+    ));
     assert_eq!(error.code(), "edit_lock_failed");
     assert!(error.to_string().contains("locked by another user"));
     server.verify().await;
@@ -511,7 +521,7 @@ async fn rejects_a_successful_lock_response_that_contains_no_handle() {
 
     assert!(matches!(
         error,
-        AdtSourcePatchError::LockHandleMissing { .. }
+        AdtSourcePatchError::Session(AdtEditSessionError::LockHandleMissing { .. })
     ));
     assert_eq!(error.code(), "edit_lock_response_invalid");
     server.verify().await;
@@ -597,7 +607,10 @@ async fn source_write_error_wins_even_when_cleanup_unlock_also_fails() {
             .await
             .unwrap_err();
 
-    assert!(matches!(error, AdtSourcePatchError::SourceWrite { .. }));
+    assert!(matches!(
+        error,
+        AdtSourcePatchError::Session(AdtEditSessionError::SourceWriteFailed { .. })
+    ));
     assert_eq!(error.code(), "edit_source_write_failed");
     assert!(error.to_string().contains("Source syntax rejected"));
     server.verify().await;
@@ -626,7 +639,10 @@ async fn unlock_failure_surfaces_after_a_successful_write() {
             .await
             .unwrap_err();
 
-    assert!(matches!(error, AdtSourcePatchError::Unlock(_)));
+    assert!(matches!(
+        error,
+        AdtSourcePatchError::Session(AdtEditSessionError::UnlockFailed(_))
+    ));
     assert_eq!(error.code(), "edit_unlock_failed");
     server.verify().await;
 }

@@ -3,8 +3,6 @@ use std::fmt::Write as _;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::pattern::glob_matches;
-
 const SHA256_HEX_LENGTH: usize = 64;
 
 /// A fully validated source change that has not been written to SAP.
@@ -93,34 +91,6 @@ impl SourceChangePlanError {
     }
 }
 
-/// A failure to authorize an edit against the configured customer namespaces.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-#[error("object '{name}' is outside the configured customer namespaces")]
-pub struct CustomerNamespaceError {
-    pub name: String,
-    pub namespaces: Vec<String>,
-}
-
-impl CustomerNamespaceError {
-    #[must_use]
-    pub const fn code(&self) -> &'static str {
-        "object_outside_customer_namespaces"
-    }
-
-    #[must_use]
-    pub fn hint(&self) -> String {
-        if self.namespaces.is_empty() {
-            return "Configure at least one customer namespace on the selected profile before editing."
-                .to_owned();
-        }
-
-        format!(
-            "Only objects matching these configured patterns may be edited: {}.",
-            self.namespaces.join(", ")
-        )
-    }
-}
-
 /// Returns the lowercase SHA-256 of a UTF-8 source string.
 #[must_use]
 pub fn source_sha256(source: &str) -> String {
@@ -130,29 +100,6 @@ pub fn source_sha256(source: &str) -> String {
         let _ = write!(hash, "{byte:02x}");
     }
     hash
-}
-
-/// Verifies that an object belongs to one of the configured customer namespaces.
-///
-/// Matching is case-insensitive and uses the same `*` glob behavior as object
-/// search. An empty pattern list denies every object.
-///
-/// # Errors
-///
-/// Returns [`CustomerNamespaceError`] when no configured
-/// pattern matches the complete object name.
-pub fn validate_customer_namespace(
-    name: &str,
-    namespaces: &[String],
-) -> Result<(), CustomerNamespaceError> {
-    if namespaces.iter().any(|pattern| glob_matches(pattern, name)) {
-        return Ok(());
-    }
-
-    Err(CustomerNamespaceError {
-        name: name.to_owned(),
-        namespaces: namespaces.to_vec(),
-    })
 }
 
 /// Plans one exact literal replacement against a known source version.
@@ -395,30 +342,5 @@ mod tests {
             plan_source_replacement(SOURCE, SOURCE, None),
             Err(SourceChangePlanError::SourceReplacementNoChanges)
         );
-    }
-
-    #[test]
-    fn accepts_plain_and_registered_customer_namespaces() {
-        let namespaces = vec!["Z*".to_owned(), "/ACME/*".to_owned()];
-
-        assert!(validate_customer_namespace("zsample", &namespaces).is_ok());
-        assert!(validate_customer_namespace("/acme/example", &namespaces).is_ok());
-    }
-
-    #[test]
-    fn rejects_objects_outside_customer_namespaces() {
-        let namespaces = vec!["Z*".to_owned(), "Y*".to_owned()];
-        let error = validate_customer_namespace("SAP_STANDARD", &namespaces).unwrap_err();
-
-        assert_eq!(error.name, "SAP_STANDARD");
-        assert_eq!(error.code(), "object_outside_customer_namespaces");
-        assert!(error.hint().contains("Z*"));
-    }
-
-    #[test]
-    fn empty_namespace_configuration_fails_closed() {
-        let error = validate_customer_namespace("Z_SAMPLE", &[]).unwrap_err();
-
-        assert!(error.hint().contains("Configure at least one"));
     }
 }

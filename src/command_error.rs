@@ -273,18 +273,18 @@ mod tests {
     use reqwest::StatusCode;
 
     use super::CommandError;
-    use fractal::{
-        sap::{
-            client::{SapError, SapErrorKind},
-            edit::{AdtSourcePatchError, AdtSourceReadError},
-            editable_source::{AdtEditTargetValidationError, EditableAdtSourceTargetError},
-            source_activation::AdtSourceActivationError,
-            source_check::AdtSourceCheckError,
-            source_discard::AdtInactiveSourceDiscardError,
-            source_replace::AdtSourceReplacementError,
-            table::{TableError, TableQueryError, TableQueryErrorKind},
+    use fractal::sap::{
+        client::{SapError, SapErrorKind},
+        edit::{AdtSourcePatchError, AdtSourceReadError},
+        edit_session::AdtEditSessionError,
+        editable_source::{
+            AdtEditTargetValidationError, CustomerNamespaceError, EditableAdtSourceTargetError,
         },
-        source_change::CustomerNamespaceError,
+        source_activation::AdtSourceActivationError,
+        source_check::AdtSourceCheckError,
+        source_discard::AdtInactiveSourceDiscardError,
+        source_replace::AdtSourceReplacementError,
+        table::{TableError, TableQueryError, TableQueryErrorKind},
     };
 
     #[test]
@@ -368,15 +368,17 @@ mod tests {
         assert_eq!(namespace.status(), None);
         assert!(namespace.hint().unwrap().contains("Z*"));
 
-        let lock = CommandError::from(AdtSourcePatchError::Lock {
-            transport: None,
-            source: SapError::Http {
-                kind: SapErrorKind::Other,
-                status: StatusCode::CONFLICT,
-                url: "https://sap.example/sap/bc/adt/programs/programs/zsample".to_owned(),
-                message: "Object is locked".to_owned(),
+        let lock = CommandError::from(AdtSourcePatchError::Session(
+            AdtEditSessionError::LockFailed {
+                transport: None,
+                source: SapError::Http {
+                    kind: SapErrorKind::Other,
+                    status: StatusCode::CONFLICT,
+                    url: "https://sap.example/sap/bc/adt/programs/programs/zsample".to_owned(),
+                    message: "Object is locked".to_owned(),
+                },
             },
-        });
+        ));
         assert_eq!(lock.code(), "edit_lock_failed");
         assert_eq!(lock.status(), Some(409));
         assert!(lock.message().contains("Object is locked"));

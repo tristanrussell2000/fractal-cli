@@ -1,16 +1,15 @@
 use std::string::FromUtf8Error;
 
-use reqwest::header::{HeaderMap, HeaderValue};
+use reqwest::header::HeaderMap;
 use thiserror::Error;
 
 use super::{
     adt::RepositoryKind,
     client::{SapClient, SapError},
 };
-use crate::source_change::{CustomerNamespaceError, source_sha256, validate_customer_namespace};
+use crate::{pattern::glob_matches, source_change::source_sha256};
 
 const SOURCE_SUFFIX: &str = "/source/main";
-const STATEFUL_SESSION_HEADER: &str = "X-sap-adt-sessiontype";
 
 /// A source-based ADT object family supported by the safe-edit workflow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +146,34 @@ impl EditableAdtSourceTargetError {
                     .to_owned()
             }
         }
+    }
+}
+
+/// A failure to authorize an edit against the configured customer namespaces.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("object '{name}' is outside the configured customer namespaces")]
+pub struct CustomerNamespaceError {
+    pub name: String,
+    pub namespaces: Vec<String>,
+}
+
+impl CustomerNamespaceError {
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        "object_outside_customer_namespaces"
+    }
+
+    #[must_use]
+    pub fn hint(&self) -> String {
+        if self.namespaces.is_empty() {
+            return "Configure at least one customer namespace on the selected profile before editing."
+                .to_owned();
+        }
+
+        format!(
+            "Only objects matching these configured patterns may be edited: {}.",
+            self.namespaces.join(", ")
+        )
     }
 }
 
@@ -309,14 +336,6 @@ pub(super) async fn read_adt_source(
     })
 }
 
-pub(super) async fn read_adt_source_in_stateful_session(
-    sap: &SapClient,
-    identity: &EditableAdtSourceIdentity,
-    version: AdtSourceVersion,
-) -> Result<AdtSourceReadResult, AdtSourceReadError> {
-    read_adt_source(sap, identity, version, stateful_session_headers()).await
-}
-
 pub(super) fn validate_adt_edit_target(
     object_type: EditableAdtObjectType,
     name: &str,
@@ -349,15 +368,6 @@ pub(super) fn editable_source_identity(
     })
 }
 
-pub(super) fn stateful_session_headers() -> HeaderMap {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        STATEFUL_SESSION_HEADER,
-        HeaderValue::from_static("stateful"),
-    );
-    headers
-}
-
 fn canonicalize_transport_request(
     transport: Option<&str>,
 ) -> Result<Option<String>, TransportRequestError> {
@@ -373,6 +383,24 @@ fn canonicalize_transport_request(
             value: transport.to_owned(),
         })
     }
+}
+
+/// Verifies that an object belongs to one configured customer namespace.
+///
+/// Matching is case-insensitive and uses the same `*` glob behavior as object
+/// search. An empty pattern list denies every object.
+fn validate_customer_namespace(
+    name: &str,
+    namespaces: &[String],
+) -> Result<(), CustomerNamespaceError> {
+    if namespaces.iter().any(|pattern| glob_matches(pattern, name)) {
+        return Ok(());
+    }
+
+    Err(CustomerNamespaceError {
+        name: name.to_owned(),
+        namespaces: namespaces.to_vec(),
+    })
 }
 
 fn validate_object_name(name: &str) -> Result<String, EditableAdtSourceTargetError> {
@@ -519,5 +547,30 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(transport.code(), "invalid_transport_request");
+    }
+
+    #[test]
+    fn accepts_plain_and_registered_customer_namespaces() {
+        let namespaces = vec!["Z*".to_owned(), "/ACME/*".to_owned()];
+
+        assert!(validate_customer_namespace("zsample", &namespaces).is_ok());
+        assert!(validate_customer_namespace("/acme/example", &namespaces).is_ok());
+    }
+
+    #[test]
+    fn rejects_objects_outside_customer_namespaces() {
+        let namespaces = vec!["Z*".to_owned(), "Y*".to_owned()];
+        let error = validate_customer_namespace("SAP_STANDARD", &namespaces).unwrap_err();
+
+        assert_eq!(error.name, "SAP_STANDARD");
+        assert_eq!(error.code(), "object_outside_customer_namespaces");
+        assert!(error.hint().contains("Z*"));
+    }
+
+    #[test]
+    fn empty_namespace_configuration_fails_closed() {
+        let error = validate_customer_namespace("Z_SAMPLE", &[]).unwrap_err();
+
+        assert!(error.hint().contains("Configure at least one"));
     }
 }
