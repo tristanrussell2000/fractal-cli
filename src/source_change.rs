@@ -28,9 +28,9 @@ pub struct SourceReplacementPlan {
     pub replacement_bytes: usize,
 }
 
-/// A deterministic failure while validating or planning a source edit.
+/// A deterministic failure while planning a source change.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum EditError {
+pub enum SourceChangePlanError {
     #[error("expected SHA-256 must contain exactly 64 hexadecimal characters")]
     InvalidExpectedSha256,
     #[error("source changed since it was read: expected SHA-256 {expected}, found {actual}")]
@@ -47,14 +47,9 @@ pub enum EditError {
     BlankReplacementSource,
     #[error("the complete replacement source is identical to the current source")]
     SourceReplacementNoChanges,
-    #[error("object '{name}' is outside the configured customer namespaces")]
-    ObjectOutsideCustomerNamespaces {
-        name: String,
-        namespaces: Vec<String>,
-    },
 }
 
-impl EditError {
+impl SourceChangePlanError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
@@ -66,7 +61,6 @@ impl EditError {
             Self::NoChanges => "patch_no_change",
             Self::BlankReplacementSource => "blank_replacement_source",
             Self::SourceReplacementNoChanges => "source_replacement_no_change",
-            Self::ObjectOutsideCustomerNamespaces { .. } => "object_outside_customer_namespaces",
         }
     }
 
@@ -95,15 +89,35 @@ impl EditError {
                 "The supplied complete source already matches SAP's current inactive source."
                     .to_owned()
             }
-            Self::ObjectOutsideCustomerNamespaces { namespaces, .. } if namespaces.is_empty() => {
-                "Configure at least one customer namespace on the selected profile before editing."
-                    .to_owned()
-            }
-            Self::ObjectOutsideCustomerNamespaces { namespaces, .. } => format!(
-                "Only objects matching these configured patterns may be edited: {}.",
-                namespaces.join(", ")
-            ),
         }
+    }
+}
+
+/// A failure to authorize an edit against the configured customer namespaces.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("object '{name}' is outside the configured customer namespaces")]
+pub struct CustomerNamespaceError {
+    pub name: String,
+    pub namespaces: Vec<String>,
+}
+
+impl CustomerNamespaceError {
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        "object_outside_customer_namespaces"
+    }
+
+    #[must_use]
+    pub fn hint(&self) -> String {
+        if self.namespaces.is_empty() {
+            return "Configure at least one customer namespace on the selected profile before editing."
+                .to_owned();
+        }
+
+        format!(
+            "Only objects matching these configured patterns may be edited: {}.",
+            self.namespaces.join(", ")
+        )
     }
 }
 
@@ -125,14 +139,17 @@ pub fn source_sha256(source: &str) -> String {
 ///
 /// # Errors
 ///
-/// Returns [`EditError::ObjectOutsideCustomerNamespaces`] when no configured
+/// Returns [`CustomerNamespaceError`] when no configured
 /// pattern matches the complete object name.
-pub fn validate_customer_namespace(name: &str, namespaces: &[String]) -> Result<(), EditError> {
+pub fn validate_customer_namespace(
+    name: &str,
+    namespaces: &[String],
+) -> Result<(), CustomerNamespaceError> {
     if namespaces.iter().any(|pattern| glob_matches(pattern, name)) {
         return Ok(());
     }
 
-    Err(EditError::ObjectOutsideCustomerNamespaces {
+    Err(CustomerNamespaceError {
         name: name.to_owned(),
         namespaces: namespaces.to_vec(),
     })
@@ -146,24 +163,24 @@ pub fn validate_customer_namespace(name: &str, namespaces: &[String]) -> Result<
 ///
 /// # Errors
 ///
-/// Returns [`EditError`] when the expected hash is invalid or stale, the find
+/// Returns [`SourceChangePlanError`] when the expected hash is invalid or stale, the find
 /// text is empty, absent, or ambiguous, or the replacement produces no change.
 pub fn plan_patch(
     source: &str,
     find: &str,
     replace: &str,
     expected_sha256: &str,
-) -> Result<PatchPlan, EditError> {
+) -> Result<PatchPlan, SourceChangePlanError> {
     if find.is_empty() {
-        return Err(EditError::EmptyFind);
+        return Err(SourceChangePlanError::EmptyFind);
     }
     if !is_sha256(expected_sha256) {
-        return Err(EditError::InvalidExpectedSha256);
+        return Err(SourceChangePlanError::InvalidExpectedSha256);
     }
 
     let original_sha256 = source_sha256(source);
     if !expected_sha256.eq_ignore_ascii_case(&original_sha256) {
-        return Err(EditError::SourceHashMismatch {
+        return Err(SourceChangePlanError::SourceHashMismatch {
             expected: expected_sha256.to_ascii_lowercase(),
             actual: original_sha256,
         });
@@ -171,14 +188,14 @@ pub fn plan_patch(
 
     let occurrences = source.match_indices(find).count();
     match occurrences {
-        0 => return Err(EditError::AnchorNotFound),
+        0 => return Err(SourceChangePlanError::AnchorNotFound),
         1 => {}
-        _ => return Err(EditError::AnchorAmbiguous { occurrences }),
+        _ => return Err(SourceChangePlanError::AnchorAmbiguous { occurrences }),
     }
 
     let updated_source = source.replacen(find, replace, 1);
     if updated_source == source {
-        return Err(EditError::NoChanges);
+        return Err(SourceChangePlanError::NoChanges);
     }
 
     Ok(PatchPlan {
@@ -200,24 +217,24 @@ pub fn plan_patch(
 ///
 /// # Errors
 ///
-/// Returns [`EditError`] when replacement source is blank or unchanged, or when
+/// Returns [`SourceChangePlanError`] when replacement source is blank or unchanged, or when
 /// the optional expected hash is invalid or stale.
 pub fn plan_source_replacement(
     current_source: &str,
     replacement_source: &str,
     expected_sha256: Option<&str>,
-) -> Result<SourceReplacementPlan, EditError> {
+) -> Result<SourceReplacementPlan, SourceChangePlanError> {
     if replacement_source.trim().is_empty() {
-        return Err(EditError::BlankReplacementSource);
+        return Err(SourceChangePlanError::BlankReplacementSource);
     }
 
     let original_sha256 = source_sha256(current_source);
     if let Some(expected_sha256) = expected_sha256 {
         if !is_sha256(expected_sha256) {
-            return Err(EditError::InvalidExpectedSha256);
+            return Err(SourceChangePlanError::InvalidExpectedSha256);
         }
         if !expected_sha256.eq_ignore_ascii_case(&original_sha256) {
-            return Err(EditError::SourceHashMismatch {
+            return Err(SourceChangePlanError::SourceHashMismatch {
                 expected: expected_sha256.to_ascii_lowercase(),
                 actual: original_sha256,
             });
@@ -225,7 +242,7 @@ pub fn plan_source_replacement(
     }
 
     if replacement_source == current_source {
-        return Err(EditError::SourceReplacementNoChanges);
+        return Err(SourceChangePlanError::SourceReplacementNoChanges);
     }
 
     Ok(SourceReplacementPlan {
@@ -283,7 +300,7 @@ mod tests {
     fn rejects_an_invalid_expected_hash() {
         assert_eq!(
             plan_patch(SOURCE, "before", "after", "not-a-hash"),
-            Err(EditError::InvalidExpectedSha256)
+            Err(SourceChangePlanError::InvalidExpectedSha256)
         );
     }
 
@@ -292,7 +309,10 @@ mod tests {
         let stale = source_sha256("older source");
         let error = plan_patch(SOURCE, "missing", "after", &stale).unwrap_err();
 
-        assert!(matches!(error, EditError::SourceHashMismatch { .. }));
+        assert!(matches!(
+            error,
+            SourceChangePlanError::SourceHashMismatch { .. }
+        ));
         assert_eq!(error.code(), "source_hash_mismatch");
     }
 
@@ -300,7 +320,7 @@ mod tests {
     fn rejects_an_empty_anchor() {
         assert_eq!(
             plan_patch(SOURCE, "", "after", &source_hash()),
-            Err(EditError::EmptyFind)
+            Err(SourceChangePlanError::EmptyFind)
         );
     }
 
@@ -308,7 +328,7 @@ mod tests {
     fn rejects_a_missing_anchor() {
         assert_eq!(
             plan_patch(SOURCE, "not present", "after", &source_hash()),
-            Err(EditError::AnchorNotFound)
+            Err(SourceChangePlanError::AnchorNotFound)
         );
     }
 
@@ -317,7 +337,10 @@ mod tests {
         let source = "WRITE value.\nWRITE value.\n";
         let error = plan_patch(source, "WRITE", "SKIP", &source_sha256(source)).unwrap_err();
 
-        assert_eq!(error, EditError::AnchorAmbiguous { occurrences: 2 });
+        assert_eq!(
+            error,
+            SourceChangePlanError::AnchorAmbiguous { occurrences: 2 }
+        );
         assert!(error.hint().contains("exactly once"));
     }
 
@@ -325,7 +348,7 @@ mod tests {
     fn rejects_a_no_op_replacement() {
         assert_eq!(
             plan_patch(SOURCE, "before", "before", &source_hash()),
-            Err(EditError::NoChanges)
+            Err(SourceChangePlanError::NoChanges)
         );
     }
 
@@ -356,18 +379,21 @@ mod tests {
         let error =
             plan_source_replacement(SOURCE, replacement, Some(&source_sha256("older source")))
                 .unwrap_err();
-        assert!(matches!(error, EditError::SourceHashMismatch { .. }));
+        assert!(matches!(
+            error,
+            SourceChangePlanError::SourceHashMismatch { .. }
+        ));
     }
 
     #[test]
     fn rejects_blank_or_unchanged_complete_source() {
         assert_eq!(
             plan_source_replacement(SOURCE, " \n\t", None),
-            Err(EditError::BlankReplacementSource)
+            Err(SourceChangePlanError::BlankReplacementSource)
         );
         assert_eq!(
             plan_source_replacement(SOURCE, SOURCE, None),
-            Err(EditError::SourceReplacementNoChanges)
+            Err(SourceChangePlanError::SourceReplacementNoChanges)
         );
     }
 
@@ -384,10 +410,7 @@ mod tests {
         let namespaces = vec!["Z*".to_owned(), "Y*".to_owned()];
         let error = validate_customer_namespace("SAP_STANDARD", &namespaces).unwrap_err();
 
-        assert!(matches!(
-            error,
-            EditError::ObjectOutsideCustomerNamespaces { .. }
-        ));
+        assert_eq!(error.name, "SAP_STANDARD");
         assert_eq!(error.code(), "object_outside_customer_namespaces");
         assert!(error.hint().contains("Z*"));
     }

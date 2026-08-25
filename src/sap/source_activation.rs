@@ -3,10 +3,10 @@ use thiserror::Error;
 
 use super::{
     client::{SapClient, SapError},
-    edit::{
-        AdtSourcePatchError, AdtSourceReadError, AdtSourceVersion, EditableAdtObjectType,
-        attach_adt_object_to_transport, canonicalize_transport_request, editable_object_identity,
-        read_adt_source_for_edit,
+    edit::{AdtSourcePatchError, attach_adt_object_to_transport},
+    editable_source::{
+        AdtEditTargetValidationError, AdtSourceReadError, AdtSourceVersion, EditableAdtObjectType,
+        ValidatedAdtEditTarget, read_adt_source_for_edit, validate_adt_edit_target,
     },
     find_attribute_value,
     source_check::{
@@ -14,7 +14,6 @@ use super::{
         AdtSourceCheckResult, check_adt_source_by_identity, probe_inactive_adt_source,
     },
 };
-use crate::edit::{EditError, validate_customer_namespace};
 
 const ACTIVATION_PATH: &str = "/sap/bc/adt/activation";
 
@@ -70,12 +69,8 @@ pub struct AdtSourceActivationResult {
 
 #[derive(Debug, Error)]
 pub enum AdtSourceActivationError {
-    #[error("invalid activation object: {0}")]
-    InvalidObject(#[source] AdtSourceReadError),
     #[error(transparent)]
-    Namespace(EditError),
-    #[error("invalid transport request '{0}'")]
-    InvalidTransportRequest(String),
+    Validation(#[from] AdtEditTargetValidationError),
     #[error("could not determine whether the object has inactive source: {0}")]
     InactiveVersionProbe(#[source] AdtInactiveSourceProbeError),
     #[error("{object_type} object '{name}' has no inactive source to activate")]
@@ -123,9 +118,7 @@ impl AdtSourceActivationError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::InvalidObject(error) => error.code(),
-            Self::Namespace(error) => error.code(),
-            Self::InvalidTransportRequest(_) => "invalid_transport_request",
+            Self::Validation(error) => error.code(),
             Self::InactiveVersionProbe(_) => "edit_activation_inactive_probe_failed",
             Self::NoInactiveVersion { .. } => "edit_activation_no_inactive_source",
             Self::InactiveSourceRead(_) => "edit_activation_inactive_read_failed",
@@ -144,12 +137,11 @@ impl AdtSourceActivationError {
     #[must_use]
     pub fn hint(&self) -> String {
         match self {
-            Self::InvalidObject(error) => error.hint(),
-            Self::Namespace(error) => error.hint(),
-            Self::InvalidTransportRequest(_) => {
+            Self::Validation(AdtEditTargetValidationError::InvalidTransport(_)) => {
                 "Use a parent transport request containing 1-20 ASCII letters or digits, for example DE3K900575."
                     .to_owned()
             }
+            Self::Validation(error) => error.hint(),
             Self::InactiveVersionProbe(error) => error.hint(),
             Self::NoInactiveVersion { .. } => {
                 "Create or save an inactive change first; use `fractal edit read --version active` to inspect what is already live."
@@ -188,16 +180,13 @@ impl AdtSourceActivationError {
     #[must_use]
     pub const fn sap_error(&self) -> Option<&SapError> {
         match self {
-            Self::InvalidObject(error)
-            | Self::InactiveSourceRead(error)
-            | Self::ActiveSourceRead(error) => error.sap_error(),
+            Self::InactiveSourceRead(error) | Self::ActiveSourceRead(error) => error.sap_error(),
             Self::InactiveVersionProbe(error) => error.sap_error(),
             Self::ActivationRequest(error) => Some(error),
             Self::PostActivationProbe(error) => error.sap_error(),
             Self::Precheck(error) => error.sap_error(),
             Self::TransportAttachment(error) => error.sap_error(),
-            Self::Namespace(_)
-            | Self::InvalidTransportRequest(_)
+            Self::Validation(_)
             | Self::NoInactiveVersion { .. }
             | Self::PrecheckRejected { .. }
             | Self::ActivationResponseInvalid(_)
@@ -228,12 +217,21 @@ pub async fn activate_adt_source(
     customer_namespaces: &[String],
     request: &AdtSourceActivationRequest,
 ) -> Result<AdtSourceActivationResult, AdtSourceActivationError> {
-    let identity = editable_object_identity(request.object_type, &request.name)
-        .map_err(AdtSourceActivationError::InvalidObject)?;
-    validate_customer_namespace(&identity.name, customer_namespaces)
-        .map_err(AdtSourceActivationError::Namespace)?;
-    let transport = canonicalize_transport_request(request.transport.as_deref())
-        .map_err(AdtSourceActivationError::InvalidTransportRequest)?;
+    let target = validate_adt_edit_target(
+        request.object_type,
+        &request.name,
+        customer_namespaces,
+        request.transport.as_deref(),
+    )?;
+    activate_validated_adt_source(sap, target).await
+}
+
+pub(super) async fn activate_validated_adt_source(
+    sap: &mut SapClient,
+    target: ValidatedAdtEditTarget,
+) -> Result<AdtSourceActivationResult, AdtSourceActivationError> {
+    let identity = target.identity;
+    let transport = target.transport;
 
     let inactive_exists = probe_inactive_adt_source(sap, &identity.object_uri)
         .await

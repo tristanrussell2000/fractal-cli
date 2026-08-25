@@ -3,7 +3,10 @@ use thiserror::Error;
 
 use super::{
     client::{SapClient, SapError},
-    edit::{AdtSourceReadError, AdtSourceVersion, EditableAdtObjectType, editable_object_identity},
+    editable_source::{
+        AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceIdentity,
+        EditableAdtSourceTargetError, editable_source_identity,
+    },
     find_attribute_value,
 };
 
@@ -54,7 +57,7 @@ pub struct AdtSourceCheckResult {
 #[derive(Debug, Error)]
 pub enum AdtSourceCheckError {
     #[error("invalid source-check object: {0}")]
-    InvalidObject(#[source] AdtSourceReadError),
+    InvalidObject(#[source] EditableAdtSourceTargetError),
     #[error("SAP source check failed: {0}")]
     Sap(#[source] SapError),
     #[error("SAP returned malformed source-check XML: {0}")]
@@ -138,7 +141,7 @@ pub async fn check_adt_stored_source(
     version: AdtSourceVersion,
 ) -> Result<AdtSourceCheckResult, AdtSourceCheckError> {
     let identity =
-        editable_object_identity(object_type, name).map_err(AdtSourceCheckError::InvalidObject)?;
+        editable_source_identity(object_type, name).map_err(AdtSourceCheckError::InvalidObject)?;
     let inactive_version_exists = if version == AdtSourceVersion::Inactive {
         probe_inactive_adt_source(sap, &identity.object_uri)
             .await
@@ -160,7 +163,7 @@ pub async fn check_adt_stored_source(
 /// Runs a check after the caller has established CSRF/session state.
 pub(super) async fn check_adt_source_by_identity(
     sap: &SapClient,
-    identity: &super::edit::EditableAdtObjectIdentity,
+    identity: &EditableAdtSourceIdentity,
     version: AdtSourceVersion,
     inactive_version_exists: Option<bool>,
 ) -> Result<AdtSourceCheckResult, AdtSourceCheckError> {

@@ -5,15 +5,15 @@ use std::sync::{
 
 use fractal::{
     config::Profile,
-    edit::{EditError, source_sha256},
     sap::{
         client::SapClient,
-        edit::EditableAdtObjectType,
+        editable_source::{AdtEditTargetValidationError, EditableAdtObjectType},
         source_replace::{
             AdtSourceReplacementError, AdtSourceReplacementRequest, preview_adt_source_replacement,
             replace_adt_source_atomically,
         },
     },
+    source_change::{SourceChangePlanError, source_sha256},
 };
 use wiremock::{
     Mock, MockServer, Request, Respond, ResponseTemplate,
@@ -315,7 +315,7 @@ async fn stale_expected_hash_is_checked_under_lock_and_then_unlocked() {
 
     assert!(matches!(
         error,
-        AdtSourceReplacementError::Replacement(EditError::SourceHashMismatch { .. })
+        AdtSourceReplacementError::Replacement(SourceChangePlanError::SourceHashMismatch { .. })
     ));
     assert!(
         server
@@ -346,7 +346,7 @@ async fn unchanged_source_is_rejected_under_lock_without_writing() {
 
     assert!(matches!(
         error,
-        AdtSourceReplacementError::Replacement(EditError::SourceReplacementNoChanges)
+        AdtSourceReplacementError::Replacement(SourceChangePlanError::SourceReplacementNoChanges)
     ));
     assert!(
         server
@@ -377,7 +377,7 @@ async fn invalid_expected_hash_format_is_rejected_under_lock_without_writing() {
 
     assert!(matches!(
         error,
-        AdtSourceReplacementError::Replacement(EditError::InvalidExpectedSha256)
+        AdtSourceReplacementError::Replacement(SourceChangePlanError::InvalidExpectedSha256)
     ));
     assert!(
         server
@@ -565,7 +565,7 @@ async fn validates_blank_source_namespace_and_transport_before_http() {
         .unwrap_err();
     assert!(matches!(
         error,
-        AdtSourceReplacementError::Replacement(EditError::BlankReplacementSource)
+        AdtSourceReplacementError::Replacement(SourceChangePlanError::BlankReplacementSource)
     ));
 
     let mut invalid_transport = replacement_request();
@@ -579,7 +579,7 @@ async fn validates_blank_source_namespace_and_transport_before_http() {
     .unwrap_err();
     assert!(matches!(
         error,
-        AdtSourceReplacementError::InvalidTransportRequest(_)
+        AdtSourceReplacementError::Validation(AdtEditTargetValidationError::InvalidTransport(_))
     ));
 
     let mut standard = replacement_request();
@@ -587,7 +587,10 @@ async fn validates_blank_source_namespace_and_transport_before_http() {
     let error = replace_adt_source_atomically(&mut client, &profile.customer_namespaces, &standard)
         .await
         .unwrap_err();
-    assert!(matches!(error, AdtSourceReplacementError::Namespace(_)));
+    assert!(matches!(
+        error,
+        AdtSourceReplacementError::Validation(AdtEditTargetValidationError::Namespace(_))
+    ));
 }
 
 fn request_position(requests: &[Request], request_path: &str, key: &str, value: &str) -> usize {

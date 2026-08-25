@@ -223,7 +223,7 @@ mod tests {
     use std::io::Cursor;
 
     use clap::{CommandFactory, Parser};
-    use fractal::{edit::source_sha256, sap::edit::EditableAdtObjectType};
+    use fractal::{sap::edit::EditableAdtObjectType, source_change::source_sha256};
 
     use super::*;
     use crate::cli::{Cli, Command, EditCommand};

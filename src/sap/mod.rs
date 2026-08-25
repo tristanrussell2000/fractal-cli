@@ -1,6 +1,7 @@
 pub mod adt;
 pub mod client;
 pub mod edit;
+pub mod editable_source;
 pub mod package;
 pub mod source_activation;
 pub mod source_check;

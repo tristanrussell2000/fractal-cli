@@ -199,7 +199,7 @@ mod tests {
 
     use super::*;
     use crate::cli::{Cli, Command, EditCommand};
-    use fractal::edit::source_sha256;
+    use fractal::source_change::source_sha256;
 
     fn patch_args(cli: Cli) -> EditSourcePatchArgs {
         let Command::Edit {

@@ -5,14 +5,14 @@ use std::sync::{
 
 use fractal::{
     config::Profile,
-    edit::{EditError, source_sha256},
     sap::{
         client::SapClient,
         edit::{
-            AdtSourcePatchError, AdtSourcePatchRequest, EditableAdtObjectType,
-            patch_adt_source_atomically, preview_adt_source_patch,
+            AdtEditTargetValidationError, AdtSourcePatchError, AdtSourcePatchRequest,
+            EditableAdtObjectType, patch_adt_source_atomically, preview_adt_source_patch,
         },
     },
+    source_change::{SourceChangePlanError, source_sha256},
 };
 use wiremock::{
     Mock, MockServer, Request, Respond, ResponseTemplate,
@@ -408,7 +408,7 @@ async fn rejects_an_invalid_transport_before_any_http_request() {
 
     assert!(matches!(
         error,
-        AdtSourcePatchError::InvalidTransportRequest(_)
+        AdtSourcePatchError::Validation(AdtEditTargetValidationError::InvalidTransport(_))
     ));
     assert_eq!(error.code(), "invalid_transport_request");
 }
@@ -456,7 +456,7 @@ async fn rejects_an_object_outside_customer_namespaces_before_locking() {
 
     assert!(matches!(
         error,
-        AdtSourcePatchError::Namespace(EditError::ObjectOutsideCustomerNamespaces { .. })
+        AdtSourcePatchError::Validation(AdtEditTargetValidationError::Namespace(_))
     ));
     assert_eq!(error.code(), "object_outside_customer_namespaces");
 }
@@ -535,7 +535,7 @@ async fn stale_optional_hash_is_checked_under_lock_and_then_unlocked() {
 
     assert!(matches!(
         error,
-        AdtSourcePatchError::Patch(EditError::SourceHashMismatch { .. })
+        AdtSourcePatchError::Patch(SourceChangePlanError::SourceHashMismatch { .. })
     ));
     assert_eq!(error.code(), "source_hash_mismatch");
     assert!(
@@ -567,7 +567,7 @@ async fn missing_patch_anchor_is_checked_under_lock_and_then_unlocked() {
 
     assert!(matches!(
         error,
-        AdtSourcePatchError::Patch(EditError::AnchorNotFound)
+        AdtSourcePatchError::Patch(SourceChangePlanError::AnchorNotFound)
     ));
     server.verify().await;
 }

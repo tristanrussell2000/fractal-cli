@@ -5,16 +5,16 @@ use std::sync::{
 
 use fractal::{
     config::Profile,
-    edit::source_sha256,
     sap::{
         client::SapClient,
-        edit::EditableAdtObjectType,
+        editable_source::{AdtEditTargetValidationError, EditableAdtObjectType},
         source_activation::AdtSourceActivationError,
         source_discard::{
             AdtInactiveSourceDiscardError, AdtInactiveSourceDiscardRequest,
             discard_inactive_adt_source,
         },
     },
+    source_change::source_sha256,
 };
 use wiremock::{
     Mock, MockServer, Request, Respond, ResponseTemplate,
@@ -513,7 +513,9 @@ async fn validates_transport_and_namespace_before_any_http_request() {
     .unwrap_err();
     assert!(matches!(
         invalid_transport,
-        AdtInactiveSourceDiscardError::InvalidTransportRequest(_)
+        AdtInactiveSourceDiscardError::Validation(AdtEditTargetValidationError::InvalidTransport(
+            _
+        ))
     ));
 
     let namespace =
@@ -522,7 +524,7 @@ async fn validates_transport_and_namespace_before_any_http_request() {
             .unwrap_err();
     assert!(matches!(
         namespace,
-        AdtInactiveSourceDiscardError::Namespace(_)
+        AdtInactiveSourceDiscardError::Validation(AdtEditTargetValidationError::Namespace(_))
     ));
     assert!(server.received_requests().await.unwrap().is_empty());
 }

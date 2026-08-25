@@ -2,7 +2,7 @@ use fractal::{
     config::Profile,
     sap::{
         client::SapClient,
-        edit::{AdtSourceReadError, AdtSourceVersion, EditableAdtObjectType},
+        edit::{AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceTargetError},
         source_check::{AdtSourceCheckError, AdtSourceCheckSeverity, check_adt_stored_source},
     },
 };
@@ -256,7 +256,7 @@ async fn rejects_an_invalid_object_name_before_any_http_request() {
 
     assert!(matches!(
         error,
-        AdtSourceCheckError::InvalidObject(AdtSourceReadError::InvalidObjectName(_))
+        AdtSourceCheckError::InvalidObject(EditableAdtSourceTargetError::InvalidObjectName(_))
     ));
     assert_eq!(error.code(), "invalid_edit_object_name");
 }

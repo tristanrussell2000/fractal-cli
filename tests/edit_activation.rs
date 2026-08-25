@@ -6,7 +6,6 @@ use std::time::{Duration, Instant};
 
 use fractal::{
     config::Profile,
-    edit::source_sha256,
     sap::{
         client::SapClient,
         edit::EditableAdtObjectType,
@@ -15,6 +14,7 @@ use fractal::{
             AdtSourceActivationRequest, activate_adt_source,
         },
     },
+    source_change::source_sha256,
 };
 use wiremock::{
     Mock, MockServer, Request, Respond, ResponseTemplate,

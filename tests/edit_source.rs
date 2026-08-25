@@ -1,12 +1,12 @@
 use fractal::{
     config::Profile,
-    edit::source_sha256,
     sap::{
         client::SapClient,
         edit::{
             AdtSourceReadError, AdtSourceVersion, EditableAdtObjectType, read_adt_source_for_edit,
         },
     },
+    source_change::source_sha256,
 };
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
@@ -106,7 +106,7 @@ async fn rejects_an_invalid_name_before_an_http_request() {
     .await
     .unwrap_err();
 
-    assert!(matches!(error, AdtSourceReadError::InvalidObjectName(_)));
+    assert!(matches!(error, AdtSourceReadError::InvalidTarget(_)));
     assert_eq!(error.code(), "invalid_edit_object_name");
 }
 

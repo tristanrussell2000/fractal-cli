@@ -3,16 +3,16 @@ use thiserror::Error;
 use super::{
     client::{SapClient, SapError},
     edit::{
-        AdtObjectLock, AdtSourcePatchError, AdtSourceReadError, AdtSourceReadResult,
-        AdtSourceVersion, EditableAdtObjectIdentity, EditableAdtObjectType,
-        acquire_adt_object_lock, canonicalize_transport_request, editable_object_identity,
-        read_adt_source_for_edit, read_adt_source_in_stateful_session, release_adt_object_lock,
+        AdtObjectLock, AdtSourcePatchError, acquire_adt_object_lock, release_adt_object_lock,
         write_adt_source,
     },
+    editable_source::{
+        AdtEditTargetValidationError, AdtSourceReadError, AdtSourceReadResult, AdtSourceVersion,
+        EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
+        read_adt_source_for_edit, read_adt_source_in_stateful_session, validate_adt_edit_target,
+    },
 };
-use crate::edit::{
-    EditError, SourceReplacementPlan, plan_source_replacement, validate_customer_namespace,
-};
+use crate::source_change::{SourceChangePlanError, SourceReplacementPlan, plan_source_replacement};
 
 /// One complete source replacement to preview or save as inactive source.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,12 +61,8 @@ pub struct AdtSourceReplacementWriteResult {
 /// A failure during complete inactive-source replacement or preview.
 #[derive(Debug, Error)]
 pub enum AdtSourceReplacementError {
-    #[error("invalid complete-source replacement object: {0}")]
-    InvalidObject(#[source] AdtSourceReadError),
     #[error(transparent)]
-    Namespace(EditError),
-    #[error("invalid transport request '{0}'")]
-    InvalidTransportRequest(String),
+    Validation(#[from] AdtEditTargetValidationError),
     #[error("could not acquire an ADT lock for complete-source replacement: {0}")]
     Lock(#[source] AdtSourcePatchError),
     #[error("could not read current source while the replacement lock was held: {0}")]
@@ -74,7 +70,7 @@ pub enum AdtSourceReplacementError {
     #[error("could not read current source for replacement preview: {0}")]
     PreviewSourceRead(#[source] AdtSourceReadError),
     #[error(transparent)]
-    Replacement(EditError),
+    Replacement(SourceChangePlanError),
     #[error("could not write complete replacement source through its ADT lock: {0}")]
     SourceWrite(#[source] AdtSourcePatchError),
     #[error("complete source was written, but its ADT lock could not be released: {0}")]
@@ -89,9 +85,8 @@ impl AdtSourceReplacementError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::InvalidObject(error) => error.code(),
-            Self::Namespace(error) | Self::Replacement(error) => error.code(),
-            Self::InvalidTransportRequest(_) => "invalid_transport_request",
+            Self::Validation(error) => error.code(),
+            Self::Replacement(error) => error.code(),
             Self::Lock(_) => "edit_source_replacement_lock_failed",
             Self::LockedSourceRead(_) => "edit_source_replacement_locked_read_failed",
             Self::PreviewSourceRead(_) => "edit_source_replacement_preview_read_failed",
@@ -104,15 +99,11 @@ impl AdtSourceReplacementError {
     #[must_use]
     pub fn hint(&self) -> String {
         match self {
-            Self::InvalidObject(error)
-            | Self::LockedSourceRead(error)
+            Self::LockedSourceRead(error)
             | Self::PreviewSourceRead(error)
             | Self::StoredSourceRead(error) => error.hint(),
-            Self::Namespace(error) | Self::Replacement(error) => error.hint(),
-            Self::InvalidTransportRequest(_) => {
-                "Use a transport request identifier containing 1-20 ASCII letters or digits, for example DE3K900575."
-                    .to_owned()
-            }
+            Self::Validation(error) => error.hint(),
+            Self::Replacement(error) => error.hint(),
             Self::Lock(error) | Self::SourceWrite(error) | Self::Unlock(error) => error.hint(),
         }
     }
@@ -120,12 +111,11 @@ impl AdtSourceReplacementError {
     #[must_use]
     pub const fn sap_error(&self) -> Option<&SapError> {
         match self {
-            Self::InvalidObject(error)
-            | Self::LockedSourceRead(error)
+            Self::LockedSourceRead(error)
             | Self::PreviewSourceRead(error)
             | Self::StoredSourceRead(error) => error.sap_error(),
             Self::Lock(error) | Self::SourceWrite(error) | Self::Unlock(error) => error.sap_error(),
-            Self::Namespace(_) | Self::InvalidTransportRequest(_) | Self::Replacement(_) => None,
+            Self::Validation(_) | Self::Replacement(_) => None,
         }
     }
 }
@@ -144,7 +134,9 @@ pub async fn preview_adt_source_replacement(
     customer_namespaces: &[String],
     request: &AdtSourceReplacementRequest,
 ) -> Result<AdtSourceReplacementPreview, AdtSourceReplacementError> {
-    let (identity, transport) = validate_replacement_request(customer_namespaces, request)?;
+    let target = validate_replacement_request(customer_namespaces, request)?;
+    let identity = target.identity;
+    let transport = target.transport;
     let original = read_adt_source_for_edit(
         sap,
         identity.object_type,
@@ -186,7 +178,9 @@ pub async fn replace_adt_source_atomically(
     customer_namespaces: &[String],
     request: &AdtSourceReplacementRequest,
 ) -> Result<AdtSourceReplacementWriteResult, AdtSourceReplacementError> {
-    let (identity, transport) = validate_replacement_request(customer_namespaces, request)?;
+    let target = validate_replacement_request(customer_namespaces, request)?;
+    let identity = target.identity;
+    let transport = target.transport;
     let lock = acquire_adt_object_lock(sap, &identity.object_uri, transport.as_deref())
         .await
         .map_err(AdtSourceReplacementError::Lock)?;
@@ -236,19 +230,19 @@ pub async fn replace_adt_source_atomically(
 fn validate_replacement_request(
     customer_namespaces: &[String],
     request: &AdtSourceReplacementRequest,
-) -> Result<(EditableAdtObjectIdentity, Option<String>), AdtSourceReplacementError> {
-    let identity = editable_object_identity(request.object_type, &request.name)
-        .map_err(AdtSourceReplacementError::InvalidObject)?;
-    validate_customer_namespace(&identity.name, customer_namespaces)
-        .map_err(AdtSourceReplacementError::Namespace)?;
-    let transport = canonicalize_transport_request(request.transport.as_deref())
-        .map_err(AdtSourceReplacementError::InvalidTransportRequest)?;
+) -> Result<ValidatedAdtEditTarget, AdtSourceReplacementError> {
+    let target = validate_adt_edit_target(
+        request.object_type,
+        &request.name,
+        customer_namespaces,
+        request.transport.as_deref(),
+    )?;
     if request.replacement_source.trim().is_empty() {
         return Err(AdtSourceReplacementError::Replacement(
-            EditError::BlankReplacementSource,
+            SourceChangePlanError::BlankReplacementSource,
         ));
     }
-    Ok((identity, transport))
+    Ok(target)
 }
 
 fn plan_replacement(
@@ -265,7 +259,7 @@ fn plan_replacement(
 
 async fn replace_source_while_locked(
     sap: &mut SapClient,
-    identity: &EditableAdtObjectIdentity,
+    identity: &EditableAdtSourceIdentity,
     lock: &AdtObjectLock,
     request: &AdtSourceReplacementRequest,
 ) -> Result<(AdtSourceReadResult, SourceReplacementPlan), AdtSourceReplacementError> {

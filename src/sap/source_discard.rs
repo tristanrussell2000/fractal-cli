@@ -3,17 +3,17 @@ use thiserror::Error;
 use super::{
     client::{SapClient, SapError},
     edit::{
-        AdtObjectLock, AdtSourcePatchError, AdtSourceReadError, AdtSourceReadResult,
-        AdtSourceVersion, EditableAdtObjectIdentity, EditableAdtObjectType,
-        acquire_adt_object_lock, canonicalize_transport_request, editable_object_identity,
-        read_adt_source_in_stateful_session, release_adt_object_lock, write_adt_source,
+        AdtObjectLock, AdtSourcePatchError, acquire_adt_object_lock, release_adt_object_lock,
+        write_adt_source,
     },
-    source_activation::{
-        AdtSourceActivationError, AdtSourceActivationRequest, activate_adt_source,
+    editable_source::{
+        AdtEditTargetValidationError, AdtSourceReadError, AdtSourceReadResult, AdtSourceVersion,
+        EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
+        read_adt_source_in_stateful_session, validate_adt_edit_target,
     },
+    source_activation::{AdtSourceActivationError, activate_validated_adt_source},
     source_check::{AdtInactiveSourceProbeError, probe_inactive_adt_source},
 };
-use crate::edit::{EditError, validate_customer_namespace};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdtInactiveSourceDiscardRequest {
@@ -43,12 +43,8 @@ pub struct AdtInactiveSourceDiscardResult {
 
 #[derive(Debug, Error)]
 pub enum AdtInactiveSourceDiscardError {
-    #[error("invalid discard object: {0}")]
-    InvalidObject(#[source] AdtSourceReadError),
     #[error(transparent)]
-    Namespace(EditError),
-    #[error("invalid transport request '{0}'")]
-    InvalidTransportRequest(String),
+    Validation(#[from] AdtEditTargetValidationError),
     #[error("could not acquire the ADT lock before discarding inactive source: {0}")]
     Lock(#[source] AdtSourcePatchError),
     #[error("could not determine whether the locked object has inactive source: {0}")]
@@ -92,9 +88,7 @@ impl AdtInactiveSourceDiscardError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::InvalidObject(error) => error.code(),
-            Self::Namespace(error) => error.code(),
-            Self::InvalidTransportRequest(_) => "invalid_transport_request",
+            Self::Validation(error) => error.code(),
             Self::Lock(_) => "edit_discard_lock_failed",
             Self::InactiveVersionProbe(_) => "edit_discard_inactive_probe_failed",
             Self::NoInactiveVersion { .. } => "edit_discard_no_inactive_source",
@@ -112,15 +106,14 @@ impl AdtInactiveSourceDiscardError {
     #[must_use]
     pub fn hint(&self) -> String {
         match self {
-            Self::InvalidObject(error)
-            | Self::ActiveSourceRead(error)
+            Self::ActiveSourceRead(error)
             | Self::InactiveSourceRead(error)
             | Self::RestoredSourceRead(error) => error.hint(),
-            Self::Namespace(error) => error.hint(),
-            Self::InvalidTransportRequest(_) => {
+            Self::Validation(AdtEditTargetValidationError::InvalidTransport(_)) => {
                 "Use a parent transport request containing 1-20 ASCII letters or digits, for example DE3K900575."
                     .to_owned()
             }
+            Self::Validation(error) => error.hint(),
             Self::Lock(error) | Self::ActiveSourceRestore(error) => error.hint(),
             Self::InactiveVersionProbe(error) => error.hint(),
             Self::NoInactiveVersion { .. } => {
@@ -148,8 +141,7 @@ impl AdtInactiveSourceDiscardError {
     #[must_use]
     pub const fn sap_error(&self) -> Option<&SapError> {
         match self {
-            Self::InvalidObject(error)
-            | Self::ActiveSourceRead(error)
+            Self::ActiveSourceRead(error)
             | Self::InactiveSourceRead(error)
             | Self::RestoredSourceRead(error) => error.sap_error(),
             Self::Lock(error) | Self::ActiveSourceRestore(error) | Self::Unlock(error) => {
@@ -157,8 +149,7 @@ impl AdtInactiveSourceDiscardError {
             }
             Self::InactiveVersionProbe(error) => error.sap_error(),
             Self::RestoredSourceActivation(error) => error.sap_error(),
-            Self::Namespace(_)
-            | Self::InvalidTransportRequest(_)
+            Self::Validation(_)
             | Self::NoInactiveVersion { .. }
             | Self::RestoreVerificationMismatch { .. }
             | Self::ActiveSourceChanged { .. } => None,
@@ -192,12 +183,14 @@ pub async fn discard_inactive_adt_source(
     customer_namespaces: &[String],
     request: &AdtInactiveSourceDiscardRequest,
 ) -> Result<AdtInactiveSourceDiscardResult, AdtInactiveSourceDiscardError> {
-    let identity = editable_object_identity(request.object_type, &request.name)
-        .map_err(AdtInactiveSourceDiscardError::InvalidObject)?;
-    validate_customer_namespace(&identity.name, customer_namespaces)
-        .map_err(AdtInactiveSourceDiscardError::Namespace)?;
-    let transport = canonicalize_transport_request(request.transport.as_deref())
-        .map_err(AdtInactiveSourceDiscardError::InvalidTransportRequest)?;
+    let target = validate_adt_edit_target(
+        request.object_type,
+        &request.name,
+        customer_namespaces,
+        request.transport.as_deref(),
+    )?;
+    let identity = target.identity;
+    let transport = target.transport;
 
     let lock = acquire_adt_object_lock(sap, &identity.object_uri, transport.as_deref())
         .await
@@ -219,12 +212,10 @@ pub async fn discard_inactive_adt_source(
 
     // The transport was already applied by the restore lock/write cycle. Passing
     // it again would acquire a redundant second transport-qualified lock.
-    let activation = activate_adt_source(
+    let activation = activate_validated_adt_source(
         sap,
-        customer_namespaces,
-        &AdtSourceActivationRequest {
-            object_type: identity.object_type,
-            name: identity.name.clone(),
+        ValidatedAdtEditTarget {
+            identity: identity.clone(),
             transport: None,
         },
     )
@@ -259,7 +250,7 @@ pub async fn discard_inactive_adt_source(
 
 async fn prepare_discard_while_locked(
     sap: &mut SapClient,
-    identity: &EditableAdtObjectIdentity,
+    identity: &EditableAdtSourceIdentity,
     lock: &AdtObjectLock,
 ) -> Result<PreparedDiscard, AdtInactiveSourceDiscardError> {
     let inactive_exists = probe_inactive_adt_source(sap, &identity.object_uri)
