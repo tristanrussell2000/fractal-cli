@@ -8,6 +8,7 @@ use fractal::{
         source_activation::AdtSourceActivationError,
         source_check::AdtSourceCheckError,
         source_discard::AdtInactiveSourceDiscardError,
+        source_replace::AdtSourceReplacementError,
         table::TableError,
     },
 };
@@ -23,6 +24,7 @@ pub enum CommandError {
     AdtSourceCheck(AdtSourceCheckError),
     AdtSourceActivation(AdtSourceActivationError),
     AdtInactiveSourceDiscard(AdtInactiveSourceDiscardError),
+    AdtSourceReplacement(AdtSourceReplacementError),
     Package(PackageError),
     Table(TableError),
     Message {
@@ -76,6 +78,7 @@ impl CommandError {
             Self::AdtSourceCheck(error) => error.code(),
             Self::AdtSourceActivation(error) => error.code(),
             Self::AdtInactiveSourceDiscard(error) => error.code(),
+            Self::AdtSourceReplacement(error) => error.code(),
             Self::Package(error) => match error {
                 PackageError::Sap(error) => error.code(),
                 PackageError::Parse(_) => "package_response_parse_error",
@@ -113,6 +116,10 @@ impl CommandError {
                 Some(SapError::Http { status, .. }) => Some(status.as_u16()),
                 _ => None,
             },
+            Self::AdtSourceReplacement(error) => match error.sap_error() {
+                Some(SapError::Http { status, .. }) => Some(status.as_u16()),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -128,6 +135,7 @@ impl CommandError {
             Self::AdtSourceCheck(error) => error.to_string(),
             Self::AdtSourceActivation(error) => error.to_string(),
             Self::AdtInactiveSourceDiscard(error) => error.to_string(),
+            Self::AdtSourceReplacement(error) => error.to_string(),
             Self::Package(error) => error.to_string(),
             Self::Table(error) => error.to_string(),
             Self::Message { message, .. } => message.clone(),
@@ -153,6 +161,7 @@ impl CommandError {
             Self::AdtSourceCheck(error) => Some(error.hint()),
             Self::AdtSourceActivation(error) => Some(error.hint()),
             Self::AdtInactiveSourceDiscard(error) => Some(error.hint()),
+            Self::AdtSourceReplacement(error) => Some(error.hint()),
             Self::Package(PackageError::Parse(_)) => Some(
                 "The SAP package response did not match the expected nodestructure format."
                     .to_owned(),
@@ -217,6 +226,12 @@ impl From<AdtInactiveSourceDiscardError> for CommandError {
     }
 }
 
+impl From<AdtSourceReplacementError> for CommandError {
+    fn from(error: AdtSourceReplacementError) -> Self {
+        Self::AdtSourceReplacement(error)
+    }
+}
+
 impl From<PackageError> for CommandError {
     fn from(error: PackageError) -> Self {
         Self::Package(error)
@@ -254,6 +269,7 @@ mod tests {
             source_activation::AdtSourceActivationError,
             source_check::AdtSourceCheckError,
             source_discard::AdtInactiveSourceDiscardError,
+            source_replace::AdtSourceReplacementError,
             table::{TableError, TableQueryError, TableQueryErrorKind},
         },
     };
@@ -399,5 +415,23 @@ mod tests {
         assert_eq!(error.status(), Some(409));
         assert!(error.message().contains("could not be activated"));
         assert!(error.hint().unwrap().contains("now contains"));
+    }
+
+    #[test]
+    fn preserves_source_replacement_stage_and_http_status() {
+        let error = CommandError::from(AdtSourceReplacementError::PreviewSourceRead(
+            AdtSourceReadError::Sap(SapError::Http {
+                kind: SapErrorKind::Forbidden,
+                status: StatusCode::FORBIDDEN,
+                url: "https://sap.example/sap/bc/adt/programs/programs/zsample/source/main"
+                    .to_owned(),
+                message: "Source read authorization missing".to_owned(),
+            }),
+        ));
+
+        assert_eq!(error.code(), "edit_source_replacement_preview_read_failed");
+        assert_eq!(error.status(), Some(403));
+        assert!(error.message().contains("authorization missing"));
+        assert!(error.hint().is_some());
     }
 }

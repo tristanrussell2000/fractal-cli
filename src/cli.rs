@@ -146,6 +146,8 @@ pub enum EditCommand {
     Read(EditSourceReadArgs),
     /// Replace one exact fragment and save inactive source. Does not activate.
     Patch(EditSourcePatchArgs),
+    /// Replace complete source and save it inactive. Does not activate.
+    Set(EditSourceSetArgs),
     /// Run SAP's syntax checker against a stored source version.
     Check(EditSourceCheckArgs),
     /// Activate and verify an object's stored inactive source.
@@ -233,6 +235,28 @@ pub struct EditSourcePatchArgs {
     #[arg(long)]
     pub(crate) transport: Option<String>,
     /// Validate and preview the change without locking or writing the object.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct EditSourceSetArgs {
+    /// Source object type: CLAS, INTF, PROG, DDLS, or TABL.
+    #[arg(long = "type")]
+    pub(crate) object_type: String,
+    /// ABAP repository object name.
+    #[arg(long)]
+    pub(crate) name: String,
+    /// Read complete UTF-8 replacement source from this file, or - for stdin.
+    #[arg(long, value_name = "PATH", allow_hyphen_values = true)]
+    pub(crate) source_file: String,
+    /// Only replace source matching this SHA-256 from a previous read or preview.
+    #[arg(long)]
+    pub(crate) expected_sha256: Option<String>,
+    /// Parent CTS change request to associate with the write, for example DE3K900575.
+    #[arg(long)]
+    pub(crate) transport: Option<String>,
+    /// Validate and preview the complete replacement without locking or writing.
     #[arg(long)]
     pub(crate) dry_run: bool,
 }

@@ -4,6 +4,7 @@ pub mod edit_check;
 pub mod edit_discard;
 pub mod edit_patch;
 pub mod edit_read;
+pub mod edit_set;
 pub mod object;
 pub mod package;
 pub mod query;
