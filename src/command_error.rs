@@ -7,6 +7,7 @@ use fractal::{
         package::PackageError,
         source_activation::AdtSourceActivationError,
         source_check::AdtSourceCheckError,
+        source_discard::AdtInactiveSourceDiscardError,
         table::TableError,
     },
 };
@@ -21,6 +22,7 @@ pub enum CommandError {
     AdtSourcePatch(AdtSourcePatchError),
     AdtSourceCheck(AdtSourceCheckError),
     AdtSourceActivation(AdtSourceActivationError),
+    AdtInactiveSourceDiscard(AdtInactiveSourceDiscardError),
     Package(PackageError),
     Table(TableError),
     Message {
@@ -73,6 +75,7 @@ impl CommandError {
             Self::AdtSourcePatch(error) => error.code(),
             Self::AdtSourceCheck(error) => error.code(),
             Self::AdtSourceActivation(error) => error.code(),
+            Self::AdtInactiveSourceDiscard(error) => error.code(),
             Self::Package(error) => match error {
                 PackageError::Sap(error) => error.code(),
                 PackageError::Parse(_) => "package_response_parse_error",
@@ -106,6 +109,10 @@ impl CommandError {
                 Some(SapError::Http { status, .. }) => Some(status.as_u16()),
                 _ => None,
             },
+            Self::AdtInactiveSourceDiscard(error) => match error.sap_error() {
+                Some(SapError::Http { status, .. }) => Some(status.as_u16()),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -120,6 +127,7 @@ impl CommandError {
             Self::AdtSourcePatch(error) => error.to_string(),
             Self::AdtSourceCheck(error) => error.to_string(),
             Self::AdtSourceActivation(error) => error.to_string(),
+            Self::AdtInactiveSourceDiscard(error) => error.to_string(),
             Self::Package(error) => error.to_string(),
             Self::Table(error) => error.to_string(),
             Self::Message { message, .. } => message.clone(),
@@ -144,6 +152,7 @@ impl CommandError {
             Self::AdtSourcePatch(error) => Some(error.hint()),
             Self::AdtSourceCheck(error) => Some(error.hint()),
             Self::AdtSourceActivation(error) => Some(error.hint()),
+            Self::AdtInactiveSourceDiscard(error) => Some(error.hint()),
             Self::Package(PackageError::Parse(_)) => Some(
                 "The SAP package response did not match the expected nodestructure format."
                     .to_owned(),
@@ -202,6 +211,12 @@ impl From<AdtSourceActivationError> for CommandError {
     }
 }
 
+impl From<AdtInactiveSourceDiscardError> for CommandError {
+    fn from(error: AdtInactiveSourceDiscardError) -> Self {
+        Self::AdtInactiveSourceDiscard(error)
+    }
+}
+
 impl From<PackageError> for CommandError {
     fn from(error: PackageError) -> Self {
         Self::Package(error)
@@ -238,6 +253,7 @@ mod tests {
             edit::{AdtSourcePatchError, AdtSourceReadError},
             source_activation::AdtSourceActivationError,
             source_check::AdtSourceCheckError,
+            source_discard::AdtInactiveSourceDiscardError,
             table::{TableError, TableQueryError, TableQueryErrorKind},
         },
     };
@@ -366,5 +382,22 @@ mod tests {
         assert_eq!(error.status(), Some(403));
         assert!(error.message().contains("Activation authorization missing"));
         assert!(error.hint().unwrap().contains("may have reached SAP"));
+    }
+
+    #[test]
+    fn preserves_source_discard_stage_and_http_status() {
+        let error = CommandError::from(AdtInactiveSourceDiscardError::RestoredSourceActivation(
+            AdtSourceActivationError::ActivationRequest(SapError::Http {
+                kind: SapErrorKind::Other,
+                status: StatusCode::CONFLICT,
+                url: "https://sap.example/sap/bc/adt/activation".to_owned(),
+                message: "Restored source could not be activated".to_owned(),
+            }),
+        ));
+
+        assert_eq!(error.code(), "edit_discard_activation_failed");
+        assert_eq!(error.status(), Some(409));
+        assert!(error.message().contains("could not be activated"));
+        assert!(error.hint().unwrap().contains("now contains"));
     }
 }

@@ -512,6 +512,14 @@ async fn read_adt_source(
     })
 }
 
+pub(super) async fn read_adt_source_in_stateful_session(
+    sap: &SapClient,
+    identity: &EditableAdtObjectIdentity,
+    version: AdtSourceVersion,
+) -> Result<AdtSourceReadResult, AdtSourceReadError> {
+    read_adt_source(sap, identity, version, stateful_session_headers()).await
+}
+
 async fn patch_source_while_locked(
     sap: &mut SapClient,
     identity: &EditableAdtObjectIdentity,
@@ -543,12 +551,12 @@ async fn patch_source_while_locked(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct AdtObjectLock {
+pub(super) struct AdtObjectLock {
     handle: String,
     transport: Option<String>,
 }
 
-async fn acquire_adt_object_lock(
+pub(super) async fn acquire_adt_object_lock(
     sap: &mut SapClient,
     object_uri: &str,
     transport: Option<&str>,
@@ -597,7 +605,7 @@ async fn request_adt_object_lock(
     sap.post_text(object_uri, &query, None, headers).await
 }
 
-async fn release_adt_object_lock(
+pub(super) async fn release_adt_object_lock(
     sap: &mut SapClient,
     object_uri: &str,
     lock: &AdtObjectLock,
@@ -622,7 +630,7 @@ pub(super) async fn attach_adt_object_to_transport(
     release_adt_object_lock(sap, object_uri, &lock).await
 }
 
-async fn write_adt_source(
+pub(super) async fn write_adt_source(
     sap: &mut SapClient,
     identity: &EditableAdtObjectIdentity,
     lock: &AdtObjectLock,

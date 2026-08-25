@@ -4,6 +4,7 @@ pub mod edit;
 pub mod package;
 pub mod source_activation;
 pub mod source_check;
+pub mod source_discard;
 pub mod table;
 
 /// Trims an XML attribute value and turns blank into `None`. Shared by every

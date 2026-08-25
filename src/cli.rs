@@ -150,6 +150,8 @@ pub enum EditCommand {
     Check(EditSourceCheckArgs),
     /// Activate and verify an object's stored inactive source.
     Activate(EditSourceActivateArgs),
+    /// Discard inactive changes while preserving the current active source.
+    Discard(EditSourceDiscardArgs),
 }
 
 #[derive(Debug, Args)]
@@ -193,6 +195,19 @@ pub struct EditSourceActivateArgs {
     #[arg(long)]
     pub(crate) name: String,
     /// Parent CTS change request to attach before activation, for example DE3K900575.
+    #[arg(long)]
+    pub(crate) transport: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct EditSourceDiscardArgs {
+    /// Source object type: CLAS, INTF, PROG, DDLS, or TABL.
+    #[arg(long = "type")]
+    pub(crate) object_type: String,
+    /// ABAP repository object name.
+    #[arg(long)]
+    pub(crate) name: String,
+    /// Parent CTS change request to use while restoring the active source.
     #[arg(long)]
     pub(crate) transport: Option<String>,
 }
