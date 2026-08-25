@@ -287,7 +287,7 @@ impl AdtSourcePatchError {
             }
             Self::Lock { transport, source } => transport_failure_hint(transport.as_deref(), source)
                 .unwrap_or_else(|| {
-                    "Close any editor or process holding the object lock, then retry the patch."
+                    "Close any editor or process holding the object lock, then retry the source operation."
                         .to_owned()
                 }),
             Self::LockHandleMissing { .. } => {

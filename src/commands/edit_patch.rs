@@ -195,7 +195,7 @@ fn render_edit_source_patch_readable(result: &EditSourcePatchOutput) -> String {
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
 
     use super::*;
     use crate::cli::{Cli, Command, EditCommand};
@@ -277,6 +277,20 @@ mod tests {
         assert_eq!(args.expected_sha256, None);
         assert_eq!(args.transport, None);
         assert!(!args.dry_run);
+    }
+
+    #[test]
+    fn patch_help_explicitly_says_that_saving_does_not_activate() {
+        let mut command = Cli::command();
+        let edit = command
+            .find_subcommand_mut("edit")
+            .expect("edit subcommand exists");
+        let patch = edit
+            .find_subcommand_mut("patch")
+            .expect("patch subcommand exists");
+        let help = patch.render_long_help().to_string();
+
+        assert!(help.contains("Does not activate"));
     }
 
     #[test]

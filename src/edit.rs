@@ -18,6 +18,16 @@ pub struct PatchPlan {
     pub replacements: usize,
 }
 
+/// A fully validated complete-source replacement that has not been written to SAP.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceReplacementPlan {
+    pub replacement_source: String,
+    pub original_sha256: String,
+    pub replacement_sha256: String,
+    pub original_bytes: usize,
+    pub replacement_bytes: usize,
+}
+
 /// A deterministic failure while validating or planning a source edit.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum EditError {
@@ -33,6 +43,10 @@ pub enum EditError {
     AnchorAmbiguous { occurrences: usize },
     #[error("the patch would not change the source")]
     NoChanges,
+    #[error("complete replacement source cannot be blank")]
+    BlankReplacementSource,
+    #[error("the complete replacement source is identical to the current source")]
+    SourceReplacementNoChanges,
     #[error("object '{name}' is outside the configured customer namespaces")]
     ObjectOutsideCustomerNamespaces {
         name: String,
@@ -50,6 +64,8 @@ impl EditError {
             Self::AnchorNotFound => "patch_anchor_not_found",
             Self::AnchorAmbiguous { .. } => "patch_anchor_ambiguous",
             Self::NoChanges => "patch_no_change",
+            Self::BlankReplacementSource => "blank_replacement_source",
+            Self::SourceReplacementNoChanges => "source_replacement_no_change",
             Self::ObjectOutsideCustomerNamespaces { .. } => "object_outside_customer_namespaces",
         }
     }
@@ -72,6 +88,13 @@ impl EditError {
                 "Include more surrounding source so the literal anchor matches exactly once.".to_owned()
             }
             Self::NoChanges => "Use replacement text that differs from the anchor.".to_owned(),
+            Self::BlankReplacementSource => {
+                "Provide the complete non-blank source for the object.".to_owned()
+            }
+            Self::SourceReplacementNoChanges => {
+                "The supplied complete source already matches SAP's current inactive source."
+                    .to_owned()
+            }
             Self::ObjectOutsideCustomerNamespaces { namespaces, .. } if namespaces.is_empty() => {
                 "Configure at least one customer namespace on the selected profile before editing."
                     .to_owned()
@@ -168,6 +191,52 @@ pub fn plan_patch(
     })
 }
 
+/// Plans replacement of an object's complete source against a known source version.
+///
+/// This function does not perform I/O. Blank source and byte-identical
+/// replacements are rejected. When `expected_sha256` is supplied, it must be a
+/// valid SHA-256 matching the current source; otherwise the caller's locked read
+/// is treated as the authoritative baseline.
+///
+/// # Errors
+///
+/// Returns [`EditError`] when replacement source is blank or unchanged, or when
+/// the optional expected hash is invalid or stale.
+pub fn plan_source_replacement(
+    current_source: &str,
+    replacement_source: &str,
+    expected_sha256: Option<&str>,
+) -> Result<SourceReplacementPlan, EditError> {
+    if replacement_source.trim().is_empty() {
+        return Err(EditError::BlankReplacementSource);
+    }
+
+    let original_sha256 = source_sha256(current_source);
+    if let Some(expected_sha256) = expected_sha256 {
+        if !is_sha256(expected_sha256) {
+            return Err(EditError::InvalidExpectedSha256);
+        }
+        if !expected_sha256.eq_ignore_ascii_case(&original_sha256) {
+            return Err(EditError::SourceHashMismatch {
+                expected: expected_sha256.to_ascii_lowercase(),
+                actual: original_sha256,
+            });
+        }
+    }
+
+    if replacement_source == current_source {
+        return Err(EditError::SourceReplacementNoChanges);
+    }
+
+    Ok(SourceReplacementPlan {
+        replacement_source: replacement_source.to_owned(),
+        original_sha256,
+        replacement_sha256: source_sha256(replacement_source),
+        original_bytes: current_source.len(),
+        replacement_bytes: replacement_source.len(),
+    })
+}
+
 fn is_sha256(value: &str) -> bool {
     value.len() == SHA256_HEX_LENGTH && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
@@ -257,6 +326,48 @@ mod tests {
         assert_eq!(
             plan_patch(SOURCE, "before", "before", &source_hash()),
             Err(EditError::NoChanges)
+        );
+    }
+
+    #[test]
+    fn plans_a_complete_source_replacement_without_requiring_a_hash() {
+        let replacement = "REPORT zsample.\nWRITE 'after'.\n";
+        let plan = plan_source_replacement(SOURCE, replacement, None).unwrap();
+
+        assert_eq!(plan.replacement_source, replacement);
+        assert_eq!(plan.original_sha256, source_hash());
+        assert_eq!(plan.replacement_sha256, source_sha256(replacement));
+        assert_eq!(plan.original_bytes, SOURCE.len());
+        assert_eq!(plan.replacement_bytes, replacement.len());
+    }
+
+    #[test]
+    fn complete_source_replacement_honors_an_optional_expected_hash() {
+        let replacement = "REPORT zsample.\nWRITE 'after'.\n";
+        assert!(
+            plan_source_replacement(
+                SOURCE,
+                replacement,
+                Some(&source_hash().to_ascii_uppercase())
+            )
+            .is_ok()
+        );
+
+        let error =
+            plan_source_replacement(SOURCE, replacement, Some(&source_sha256("older source")))
+                .unwrap_err();
+        assert!(matches!(error, EditError::SourceHashMismatch { .. }));
+    }
+
+    #[test]
+    fn rejects_blank_or_unchanged_complete_source() {
+        assert_eq!(
+            plan_source_replacement(SOURCE, " \n\t", None),
+            Err(EditError::BlankReplacementSource)
+        );
+        assert_eq!(
+            plan_source_replacement(SOURCE, SOURCE, None),
+            Err(EditError::SourceReplacementNoChanges)
         );
     }
 

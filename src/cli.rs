@@ -144,7 +144,7 @@ pub enum TableCommand {
 pub enum EditCommand {
     /// Read complete source and revision metadata for a future edit.
     Read(EditSourceReadArgs),
-    /// Replace one exact source fragment and save the result as inactive source.
+    /// Replace one exact fragment and save inactive source. Does not activate.
     Patch(EditSourcePatchArgs),
     /// Run SAP's syntax checker against a stored source version.
     Check(EditSourceCheckArgs),
