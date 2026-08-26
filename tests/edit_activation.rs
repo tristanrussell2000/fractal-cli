@@ -7,11 +7,11 @@ use std::time::{Duration, Instant};
 use fractal::{
     config::Profile,
     sap::{
+        adt_message_severity::AdtMessageSeverity,
         client::SapClient,
         editable_source::EditableAdtObjectType,
         source_activation::{
-            AdtSourceActivationError, AdtSourceActivationMessageSeverity,
-            AdtSourceActivationRequest, activate_adt_source,
+            AdtSourceActivationError, AdtSourceActivationRequest, activate_adt_source,
         },
     },
     source_change::source_sha256,
@@ -245,7 +245,7 @@ async fn activates_and_verifies_the_exact_inactive_source() {
     assert_eq!(result.activation_messages.len(), 1);
     assert_eq!(
         result.activation_messages[0].severity,
-        AdtSourceActivationMessageSeverity::Info
+        AdtMessageSeverity::Info
     );
     server.verify().await;
 }

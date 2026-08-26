@@ -1,9 +1,10 @@
 use fractal::{
     config::Profile,
     sap::{
+        adt_message_severity::AdtMessageSeverity,
         client::SapClient,
         editable_source::{AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceTargetError},
-        source_check::{AdtSourceCheckError, AdtSourceCheckSeverity, check_adt_stored_source},
+        source_check::{AdtSourceCheckError, check_adt_stored_source},
     },
 };
 use wiremock::{
@@ -103,7 +104,7 @@ async fn checks_active_source_and_returns_structured_messages() {
     assert_eq!(result.errors, 1);
     assert_eq!(result.warnings, 1);
     assert_eq!(result.infos, 1);
-    assert_eq!(result.messages[0].severity, AdtSourceCheckSeverity::Error);
+    assert_eq!(result.messages[0].severity, AdtMessageSeverity::Error);
     assert_eq!(result.messages[0].text, "Expected <identifier>");
     assert_eq!(result.messages[0].line, Some(8));
     server.verify().await;

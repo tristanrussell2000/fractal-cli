@@ -211,12 +211,10 @@ mod tests {
     use super::*;
     use crate::cli::{Cli, Command, EditCommand};
     use fractal::sap::{
+        adt_message_severity::AdtMessageSeverity,
         editable_source::{AdtSourceVersion, EditableAdtObjectType},
-        source_activation::{
-            AdtSourceActivationMessage, AdtSourceActivationMessageSeverity,
-            AdtSourceActivationResult,
-        },
-        source_check::{AdtSourceCheckResult, AdtSourceCheckSeverity},
+        source_activation::{AdtSourceActivationMessage, AdtSourceActivationResult},
+        source_check::AdtSourceCheckResult,
     };
 
     #[test]
@@ -268,7 +266,7 @@ mod tests {
                     warnings: 1,
                     infos: 0,
                     messages: vec![AdtSourceCheckMessage {
-                        severity: AdtSourceCheckSeverity::Warning,
+                        severity: AdtMessageSeverity::Warning,
                         text: "Obsolete statement".to_owned(),
                         line: Some(8),
                     }],
@@ -280,7 +278,7 @@ mod tests {
                 sap_reported_activation_executed: Some(true),
                 activation_response_parsed: true,
                 activation_messages: vec![AdtSourceActivationMessage {
-                    severity: AdtSourceActivationMessageSeverity::Info,
+                    severity: AdtMessageSeverity::Info,
                     text: "Activation completed".to_owned(),
                     line: None,
                     object_description: Some("Class ZCL_SAMPLE".to_owned()),

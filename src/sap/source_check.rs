@@ -2,6 +2,7 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use thiserror::Error;
 
 use super::{
+    adt_message_severity::AdtMessageSeverity,
     client::{SapClient, SapError},
     editable_source::{
         AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceIdentity,
@@ -13,27 +14,9 @@ use super::{
 const CHECKRUNS_PATH: &str = "/sap/bc/adt/checkruns";
 const INACTIVE_OBJECTS_PATH: &str = "/sap/bc/adt/activation/inactiveobjects";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AdtSourceCheckSeverity {
-    Error,
-    Warning,
-    Info,
-}
-
-impl AdtSourceCheckSeverity {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Error => "error",
-            Self::Warning => "warning",
-            Self::Info => "info",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdtSourceCheckMessage {
-    pub severity: AdtSourceCheckSeverity,
+    pub severity: AdtMessageSeverity,
     pub text: String,
     pub line: Option<usize>,
 }
@@ -169,7 +152,7 @@ pub(super) async fn check_adt_source_by_identity(
 ) -> Result<AdtSourceCheckResult, AdtSourceCheckError> {
     if inactive_version_exists == Some(false) {
         let messages = vec![AdtSourceCheckMessage {
-            severity: AdtSourceCheckSeverity::Info,
+            severity: AdtMessageSeverity::Info,
             text: "No inactive version exists; there are no unactivated changes to check. Use --version active to check what is live."
                 .to_owned(),
             line: None,
@@ -272,15 +255,9 @@ fn parse_checkrun_response(response: &str) -> Result<ParsedCheckrunResponse, Adt
             if text.is_empty() {
                 return None;
             }
-            let raw_type = find_attribute_value(node, "type").unwrap_or_default();
-            let raw_type = raw_type.to_ascii_uppercase();
-            let severity = if raw_type.starts_with('E') || raw_type.starts_with('A') {
-                AdtSourceCheckSeverity::Error
-            } else if raw_type.starts_with('W') {
-                AdtSourceCheckSeverity::Warning
-            } else {
-                AdtSourceCheckSeverity::Info
-            };
+            let severity = AdtMessageSeverity::from_sap_code(
+                find_attribute_value(node, "type").unwrap_or_default(),
+            );
             let line = find_attribute_value(node, "line").and_then(|line| line.parse().ok());
             Some(AdtSourceCheckMessage {
                 severity,
@@ -291,11 +268,11 @@ fn parse_checkrun_response(response: &str) -> Result<ParsedCheckrunResponse, Adt
         .collect::<Vec<_>>();
     let errors = messages
         .iter()
-        .filter(|message| message.severity == AdtSourceCheckSeverity::Error)
+        .filter(|message| message.severity == AdtMessageSeverity::Error)
         .count();
     let warnings = messages
         .iter()
-        .filter(|message| message.severity == AdtSourceCheckSeverity::Warning)
+        .filter(|message| message.severity == AdtMessageSeverity::Warning)
         .count();
     let infos = messages.len() - errors - warnings;
     Ok(ParsedCheckrunResponse {

@@ -122,8 +122,9 @@ mod tests {
     use super::*;
     use crate::cli::{Cli, Command, EditCommand, EditSourceVersionArg};
     use fractal::sap::{
+        adt_message_severity::AdtMessageSeverity,
         editable_source::{AdtSourceVersion, EditableAdtObjectType},
-        source_check::{AdtSourceCheckMessage, AdtSourceCheckResult, AdtSourceCheckSeverity},
+        source_check::{AdtSourceCheckMessage, AdtSourceCheckResult},
     };
 
     fn check_args(cli: Cli) -> EditSourceCheckArgs {
@@ -191,7 +192,7 @@ mod tests {
                 warnings: 0,
                 infos: 0,
                 messages: vec![AdtSourceCheckMessage {
-                    severity: AdtSourceCheckSeverity::Error,
+                    severity: AdtMessageSeverity::Error,
                     text: "Statement is not accessible".to_owned(),
                     line: Some(42),
                 }],

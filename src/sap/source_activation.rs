@@ -2,6 +2,7 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use thiserror::Error;
 
 use super::{
+    adt_message_severity::AdtMessageSeverity,
     client::{SapClient, SapError},
     edit_session::{AdtEditSessionError, attach_adt_object_to_transport},
     editable_source::{
@@ -24,27 +25,9 @@ pub struct AdtSourceActivationRequest {
     pub transport: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AdtSourceActivationMessageSeverity {
-    Error,
-    Warning,
-    Info,
-}
-
-impl AdtSourceActivationMessageSeverity {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Error => "error",
-            Self::Warning => "warning",
-            Self::Info => "info",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdtSourceActivationMessage {
-    pub severity: AdtSourceActivationMessageSeverity,
+    pub severity: AdtMessageSeverity,
     pub text: String,
     pub line: Option<usize>,
     pub object_description: Option<String>,
@@ -417,17 +400,13 @@ fn parse_activation_message(node: roxmltree::Node<'_, '_>) -> Option<AdtSourceAc
     if text.is_empty() {
         return None;
     }
-    let raw_severity = find_attribute_value(node, "type")
-        .or_else(|| find_attribute_value(node, "severity"))
-        .unwrap_or_default()
-        .to_ascii_uppercase();
-    let severity = if raw_severity.starts_with('E') || raw_severity.starts_with('A') {
-        AdtSourceActivationMessageSeverity::Error
-    } else if raw_severity.starts_with('W') {
-        AdtSourceActivationMessageSeverity::Warning
-    } else {
-        AdtSourceActivationMessageSeverity::Info
-    };
+    // Activation messages have been observed carrying the severity code on
+    // either attribute; checkrun messages only ever use `type`.
+    let severity = AdtMessageSeverity::from_sap_code(
+        find_attribute_value(node, "type")
+            .or_else(|| find_attribute_value(node, "severity"))
+            .unwrap_or_default(),
+    );
     Some(AdtSourceActivationMessage {
         severity,
         text: text.to_owned(),
@@ -482,20 +461,14 @@ mod tests {
 
         assert_eq!(parsed.activation_executed, Some(false));
         assert_eq!(parsed.messages.len(), 2);
-        assert_eq!(
-            parsed.messages[0].severity,
-            AdtSourceActivationMessageSeverity::Error
-        );
+        assert_eq!(parsed.messages[0].severity, AdtMessageSeverity::Error);
         assert_eq!(parsed.messages[0].text, "Expected <identifier>");
         assert_eq!(parsed.messages[0].line, Some(17));
         assert_eq!(
             parsed.messages[0].object_description.as_deref(),
             Some("Class ZCL_SAMPLE")
         );
-        assert_eq!(
-            parsed.messages[1].severity,
-            AdtSourceActivationMessageSeverity::Warning
-        );
+        assert_eq!(parsed.messages[1].severity, AdtMessageSeverity::Warning);
     }
 
     #[test]

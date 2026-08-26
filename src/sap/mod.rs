@@ -1,4 +1,5 @@
 pub mod adt;
+pub mod adt_message_severity;
 pub mod client;
 pub mod edit_session;
 pub mod editable_source;
