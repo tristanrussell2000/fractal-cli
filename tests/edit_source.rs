@@ -45,11 +45,14 @@ async fn fetches_complete_active_class_source_with_exact_hash_metadata() {
     .await
     .unwrap();
 
-    assert_eq!(result.object_type, EditableAdtObjectType::Class);
-    assert_eq!(result.name, "ZCL_EXAMPLE");
-    assert_eq!(result.object_uri, "/sap/bc/adt/oo/classes/zcl_example");
+    assert_eq!(result.identity.object_type, EditableAdtObjectType::Class);
+    assert_eq!(result.identity.name, "ZCL_EXAMPLE");
     assert_eq!(
-        result.source_uri,
+        result.identity.object_uri,
+        "/sap/bc/adt/oo/classes/zcl_example"
+    );
+    assert_eq!(
+        result.identity.source_uri,
         "/sap/bc/adt/oo/classes/zcl_example/source/main"
     );
     assert_eq!(result.requested_version, AdtSourceVersion::Active);
@@ -83,7 +86,7 @@ async fn requests_inactive_namespaced_ddl_source_with_an_encoded_name() {
     .await
     .unwrap();
 
-    assert_eq!(result.name, "/ACME/EXAMPLE");
+    assert_eq!(result.identity.name, "/ACME/EXAMPLE");
     assert_eq!(result.requested_version, AdtSourceVersion::Inactive);
     assert_eq!(result.source, source);
     server.verify().await;

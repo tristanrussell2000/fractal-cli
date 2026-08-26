@@ -201,7 +201,7 @@ async fn replaces_complete_source_under_lock_and_reports_sap_normalization() {
     .await
     .unwrap();
 
-    assert_eq!(result.name, "ZSAMPLE");
+    assert_eq!(result.identity.name, "ZSAMPLE");
     assert_eq!(result.original_sha256, source_sha256(ORIGINAL_SOURCE));
     assert_eq!(result.replacement_sha256, source_sha256(REPLACEMENT_SOURCE));
     assert_eq!(result.stored_sha256, source_sha256(NORMALIZED_SOURCE));

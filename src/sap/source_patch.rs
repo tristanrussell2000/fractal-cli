@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use super::editable_source::{
     AdtEditTargetValidationError, AdtSourceReadError, AdtSourceVersion, EditableAdtObjectType,
-    read_adt_source_for_edit,
+    EditableAdtSourceIdentity, read_adt_source_for_edit,
 };
 use super::{
     client::{SapClient, SapError},
@@ -28,10 +28,7 @@ pub struct AdtSourcePatchRequest {
 /// A non-mutating patch plan based on the source currently returned by SAP.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdtSourcePatchPreview {
-    pub object_type: EditableAdtObjectType,
-    pub name: String,
-    pub object_uri: String,
-    pub source_uri: String,
+    pub identity: EditableAdtSourceIdentity,
     pub transport: Option<String>,
     pub original_sha256: String,
     pub proposed_sha256: String,
@@ -44,10 +41,7 @@ pub struct AdtSourcePatchPreview {
 /// The source versions observed before and after an atomic ADT patch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdtSourcePatchWriteResult {
-    pub object_type: EditableAdtObjectType,
-    pub name: String,
-    pub object_uri: String,
-    pub source_uri: String,
+    pub identity: EditableAdtSourceIdentity,
     pub transport: Option<String>,
     pub original_sha256: String,
     pub proposed_sha256: String,
@@ -171,10 +165,7 @@ pub async fn patch_adt_source_atomically(
     let transport = target.transport;
 
     Ok(AdtSourcePatchWriteResult {
-        object_type: identity.object_type,
-        name: identity.name,
-        object_uri: identity.object_uri,
-        source_uri: identity.source_uri,
+        identity,
         transport,
         original_sha256: saved.original.sha256,
         proposed_sha256: saved.proposed.sha256,
@@ -233,10 +224,7 @@ pub async fn preview_adt_source_patch(
     .map_err(AdtSourcePatchError::Patch)?;
 
     Ok(AdtSourcePatchPreview {
-        object_type: identity.object_type,
-        name: identity.name,
-        object_uri: identity.object_uri,
-        source_uri: identity.source_uri,
+        identity,
         transport,
         original_sha256: original.sha256,
         proposed_sha256: plan.updated_sha256,

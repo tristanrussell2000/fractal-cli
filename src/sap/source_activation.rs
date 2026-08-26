@@ -7,7 +7,8 @@ use super::{
     edit_session::{AdtEditSessionError, attach_adt_object_to_transport},
     editable_source::{
         AdtEditTargetValidationError, AdtSourceReadError, AdtSourceVersion, EditableAdtObjectType,
-        ValidatedAdtEditTarget, read_adt_source_for_edit, validate_adt_edit_target,
+        EditableAdtSourceIdentity, ValidatedAdtEditTarget, read_adt_source_for_edit,
+        validate_adt_edit_target,
     },
     find_attribute_value,
     source_check::{
@@ -35,10 +36,7 @@ pub struct AdtSourceActivationMessage {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdtSourceActivationResult {
-    pub object_type: EditableAdtObjectType,
-    pub name: String,
-    pub object_uri: String,
-    pub source_uri: String,
+    pub identity: EditableAdtSourceIdentity,
     pub transport: Option<String>,
     pub precheck: AdtSourceCheckResult,
     pub inactive_sha256: String,
@@ -339,10 +337,7 @@ pub(super) async fn activate_validated_adt_source(
         Err(_) => (false, ParsedActivationResponse::default()),
     };
     Ok(AdtSourceActivationResult {
-        object_type: identity.object_type,
-        name: identity.name,
-        object_uri: identity.object_uri,
-        source_uri: identity.source_uri,
+        identity,
         transport,
         precheck,
         inactive_sha256: inactive.sha256,

@@ -98,10 +98,7 @@ impl AdtSourceVersion {
 /// Complete source and concurrency metadata returned by the edit-read boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdtSourceReadResult {
-    pub object_type: EditableAdtObjectType,
-    pub name: String,
-    pub object_uri: String,
-    pub source_uri: String,
+    pub identity: EditableAdtSourceIdentity,
     pub requested_version: AdtSourceVersion,
     pub source: String,
     pub sha256: String,
@@ -136,12 +133,18 @@ impl From<AdtSourceReadResult> for AdtSourceSnapshot {
     }
 }
 
+/// The canonical identity of one editable ADT source object.
+///
+/// Every edit workflow resolves this before contacting SAP and every result
+/// reports it, so the four fields are declared here once instead of being
+/// re-declared on each result type. Command output flattens it back into the
+/// same top-level JSON fields callers already receive.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct EditableAdtSourceIdentity {
-    pub(super) object_type: EditableAdtObjectType,
-    pub(super) name: String,
-    pub(super) object_uri: String,
-    pub(super) source_uri: String,
+pub struct EditableAdtSourceIdentity {
+    pub object_type: EditableAdtObjectType,
+    pub name: String,
+    pub object_uri: String,
+    pub source_uri: String,
 }
 
 /// A syntactically valid source object type and name.
@@ -361,10 +364,7 @@ pub(super) async fn read_adt_source(
     })?;
 
     Ok(AdtSourceReadResult {
-        object_type: identity.object_type,
-        name: identity.name.clone(),
-        object_uri: identity.object_uri.clone(),
-        source_uri: identity.source_uri.clone(),
+        identity: identity.clone(),
         requested_version: version,
         sha256: source_sha256(&source),
         source,

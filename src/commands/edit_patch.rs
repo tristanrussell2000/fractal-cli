@@ -2,6 +2,7 @@ use std::fmt::Write as _;
 
 use serde::Serialize;
 
+use super::edit_object_identity::EditObjectIdentityOutput;
 use crate::{
     cli::EditSourcePatchArgs,
     command_error::CommandError,
@@ -24,10 +25,8 @@ pub struct EditSourcePatchOutput {
     dry_run: bool,
     wrote_source: bool,
     activated: bool,
-    object_type: String,
-    name: String,
-    object_uri: String,
-    source_uri: String,
+    #[serde(flatten)]
+    object: EditObjectIdentityOutput,
     transport: Option<String>,
     replacements: usize,
     original_bytes: usize,
@@ -90,10 +89,7 @@ fn map_patch_preview(
         dry_run: true,
         wrote_source: false,
         activated: false,
-        object_type: preview.object_type.as_str().to_owned(),
-        name: preview.name,
-        object_uri: preview.object_uri,
-        source_uri: preview.source_uri,
+        object: preview.identity.into(),
         transport: preview.transport,
         replacements: preview.replacements,
         original_bytes: preview.original_bytes,
@@ -123,10 +119,7 @@ fn map_applied_patch(
         dry_run: false,
         wrote_source: true,
         activated: false,
-        object_type: result.object_type.as_str().to_owned(),
-        name: result.name,
-        object_uri: result.object_uri,
-        source_uri: result.source_uri,
+        object: result.identity.into(),
         transport: result.transport,
         replacements: result.replacements,
         original_bytes: result.original_bytes,
@@ -146,7 +139,11 @@ fn map_applied_patch(
 fn render_edit_source_patch_readable(result: &EditSourcePatchOutput) -> String {
     let mut output = String::new();
     let _ = writeln!(output, "profile: {}", result.profile);
-    let _ = writeln!(output, "object: {} {}", result.object_type, result.name);
+    let _ = writeln!(
+        output,
+        "object: {} {}",
+        result.object.object_type, result.object.name
+    );
     let _ = writeln!(
         output,
         "transport: {}",
@@ -202,6 +199,7 @@ mod tests {
 
     use super::*;
     use crate::cli::{Cli, Command, EditCommand};
+    use fractal::sap::editable_source::EditableAdtSourceIdentity;
     use fractal::source_change::source_sha256;
 
     fn patch_args(cli: Cli) -> EditSourcePatchArgs {
@@ -305,10 +303,12 @@ mod tests {
             "development".to_owned(),
             &request,
             AdtSourcePatchPreview {
-                object_type: EditableAdtObjectType::Program,
-                name: "ZSAMPLE".to_owned(),
-                object_uri: "/sap/bc/adt/programs/programs/zsample".to_owned(),
-                source_uri: "/sap/bc/adt/programs/programs/zsample/source/main".to_owned(),
+                identity: EditableAdtSourceIdentity {
+                    object_type: EditableAdtObjectType::Program,
+                    name: "ZSAMPLE".to_owned(),
+                    object_uri: "/sap/bc/adt/programs/programs/zsample".to_owned(),
+                    source_uri: "/sap/bc/adt/programs/programs/zsample/source/main".to_owned(),
+                },
                 transport: Some("DE3K900575".to_owned()),
                 original_sha256: source_sha256(original),
                 proposed_sha256: source_sha256(proposed),
@@ -343,10 +343,12 @@ mod tests {
             "development".to_owned(),
             &request,
             AdtSourcePatchWriteResult {
-                object_type: EditableAdtObjectType::Program,
-                name: "ZSAMPLE".to_owned(),
-                object_uri: "/sap/bc/adt/programs/programs/zsample".to_owned(),
-                source_uri: "/sap/bc/adt/programs/programs/zsample/source/main".to_owned(),
+                identity: EditableAdtSourceIdentity {
+                    object_type: EditableAdtObjectType::Program,
+                    name: "ZSAMPLE".to_owned(),
+                    object_uri: "/sap/bc/adt/programs/programs/zsample".to_owned(),
+                    source_uri: "/sap/bc/adt/programs/programs/zsample/source/main".to_owned(),
+                },
                 transport: Some("DE3K900575".to_owned()),
                 original_sha256: source_sha256(original),
                 proposed_sha256: source_sha256(proposed),

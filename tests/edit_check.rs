@@ -95,9 +95,9 @@ async fn checks_active_source_and_returns_structured_messages() {
     .await
     .unwrap();
 
-    assert_eq!(result.name, "ZCL_SAMPLE");
-    assert_eq!(result.object_uri, OBJECT_URI);
-    assert_eq!(result.source_uri, SOURCE_URI);
+    assert_eq!(result.identity.name, "ZCL_SAMPLE");
+    assert_eq!(result.identity.object_uri, OBJECT_URI);
+    assert_eq!(result.identity.source_uri, SOURCE_URI);
     assert!(result.check_executed);
     assert_eq!(result.inactive_version_exists, None);
     assert!(!result.clean);

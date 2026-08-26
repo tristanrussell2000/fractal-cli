@@ -23,10 +23,7 @@ pub struct AdtSourceCheckMessage {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdtSourceCheckResult {
-    pub object_type: EditableAdtObjectType,
-    pub name: String,
-    pub object_uri: String,
-    pub source_uri: String,
+    pub identity: EditableAdtSourceIdentity,
     pub requested_version: AdtSourceVersion,
     pub check_executed: bool,
     pub inactive_version_exists: Option<bool>,
@@ -158,10 +155,7 @@ pub(super) async fn check_adt_source_by_identity(
             line: None,
         }];
         return Ok(AdtSourceCheckResult {
-            object_type: identity.object_type,
-            name: identity.name.clone(),
-            object_uri: identity.object_uri.clone(),
-            source_uri: identity.source_uri.clone(),
+            identity: identity.clone(),
             requested_version: version,
             check_executed: false,
             inactive_version_exists,
@@ -195,10 +189,7 @@ pub(super) async fn check_adt_source_by_identity(
     let parsed = parse_checkrun_response(&response)?;
 
     Ok(AdtSourceCheckResult {
-        object_type: identity.object_type,
-        name: identity.name.clone(),
-        object_uri: identity.object_uri.clone(),
-        source_uri: identity.source_uri.clone(),
+        identity: identity.clone(),
         requested_version: version,
         check_executed: true,
         inactive_version_exists,

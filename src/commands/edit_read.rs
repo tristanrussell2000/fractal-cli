@@ -2,6 +2,7 @@ use std::fmt::Write as _;
 
 use serde::Serialize;
 
+use super::edit_object_identity::EditObjectIdentityOutput;
 use crate::{
     cli::{EditSourceReadArgs, EditSourceVersionArg},
     command_error::CommandError,
@@ -16,10 +17,8 @@ use fractal::sap::editable_source::{
 pub struct EditSourceReadOutput {
     ok: bool,
     profile: String,
-    object_type: String,
-    name: String,
-    object_uri: String,
-    source_uri: String,
+    #[serde(flatten)]
+    object: EditObjectIdentityOutput,
     requested_version: String,
     bytes: usize,
     sha256: String,
@@ -61,10 +60,7 @@ fn map_edit_source_read_result(
     EditSourceReadOutput {
         ok: true,
         profile,
-        object_type: result.object_type.as_str().to_owned(),
-        name: result.name,
-        object_uri: result.object_uri,
-        source_uri: result.source_uri,
+        object: result.identity.into(),
         requested_version: result.requested_version.as_str().to_owned(),
         bytes: result.bytes,
         sha256: result.sha256,
@@ -75,10 +71,14 @@ fn map_edit_source_read_result(
 fn render_edit_source_readable(result: &EditSourceReadOutput) -> String {
     let mut output = String::new();
     let _ = writeln!(output, "profile: {}", result.profile);
-    let _ = writeln!(output, "object: {} {}", result.object_type, result.name);
+    let _ = writeln!(
+        output,
+        "object: {} {}",
+        result.object.object_type, result.object.name
+    );
     let _ = writeln!(output, "requested version: {}", result.requested_version);
-    let _ = writeln!(output, "object uri: {}", result.object_uri);
-    let _ = writeln!(output, "source uri: {}", result.source_uri);
+    let _ = writeln!(output, "object uri: {}", result.object.object_uri);
+    let _ = writeln!(output, "source uri: {}", result.object.source_uri);
     let _ = writeln!(output, "bytes: {}", result.bytes);
     let _ = writeln!(output, "sha256: {}", result.sha256);
     output.push_str("\nsource:\n");
@@ -92,6 +92,7 @@ mod tests {
 
     use super::*;
     use crate::cli::{Cli, Command, EditCommand};
+    use fractal::sap::editable_source::EditableAdtSourceIdentity;
 
     fn read_args(cli: Cli) -> EditSourceReadArgs {
         let Command::Edit {
@@ -167,10 +168,12 @@ mod tests {
         let result = map_edit_source_read_result(
             "development".to_owned(),
             AdtSourceReadResult {
-                object_type: EditableAdtObjectType::Class,
-                name: "ZCL_EXAMPLE".to_owned(),
-                object_uri: "/sap/bc/adt/oo/classes/zcl_example".to_owned(),
-                source_uri: "/sap/bc/adt/oo/classes/zcl_example/source/main".to_owned(),
+                identity: EditableAdtSourceIdentity {
+                    object_type: EditableAdtObjectType::Class,
+                    name: "ZCL_EXAMPLE".to_owned(),
+                    object_uri: "/sap/bc/adt/oo/classes/zcl_example".to_owned(),
+                    source_uri: "/sap/bc/adt/oo/classes/zcl_example/source/main".to_owned(),
+                },
                 requested_version: AdtSourceVersion::Active,
                 source: source.to_owned(),
                 sha256: "a".repeat(64),

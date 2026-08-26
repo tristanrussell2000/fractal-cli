@@ -5,8 +5,8 @@ use super::{
     edit_session::AdtEditSessionError,
     editable_source::{
         AdtEditTargetValidationError, AdtSourceReadError, AdtSourceSnapshot, AdtSourceVersion,
-        EditableAdtObjectType, ValidatedAdtEditTarget, read_adt_source_for_edit,
-        validate_adt_edit_target,
+        EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
+        read_adt_source_for_edit, validate_adt_edit_target,
     },
     inactive_source_save::{
         InactiveSourceSaveError, PlannedInactiveSourceChange, save_inactive_source_atomically,
@@ -27,10 +27,7 @@ pub struct AdtSourceReplacementRequest {
 /// A non-mutating complete-source replacement plan based on source read from SAP.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdtSourceReplacementPreview {
-    pub object_type: EditableAdtObjectType,
-    pub name: String,
-    pub object_uri: String,
-    pub source_uri: String,
+    pub identity: EditableAdtSourceIdentity,
     pub transport: Option<String>,
     pub original_sha256: String,
     pub replacement_sha256: String,
@@ -42,10 +39,7 @@ pub struct AdtSourceReplacementPreview {
 /// Source versions observed before and after a complete inactive-source replacement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdtSourceReplacementWriteResult {
-    pub object_type: EditableAdtObjectType,
-    pub name: String,
-    pub object_uri: String,
-    pub source_uri: String,
+    pub identity: EditableAdtSourceIdentity,
     pub transport: Option<String>,
     pub original_sha256: String,
     pub replacement_sha256: String,
@@ -151,10 +145,7 @@ pub async fn preview_adt_source_replacement(
     let plan = plan_replacement(&original.source, request)?;
 
     Ok(AdtSourceReplacementPreview {
-        object_type: identity.object_type,
-        name: identity.name,
-        object_uri: identity.object_uri,
-        source_uri: identity.source_uri,
+        identity,
         transport,
         original_sha256: plan.original_sha256,
         replacement_sha256: plan.replacement_sha256,
@@ -204,10 +195,7 @@ pub async fn replace_adt_source_atomically(
     let sap_normalized_source = saved.stored.source != saved.proposed.source;
 
     Ok(AdtSourceReplacementWriteResult {
-        object_type: identity.object_type,
-        name: identity.name,
-        object_uri: identity.object_uri,
-        source_uri: identity.source_uri,
+        identity,
         transport,
         original_sha256: saved.original.sha256,
         replacement_sha256: saved.proposed.sha256,

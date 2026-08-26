@@ -2,7 +2,7 @@ use std::fmt::Write as _;
 
 use serde::Serialize;
 
-use super::connect;
+use super::{connect, edit_object_identity::EditObjectIdentityOutput};
 use crate::{
     cli::EditSourceActivateArgs,
     command_error::CommandError,
@@ -34,10 +34,8 @@ pub struct EditSourceActivationOutput {
     status: String,
     activated: bool,
     verified: bool,
-    object_type: String,
-    name: String,
-    object_uri: String,
-    source_uri: String,
+    #[serde(flatten)]
+    object: EditObjectIdentityOutput,
     transport: Option<String>,
     precheck_clean: bool,
     precheck_errors: usize,
@@ -88,10 +86,7 @@ fn map_source_activation_result(
         status: "activated_verified".to_owned(),
         activated: true,
         verified: true,
-        object_type: result.object_type.as_str().to_owned(),
-        name: result.name,
-        object_uri: result.object_uri,
-        source_uri: result.source_uri,
+        object: result.identity.into(),
         transport: result.transport,
         precheck_clean: result.precheck.clean,
         precheck_errors: result.precheck.errors,
@@ -142,7 +137,11 @@ fn map_activation_message(
 fn render_source_activation_readable(result: &EditSourceActivationOutput) -> String {
     let mut output = String::new();
     let _ = writeln!(output, "profile: {}", result.profile);
-    let _ = writeln!(output, "object: {} {}", result.object_type, result.name);
+    let _ = writeln!(
+        output,
+        "object: {} {}",
+        result.object.object_type, result.object.name
+    );
     let _ = writeln!(output, "status: activated and verified");
     if let Some(transport) = &result.transport {
         let _ = writeln!(output, "transport: {transport}");
@@ -212,7 +211,7 @@ mod tests {
     use crate::cli::{Cli, Command, EditCommand};
     use fractal::sap::{
         adt_message_severity::AdtMessageSeverity,
-        editable_source::{AdtSourceVersion, EditableAdtObjectType},
+        editable_source::{AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceIdentity},
         source_activation::{AdtSourceActivationMessage, AdtSourceActivationResult},
         source_check::AdtSourceCheckResult,
     };
@@ -248,16 +247,20 @@ mod tests {
         let output = map_source_activation_result(
             "development".to_owned(),
             AdtSourceActivationResult {
-                object_type: EditableAdtObjectType::Class,
-                name: "ZCL_SAMPLE".to_owned(),
-                object_uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
-                source_uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
-                transport: Some("DE3K900575".to_owned()),
-                precheck: AdtSourceCheckResult {
+                identity: EditableAdtSourceIdentity {
                     object_type: EditableAdtObjectType::Class,
                     name: "ZCL_SAMPLE".to_owned(),
                     object_uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
                     source_uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
+                },
+                transport: Some("DE3K900575".to_owned()),
+                precheck: AdtSourceCheckResult {
+                    identity: EditableAdtSourceIdentity {
+                        object_type: EditableAdtObjectType::Class,
+                        name: "ZCL_SAMPLE".to_owned(),
+                        object_uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
+                        source_uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
+                    },
                     requested_version: AdtSourceVersion::Inactive,
                     check_executed: true,
                     inactive_version_exists: Some(true),

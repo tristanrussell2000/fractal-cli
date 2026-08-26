@@ -308,7 +308,7 @@ async fn restores_active_source_under_lock_then_activates_and_verifies_it() {
             .await
             .unwrap();
 
-    assert_eq!(result.name, "ZCL_SAMPLE");
+    assert_eq!(result.identity.name, "ZCL_SAMPLE");
     assert_eq!(result.discarded_sha256, source_sha256(INACTIVE_SOURCE));
     assert_eq!(result.active_sha256_before, source_sha256(ACTIVE_SOURCE));
     assert_eq!(result.restored_inactive_sha256, result.active_sha256_before);

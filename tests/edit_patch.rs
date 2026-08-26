@@ -213,7 +213,7 @@ async fn patches_under_lock_and_reports_the_source_sap_actually_stored() {
             .await
             .unwrap();
 
-    assert_eq!(result.name, "ZSAMPLE");
+    assert_eq!(result.identity.name, "ZSAMPLE");
     assert_eq!(result.original_sha256, source_sha256(ORIGINAL_SOURCE));
     assert_eq!(result.proposed_sha256, source_sha256(PROPOSED_SOURCE));
     assert_eq!(result.stored_sha256, source_sha256(normalized_source));
@@ -279,7 +279,7 @@ async fn previews_a_patch_without_csrf_lock_write_or_unlock_requests() {
         .await
         .unwrap();
 
-    assert_eq!(preview.name, "ZSAMPLE");
+    assert_eq!(preview.identity.name, "ZSAMPLE");
     assert_eq!(preview.original_sha256, source_sha256(ORIGINAL_SOURCE));
     assert_eq!(preview.proposed_sha256, source_sha256(PROPOSED_SOURCE));
     assert_eq!(preview.original_bytes, ORIGINAL_SOURCE.len());

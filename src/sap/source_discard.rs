@@ -24,10 +24,7 @@ pub struct AdtInactiveSourceDiscardRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdtInactiveSourceDiscardResult {
-    pub object_type: EditableAdtObjectType,
-    pub name: String,
-    pub object_uri: String,
-    pub source_uri: String,
+    pub identity: EditableAdtSourceIdentity,
     pub transport: Option<String>,
     pub discarded_sha256: String,
     pub discarded_bytes: usize,
@@ -227,10 +224,7 @@ pub async fn discard_inactive_adt_source(
     }
 
     Ok(AdtInactiveSourceDiscardResult {
-        object_type: identity.object_type,
-        name: identity.name,
-        object_uri: identity.object_uri,
-        source_uri: identity.source_uri,
+        identity,
         transport,
         discarded_sha256: prepared.inactive_before.sha256,
         discarded_bytes: prepared.inactive_before.bytes,

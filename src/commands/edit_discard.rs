@@ -2,7 +2,7 @@ use std::fmt::Write as _;
 
 use serde::Serialize;
 
-use super::connect;
+use super::{connect, edit_object_identity::EditObjectIdentityOutput};
 use crate::{
     cli::EditSourceDiscardArgs,
     command_error::CommandError,
@@ -24,10 +24,8 @@ pub struct EditSourceDiscardOutput {
     implementation: String,
     discarded: bool,
     verified: bool,
-    object_type: String,
-    name: String,
-    object_uri: String,
-    source_uri: String,
+    #[serde(flatten)]
+    object: EditObjectIdentityOutput,
     transport: Option<String>,
     discarded_sha256: String,
     discarded_bytes: usize,
@@ -78,10 +76,7 @@ fn map_source_discard_result(
         implementation: "restore_active_then_activate".to_owned(),
         discarded: true,
         verified: true,
-        object_type: result.object_type.as_str().to_owned(),
-        name: result.name,
-        object_uri: result.object_uri,
-        source_uri: result.source_uri,
+        object: result.identity.into(),
         transport: result.transport,
         discarded_sha256: result.discarded_sha256,
         discarded_bytes: result.discarded_bytes,
@@ -101,7 +96,11 @@ fn map_source_discard_result(
 fn render_source_discard_readable(result: &EditSourceDiscardOutput) -> String {
     let mut output = String::new();
     let _ = writeln!(output, "profile: {}", result.profile);
-    let _ = writeln!(output, "object: {} {}", result.object_type, result.name);
+    let _ = writeln!(
+        output,
+        "object: {} {}",
+        result.object.object_type, result.object.name
+    );
     let _ = writeln!(output, "status: inactive source discarded and verified");
     let _ = writeln!(
         output,
@@ -146,6 +145,7 @@ mod tests {
 
     use super::*;
     use crate::cli::{Cli, Command, EditCommand};
+    use fractal::sap::editable_source::EditableAdtSourceIdentity;
 
     #[test]
     fn parses_discard_arguments() {
@@ -178,10 +178,12 @@ mod tests {
         let result = map_source_discard_result(
             "DE3".to_owned(),
             AdtInactiveSourceDiscardResult {
-                object_type: EditableAdtObjectType::Class,
-                name: "ZCL_SAMPLE".to_owned(),
-                object_uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
-                source_uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
+                identity: EditableAdtSourceIdentity {
+                    object_type: EditableAdtObjectType::Class,
+                    name: "ZCL_SAMPLE".to_owned(),
+                    object_uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
+                    source_uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
+                },
                 transport: Some("DE3K900575".to_owned()),
                 discarded_sha256: "inactive-hash".to_owned(),
                 discarded_bytes: 45,
