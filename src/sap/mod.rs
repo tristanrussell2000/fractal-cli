@@ -2,6 +2,7 @@ pub mod adt;
 pub mod client;
 pub mod edit_session;
 pub mod editable_source;
+pub mod error_diagnostics;
 mod inactive_source_save;
 pub mod package;
 pub mod source_activation;

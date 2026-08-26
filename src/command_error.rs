@@ -4,6 +4,7 @@ use fractal::{
         adt::AdtError,
         client::SapError,
         editable_source::{AdtSourceReadError, EditableAdtSourceTargetError},
+        error_diagnostics::AdtErrorDiagnostics,
         package::PackageError,
         source_activation::AdtSourceActivationError,
         source_check::AdtSourceCheckError,
@@ -20,13 +21,7 @@ pub enum CommandError {
     Credential(credentials::CredentialError),
     Sap(SapError),
     Adt(AdtError),
-    AdtSourceRead(AdtSourceReadError),
-    EditableAdtSourceTarget(EditableAdtSourceTargetError),
-    AdtSourcePatch(AdtSourcePatchError),
-    AdtSourceCheck(AdtSourceCheckError),
-    AdtSourceActivation(AdtSourceActivationError),
-    AdtInactiveSourceDiscard(AdtInactiveSourceDiscardError),
-    AdtSourceReplacement(AdtSourceReplacementError),
+    Edit(EditCommandError),
     Package(PackageError),
     Table(TableError),
     Message {
@@ -34,6 +29,36 @@ pub enum CommandError {
         message: String,
         hint: Option<String>,
     },
+}
+
+/// One ADT source-workflow failure reported through the CLI error boundary.
+///
+/// Each variant keeps its own workflow-specific codes, hints, and recovery
+/// guidance. This enum only routes them through the shared diagnostic access,
+/// so `CommandError` needs one arm per accessor rather than one per workflow.
+#[derive(Debug)]
+pub enum EditCommandError {
+    Target(EditableAdtSourceTargetError),
+    SourceRead(AdtSourceReadError),
+    Patch(AdtSourcePatchError),
+    Replacement(AdtSourceReplacementError),
+    Check(AdtSourceCheckError),
+    Activation(AdtSourceActivationError),
+    Discard(AdtInactiveSourceDiscardError),
+}
+
+impl EditCommandError {
+    fn diagnostics(&self) -> &dyn AdtErrorDiagnostics {
+        match self {
+            Self::Target(error) => error,
+            Self::SourceRead(error) => error,
+            Self::Patch(error) => error,
+            Self::Replacement(error) => error,
+            Self::Check(error) => error,
+            Self::Activation(error) => error,
+            Self::Discard(error) => error,
+        }
+    }
 }
 
 impl CommandError {
@@ -57,7 +82,7 @@ impl CommandError {
         }
     }
 
-    pub(crate) const fn code(&self) -> &'static str {
+    pub(crate) fn code(&self) -> &'static str {
         match self {
             Self::Config(error) => match error {
                 config::ConfigError::NoConfigDirectory => "config_directory_unavailable",
@@ -75,13 +100,7 @@ impl CommandError {
             },
             Self::Sap(error) => error.code(),
             Self::Adt(error) => error.code(),
-            Self::AdtSourceRead(error) => error.code(),
-            Self::EditableAdtSourceTarget(error) => error.code(),
-            Self::AdtSourcePatch(error) => error.code(),
-            Self::AdtSourceCheck(error) => error.code(),
-            Self::AdtSourceActivation(error) => error.code(),
-            Self::AdtInactiveSourceDiscard(error) => error.code(),
-            Self::AdtSourceReplacement(error) => error.code(),
+            Self::Edit(error) => error.diagnostics().code(),
             Self::Package(error) => match error {
                 PackageError::Sap(error) => error.code(),
                 PackageError::Parse(_) => "package_response_parse_error",
@@ -99,31 +118,7 @@ impl CommandError {
                 Some(SapError::Http { status, .. }) => Some(status.as_u16()),
                 _ => None,
             },
-            Self::AdtSourceRead(error) => match error.sap_error() {
-                Some(SapError::Http { status, .. }) => Some(status.as_u16()),
-                _ => None,
-            },
-            Self::EditableAdtSourceTarget(_) => None,
-            Self::AdtSourcePatch(error) => match error.sap_error() {
-                Some(SapError::Http { status, .. }) => Some(status.as_u16()),
-                _ => None,
-            },
-            Self::AdtSourceCheck(error) => match error.sap_error() {
-                Some(SapError::Http { status, .. }) => Some(status.as_u16()),
-                _ => None,
-            },
-            Self::AdtSourceActivation(error) => match error.sap_error() {
-                Some(SapError::Http { status, .. }) => Some(status.as_u16()),
-                _ => None,
-            },
-            Self::AdtInactiveSourceDiscard(error) => match error.sap_error() {
-                Some(SapError::Http { status, .. }) => Some(status.as_u16()),
-                _ => None,
-            },
-            Self::AdtSourceReplacement(error) => match error.sap_error() {
-                Some(SapError::Http { status, .. }) => Some(status.as_u16()),
-                _ => None,
-            },
+            Self::Edit(error) => error.diagnostics().http_status(),
             _ => None,
         }
     }
@@ -134,13 +129,7 @@ impl CommandError {
             Self::Credential(error) => error.to_string(),
             Self::Sap(error) => error.to_string(),
             Self::Adt(error) => error.to_string(),
-            Self::AdtSourceRead(error) => error.to_string(),
-            Self::EditableAdtSourceTarget(error) => error.to_string(),
-            Self::AdtSourcePatch(error) => error.to_string(),
-            Self::AdtSourceCheck(error) => error.to_string(),
-            Self::AdtSourceActivation(error) => error.to_string(),
-            Self::AdtInactiveSourceDiscard(error) => error.to_string(),
-            Self::AdtSourceReplacement(error) => error.to_string(),
+            Self::Edit(error) => error.diagnostics().to_string(),
             Self::Package(error) => error.to_string(),
             Self::Table(error) => error.to_string(),
             Self::Message { message, .. } => message.clone(),
@@ -161,13 +150,7 @@ impl CommandError {
                 Some(error.hint().to_owned())
             }
             Self::Adt(error) => error.hint(),
-            Self::AdtSourceRead(error) => Some(error.hint()),
-            Self::EditableAdtSourceTarget(error) => Some(error.hint()),
-            Self::AdtSourcePatch(error) => Some(error.hint()),
-            Self::AdtSourceCheck(error) => Some(error.hint()),
-            Self::AdtSourceActivation(error) => Some(error.hint()),
-            Self::AdtInactiveSourceDiscard(error) => Some(error.hint()),
-            Self::AdtSourceReplacement(error) => Some(error.hint()),
+            Self::Edit(error) => Some(error.diagnostics().hint()),
             Self::Package(PackageError::Parse(_)) => Some(
                 "The SAP package response did not match the expected nodestructure format."
                     .to_owned(),
@@ -204,43 +187,43 @@ impl From<AdtError> for CommandError {
 
 impl From<AdtSourceReadError> for CommandError {
     fn from(error: AdtSourceReadError) -> Self {
-        Self::AdtSourceRead(error)
+        Self::Edit(EditCommandError::SourceRead(error))
     }
 }
 
 impl From<EditableAdtSourceTargetError> for CommandError {
     fn from(error: EditableAdtSourceTargetError) -> Self {
-        Self::EditableAdtSourceTarget(error)
+        Self::Edit(EditCommandError::Target(error))
     }
 }
 
 impl From<AdtSourcePatchError> for CommandError {
     fn from(error: AdtSourcePatchError) -> Self {
-        Self::AdtSourcePatch(error)
+        Self::Edit(EditCommandError::Patch(error))
     }
 }
 
 impl From<AdtSourceCheckError> for CommandError {
     fn from(error: AdtSourceCheckError) -> Self {
-        Self::AdtSourceCheck(error)
+        Self::Edit(EditCommandError::Check(error))
     }
 }
 
 impl From<AdtSourceActivationError> for CommandError {
     fn from(error: AdtSourceActivationError) -> Self {
-        Self::AdtSourceActivation(error)
+        Self::Edit(EditCommandError::Activation(error))
     }
 }
 
 impl From<AdtInactiveSourceDiscardError> for CommandError {
     fn from(error: AdtInactiveSourceDiscardError) -> Self {
-        Self::AdtInactiveSourceDiscard(error)
+        Self::Edit(EditCommandError::Discard(error))
     }
 }
 
 impl From<AdtSourceReplacementError> for CommandError {
     fn from(error: AdtSourceReplacementError) -> Self {
-        Self::AdtSourceReplacement(error)
+        Self::Edit(EditCommandError::Replacement(error))
     }
 }
 
