@@ -237,8 +237,8 @@ async fn activates_and_verifies_the_exact_inactive_source() {
 
     assert_eq!(result.identity.name, "ZCL_SAMPLE");
     assert_eq!(result.identity.object_uri, OBJECT_URI);
-    assert_eq!(result.inactive_sha256, source_sha256(SOURCE));
-    assert_eq!(result.active_sha256, result.inactive_sha256);
+    assert_eq!(result.inactive.sha256, source_sha256(SOURCE));
+    assert_eq!(result.active.sha256, result.inactive.sha256);
     assert_eq!(result.sap_reported_activation_executed, Some(true));
     assert!(result.activation_response_parsed);
     assert_eq!(result.precheck.warnings, 1);

@@ -30,12 +30,9 @@ pub struct AdtSourcePatchRequest {
 pub struct AdtSourcePatchPreview {
     pub identity: EditableAdtSourceIdentity,
     pub transport: Option<String>,
-    pub original_sha256: String,
-    pub proposed_sha256: String,
-    pub original_bytes: usize,
-    pub proposed_bytes: usize,
+    pub original: AdtSourceSnapshot,
+    pub proposed: AdtSourceSnapshot,
     pub replacements: usize,
-    pub proposed_source: String,
 }
 
 /// The source versions observed before and after an atomic ADT patch.
@@ -43,15 +40,10 @@ pub struct AdtSourcePatchPreview {
 pub struct AdtSourcePatchWriteResult {
     pub identity: EditableAdtSourceIdentity,
     pub transport: Option<String>,
-    pub original_sha256: String,
-    pub proposed_sha256: String,
-    pub stored_sha256: String,
-    pub original_bytes: usize,
-    pub proposed_bytes: usize,
-    pub stored_bytes: usize,
+    pub original: AdtSourceSnapshot,
+    pub proposed: AdtSourceSnapshot,
+    pub stored: AdtSourceSnapshot,
     pub replacements: usize,
-    pub proposed_source: String,
-    pub stored_source: String,
 }
 
 /// A failure during the guarded ADT lock/read/patch/write/unlock workflow.
@@ -167,15 +159,10 @@ pub async fn patch_adt_source_atomically(
     Ok(AdtSourcePatchWriteResult {
         identity,
         transport,
-        original_sha256: saved.original.sha256,
-        proposed_sha256: saved.proposed.sha256,
-        stored_sha256: saved.stored.sha256,
-        original_bytes: saved.original.bytes,
-        proposed_bytes: saved.proposed.bytes,
-        stored_bytes: saved.stored.bytes,
+        original: saved.original,
+        proposed: saved.proposed,
+        stored: saved.stored,
         replacements: saved.metadata,
-        proposed_source: saved.proposed.source,
-        stored_source: saved.stored.source,
     })
 }
 
@@ -214,9 +201,9 @@ pub async fn preview_adt_source_patch(
     let expected_sha256 = request
         .expected_sha256
         .as_deref()
-        .unwrap_or(&original.sha256);
+        .unwrap_or(&original.snapshot.sha256);
     let plan = plan_patch(
-        &original.source,
+        &original.snapshot.source,
         &request.find,
         &request.replace,
         expected_sha256,
@@ -226,12 +213,13 @@ pub async fn preview_adt_source_patch(
     Ok(AdtSourcePatchPreview {
         identity,
         transport,
-        original_sha256: original.sha256,
-        proposed_sha256: plan.updated_sha256,
-        original_bytes: original.bytes,
-        proposed_bytes: plan.updated_bytes,
+        original: original.snapshot,
+        proposed: AdtSourceSnapshot::from_parts(
+            plan.updated_source,
+            plan.updated_sha256,
+            plan.updated_bytes,
+        ),
         replacements: plan.replacements,
-        proposed_source: plan.updated_source,
     })
 }
 

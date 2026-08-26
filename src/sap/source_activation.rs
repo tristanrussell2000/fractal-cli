@@ -6,9 +6,9 @@ use super::{
     client::{SapClient, SapError},
     edit_session::{AdtEditSessionError, attach_adt_object_to_transport},
     editable_source::{
-        AdtEditTargetValidationError, AdtSourceReadError, AdtSourceVersion, EditableAdtObjectType,
-        EditableAdtSourceIdentity, ValidatedAdtEditTarget, read_adt_source_for_edit,
-        validate_adt_edit_target,
+        AdtEditTargetValidationError, AdtSourceReadError, AdtSourceSnapshot, AdtSourceVersion,
+        EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
+        read_adt_source_for_edit, validate_adt_edit_target,
     },
     find_attribute_value,
     source_check::{
@@ -39,10 +39,8 @@ pub struct AdtSourceActivationResult {
     pub identity: EditableAdtSourceIdentity,
     pub transport: Option<String>,
     pub precheck: AdtSourceCheckResult,
-    pub inactive_sha256: String,
-    pub inactive_bytes: usize,
-    pub active_sha256: String,
-    pub active_bytes: usize,
+    pub inactive: AdtSourceSnapshot,
+    pub active: AdtSourceSnapshot,
     pub sap_reported_activation_executed: Option<bool>,
     pub activation_response_parsed: bool,
     pub activation_messages: Vec<AdtSourceActivationMessage>,
@@ -324,10 +322,10 @@ pub(super) async fn activate_validated_adt_source(
         };
     };
     let active = active_result.map_err(AdtSourceActivationError::ActiveSourceRead)?;
-    if active.sha256 != inactive.sha256 {
+    if active.snapshot.sha256 != inactive.snapshot.sha256 {
         return Err(AdtSourceActivationError::VerificationMismatch {
-            inactive_sha256: inactive.sha256,
-            active_sha256: active.sha256,
+            inactive_sha256: inactive.snapshot.sha256,
+            active_sha256: active.snapshot.sha256,
         });
     }
 
@@ -340,10 +338,8 @@ pub(super) async fn activate_validated_adt_source(
         identity,
         transport,
         precheck,
-        inactive_sha256: inactive.sha256,
-        inactive_bytes: inactive.bytes,
-        active_sha256: active.sha256,
-        active_bytes: active.bytes,
+        inactive: inactive.snapshot,
+        active: active.snapshot,
         sap_reported_activation_executed: parsed.activation_executed,
         activation_response_parsed,
         activation_messages: parsed.messages,

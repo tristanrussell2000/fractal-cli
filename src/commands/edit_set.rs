@@ -126,14 +126,14 @@ fn map_set_preview(
         activated: false,
         object: preview.identity.into(),
         transport: preview.transport,
-        original_bytes: preview.original_bytes,
-        replacement_bytes: preview.replacement_bytes,
+        original_bytes: preview.original.bytes,
+        replacement_bytes: preview.replacement.bytes,
         stored_bytes: None,
-        original_sha256: preview.original_sha256,
-        replacement_sha256: preview.replacement_sha256,
+        original_sha256: preview.original.sha256,
+        replacement_sha256: preview.replacement.sha256,
         stored_sha256: None,
         sap_normalized_source: None,
-        replacement_source: preview.replacement_source,
+        replacement_source: preview.replacement.source,
         stored_source: None,
     }
 }
@@ -153,15 +153,15 @@ fn map_applied_set(
         activated: false,
         object: result.identity.into(),
         transport: result.transport,
-        original_bytes: result.original_bytes,
-        replacement_bytes: result.replacement_bytes,
-        stored_bytes: Some(result.stored_bytes),
-        original_sha256: result.original_sha256,
-        replacement_sha256: result.replacement_sha256,
-        stored_sha256: Some(result.stored_sha256),
+        original_bytes: result.original.bytes,
+        replacement_bytes: result.replacement.bytes,
+        stored_bytes: Some(result.stored.bytes),
+        original_sha256: result.original.sha256,
+        replacement_sha256: result.replacement.sha256,
+        stored_sha256: Some(result.stored.sha256),
         sap_normalized_source: Some(result.sap_normalized_source),
-        replacement_source: result.replacement_source,
-        stored_source: Some(result.stored_source),
+        replacement_source: result.replacement.source,
+        stored_source: Some(result.stored.source),
     }
 }
 
@@ -221,7 +221,9 @@ mod tests {
 
     use clap::{CommandFactory, Parser};
     use fractal::{
-        sap::editable_source::{EditableAdtObjectType, EditableAdtSourceIdentity},
+        sap::editable_source::{
+            AdtSourceSnapshot, EditableAdtObjectType, EditableAdtSourceIdentity,
+        },
         source_change::source_sha256,
     };
 
@@ -335,11 +337,16 @@ mod tests {
                     source_uri: "/sap/bc/adt/programs/programs/zsample/source/main".to_owned(),
                 },
                 transport: Some("DE3K900575".to_owned()),
-                original_sha256: source_sha256(original),
-                replacement_sha256: source_sha256(replacement),
-                original_bytes: original.len(),
-                replacement_bytes: replacement.len(),
-                replacement_source: replacement.to_owned(),
+                original: AdtSourceSnapshot::from_parts(
+                    original.to_owned(),
+                    source_sha256(original),
+                    original.len(),
+                ),
+                replacement: AdtSourceSnapshot::from_parts(
+                    replacement.to_owned(),
+                    source_sha256(replacement),
+                    replacement.len(),
+                ),
             },
         );
         let preview_json = serde_json::to_value(&preview).unwrap();
@@ -360,14 +367,21 @@ mod tests {
                     source_uri: "/sap/bc/adt/programs/programs/zsample/source/main".to_owned(),
                 },
                 transport: Some("DE3K900575".to_owned()),
-                original_sha256: source_sha256(original),
-                replacement_sha256: source_sha256(replacement),
-                stored_sha256: source_sha256(stored),
-                original_bytes: original.len(),
-                replacement_bytes: replacement.len(),
-                stored_bytes: stored.len(),
-                replacement_source: replacement.to_owned(),
-                stored_source: stored.to_owned(),
+                original: AdtSourceSnapshot::from_parts(
+                    original.to_owned(),
+                    source_sha256(original),
+                    original.len(),
+                ),
+                replacement: AdtSourceSnapshot::from_parts(
+                    replacement.to_owned(),
+                    source_sha256(replacement),
+                    replacement.len(),
+                ),
+                stored: AdtSourceSnapshot::from_parts(
+                    stored.to_owned(),
+                    source_sha256(stored),
+                    stored.len(),
+                ),
                 sap_normalized_source: true,
             },
         );

@@ -56,9 +56,9 @@ async fn fetches_complete_active_class_source_with_exact_hash_metadata() {
         "/sap/bc/adt/oo/classes/zcl_example/source/main"
     );
     assert_eq!(result.requested_version, AdtSourceVersion::Active);
-    assert_eq!(result.source, source);
-    assert_eq!(result.bytes, source.len());
-    assert_eq!(result.sha256, source_sha256(source));
+    assert_eq!(result.snapshot.source, source);
+    assert_eq!(result.snapshot.bytes, source.len());
+    assert_eq!(result.snapshot.sha256, source_sha256(source));
     server.verify().await;
 }
 
@@ -88,7 +88,7 @@ async fn requests_inactive_namespaced_ddl_source_with_an_encoded_name() {
 
     assert_eq!(result.identity.name, "/ACME/EXAMPLE");
     assert_eq!(result.requested_version, AdtSourceVersion::Inactive);
-    assert_eq!(result.source, source);
+    assert_eq!(result.snapshot.source, source);
     server.verify().await;
 }
 

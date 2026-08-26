@@ -92,16 +92,16 @@ fn map_patch_preview(
         object: preview.identity.into(),
         transport: preview.transport,
         replacements: preview.replacements,
-        original_bytes: preview.original_bytes,
-        proposed_bytes: preview.proposed_bytes,
+        original_bytes: preview.original.bytes,
+        proposed_bytes: preview.proposed.bytes,
         stored_bytes: None,
-        original_sha256: preview.original_sha256,
-        proposed_sha256: preview.proposed_sha256,
+        original_sha256: preview.original.sha256,
+        proposed_sha256: preview.proposed.sha256,
         stored_sha256: None,
         sap_changed_submitted_source: None,
         find: request.find.clone(),
         replace: request.replace.clone(),
-        proposed_source: preview.proposed_source,
+        proposed_source: preview.proposed.source,
         stored_source: None,
     }
 }
@@ -111,7 +111,7 @@ fn map_applied_patch(
     request: &AdtSourcePatchRequest,
     result: AdtSourcePatchWriteResult,
 ) -> EditSourcePatchOutput {
-    let sap_changed_submitted_source = result.proposed_sha256 != result.stored_sha256;
+    let sap_changed_submitted_source = result.proposed.sha256 != result.stored.sha256;
     EditSourcePatchOutput {
         ok: true,
         profile,
@@ -122,17 +122,17 @@ fn map_applied_patch(
         object: result.identity.into(),
         transport: result.transport,
         replacements: result.replacements,
-        original_bytes: result.original_bytes,
-        proposed_bytes: result.proposed_bytes,
-        stored_bytes: Some(result.stored_bytes),
-        original_sha256: result.original_sha256,
-        proposed_sha256: result.proposed_sha256,
-        stored_sha256: Some(result.stored_sha256),
+        original_bytes: result.original.bytes,
+        proposed_bytes: result.proposed.bytes,
+        stored_bytes: Some(result.stored.bytes),
+        original_sha256: result.original.sha256,
+        proposed_sha256: result.proposed.sha256,
+        stored_sha256: Some(result.stored.sha256),
         sap_changed_submitted_source: Some(sap_changed_submitted_source),
         find: request.find.clone(),
         replace: request.replace.clone(),
-        proposed_source: result.proposed_source,
-        stored_source: Some(result.stored_source),
+        proposed_source: result.proposed.source,
+        stored_source: Some(result.stored.source),
     }
 }
 
@@ -199,7 +199,7 @@ mod tests {
 
     use super::*;
     use crate::cli::{Cli, Command, EditCommand};
-    use fractal::sap::editable_source::EditableAdtSourceIdentity;
+    use fractal::sap::editable_source::{AdtSourceSnapshot, EditableAdtSourceIdentity};
     use fractal::source_change::source_sha256;
 
     fn patch_args(cli: Cli) -> EditSourcePatchArgs {
@@ -310,12 +310,17 @@ mod tests {
                     source_uri: "/sap/bc/adt/programs/programs/zsample/source/main".to_owned(),
                 },
                 transport: Some("DE3K900575".to_owned()),
-                original_sha256: source_sha256(original),
-                proposed_sha256: source_sha256(proposed),
-                original_bytes: original.len(),
-                proposed_bytes: proposed.len(),
+                original: AdtSourceSnapshot::from_parts(
+                    original.to_owned(),
+                    source_sha256(original),
+                    original.len(),
+                ),
+                proposed: AdtSourceSnapshot::from_parts(
+                    proposed.to_owned(),
+                    source_sha256(proposed),
+                    proposed.len(),
+                ),
                 replacements: 1,
-                proposed_source: proposed.to_owned(),
             },
         );
 
@@ -350,15 +355,22 @@ mod tests {
                     source_uri: "/sap/bc/adt/programs/programs/zsample/source/main".to_owned(),
                 },
                 transport: Some("DE3K900575".to_owned()),
-                original_sha256: source_sha256(original),
-                proposed_sha256: source_sha256(proposed),
-                stored_sha256: source_sha256(stored),
-                original_bytes: original.len(),
-                proposed_bytes: proposed.len(),
-                stored_bytes: stored.len(),
+                original: AdtSourceSnapshot::from_parts(
+                    original.to_owned(),
+                    source_sha256(original),
+                    original.len(),
+                ),
+                proposed: AdtSourceSnapshot::from_parts(
+                    proposed.to_owned(),
+                    source_sha256(proposed),
+                    proposed.len(),
+                ),
+                stored: AdtSourceSnapshot::from_parts(
+                    stored.to_owned(),
+                    source_sha256(stored),
+                    stored.len(),
+                ),
                 replacements: 1,
-                proposed_source: proposed.to_owned(),
-                stored_source: stored.to_owned(),
             },
         );
 

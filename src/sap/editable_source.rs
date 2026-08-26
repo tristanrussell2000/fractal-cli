@@ -100,35 +100,29 @@ impl AdtSourceVersion {
 pub struct AdtSourceReadResult {
     pub identity: EditableAdtSourceIdentity,
     pub requested_version: AdtSourceVersion,
+    pub snapshot: AdtSourceSnapshot,
+}
+
+/// Exact source bytes and revision metadata observed at one workflow stage.
+///
+/// The three values always travel together — a hash is meaningless without the
+/// bytes it was taken over — so mutation results report a snapshot per stage
+/// (original, proposed, stored) rather than parallel `*_sha256`/`*_bytes`
+/// fields. Command output still flattens them into its established field names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdtSourceSnapshot {
     pub source: String,
     pub sha256: String,
     pub bytes: usize,
 }
 
-/// Exact source bytes and revision metadata observed at one workflow stage.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct AdtSourceSnapshot {
-    pub(super) source: String,
-    pub(super) sha256: String,
-    pub(super) bytes: usize,
-}
-
 impl AdtSourceSnapshot {
-    pub(super) fn from_parts(source: String, sha256: String, bytes: usize) -> Self {
+    #[must_use]
+    pub fn from_parts(source: String, sha256: String, bytes: usize) -> Self {
         Self {
             source,
             sha256,
             bytes,
-        }
-    }
-}
-
-impl From<AdtSourceReadResult> for AdtSourceSnapshot {
-    fn from(result: AdtSourceReadResult) -> Self {
-        Self {
-            source: result.source,
-            sha256: result.sha256,
-            bytes: result.bytes,
         }
     }
 }
@@ -366,9 +360,11 @@ pub(super) async fn read_adt_source(
     Ok(AdtSourceReadResult {
         identity: identity.clone(),
         requested_version: version,
-        sha256: source_sha256(&source),
-        source,
-        bytes,
+        snapshot: AdtSourceSnapshot {
+            sha256: source_sha256(&source),
+            source,
+            bytes,
+        },
     })
 }
 

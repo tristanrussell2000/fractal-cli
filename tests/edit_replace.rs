@@ -202,10 +202,10 @@ async fn replaces_complete_source_under_lock_and_reports_sap_normalization() {
     .unwrap();
 
     assert_eq!(result.identity.name, "ZSAMPLE");
-    assert_eq!(result.original_sha256, source_sha256(ORIGINAL_SOURCE));
-    assert_eq!(result.replacement_sha256, source_sha256(REPLACEMENT_SOURCE));
-    assert_eq!(result.stored_sha256, source_sha256(NORMALIZED_SOURCE));
-    assert_eq!(result.stored_source, NORMALIZED_SOURCE);
+    assert_eq!(result.original.sha256, source_sha256(ORIGINAL_SOURCE));
+    assert_eq!(result.replacement.sha256, source_sha256(REPLACEMENT_SOURCE));
+    assert_eq!(result.stored.sha256, source_sha256(NORMALIZED_SOURCE));
+    assert_eq!(result.stored.source, NORMALIZED_SOURCE);
     assert!(result.sap_normalized_source);
 
     let requests = server.received_requests().await.unwrap();
@@ -263,9 +263,9 @@ async fn previews_complete_source_with_one_read_and_no_mutating_requests() {
         .await
         .unwrap();
 
-    assert_eq!(preview.original_sha256, source_sha256(ORIGINAL_SOURCE));
+    assert_eq!(preview.original.sha256, source_sha256(ORIGINAL_SOURCE));
     assert_eq!(
-        preview.replacement_sha256,
+        preview.replacement.sha256,
         source_sha256(REPLACEMENT_SOURCE)
     );
     assert_eq!(preview.transport.as_deref(), Some("DE3K900575"));

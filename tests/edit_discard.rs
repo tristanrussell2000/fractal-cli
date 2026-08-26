@@ -309,10 +309,10 @@ async fn restores_active_source_under_lock_then_activates_and_verifies_it() {
             .unwrap();
 
     assert_eq!(result.identity.name, "ZCL_SAMPLE");
-    assert_eq!(result.discarded_sha256, source_sha256(INACTIVE_SOURCE));
-    assert_eq!(result.active_sha256_before, source_sha256(ACTIVE_SOURCE));
-    assert_eq!(result.restored_inactive_sha256, result.active_sha256_before);
-    assert_eq!(result.active_sha256_after, result.active_sha256_before);
+    assert_eq!(result.discarded.sha256, source_sha256(INACTIVE_SOURCE));
+    assert_eq!(result.active_before.sha256, source_sha256(ACTIVE_SOURCE));
+    assert_eq!(result.restored_inactive.sha256, result.active_before.sha256);
+    assert_eq!(result.active_after.sha256, result.active_before.sha256);
     assert!(result.activation_response_parsed);
     assert_eq!(result.sap_reported_activation_executed, Some(true));
 

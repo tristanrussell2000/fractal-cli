@@ -62,9 +62,9 @@ fn map_edit_source_read_result(
         profile,
         object: result.identity.into(),
         requested_version: result.requested_version.as_str().to_owned(),
-        bytes: result.bytes,
-        sha256: result.sha256,
-        source: result.source,
+        bytes: result.snapshot.bytes,
+        sha256: result.snapshot.sha256,
+        source: result.snapshot.source,
     }
 }
 
@@ -92,7 +92,7 @@ mod tests {
 
     use super::*;
     use crate::cli::{Cli, Command, EditCommand};
-    use fractal::sap::editable_source::EditableAdtSourceIdentity;
+    use fractal::sap::editable_source::{AdtSourceSnapshot, EditableAdtSourceIdentity};
 
     fn read_args(cli: Cli) -> EditSourceReadArgs {
         let Command::Edit {
@@ -175,9 +175,11 @@ mod tests {
                     source_uri: "/sap/bc/adt/oo/classes/zcl_example/source/main".to_owned(),
                 },
                 requested_version: AdtSourceVersion::Active,
-                source: source.to_owned(),
-                sha256: "a".repeat(64),
-                bytes: source.len(),
+                snapshot: AdtSourceSnapshot::from_parts(
+                    source.to_owned(),
+                    "a".repeat(64),
+                    source.len(),
+                ),
             },
         );
 

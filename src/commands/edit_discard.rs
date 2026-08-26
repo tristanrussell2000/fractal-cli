@@ -78,14 +78,14 @@ fn map_source_discard_result(
         verified: true,
         object: result.identity.into(),
         transport: result.transport,
-        discarded_sha256: result.discarded_sha256,
-        discarded_bytes: result.discarded_bytes,
-        active_sha256_before: result.active_sha256_before,
-        active_bytes_before: result.active_bytes_before,
-        restored_inactive_sha256: result.restored_inactive_sha256,
-        restored_inactive_bytes: result.restored_inactive_bytes,
-        active_sha256_after: result.active_sha256_after,
-        active_bytes_after: result.active_bytes_after,
+        discarded_sha256: result.discarded.sha256,
+        discarded_bytes: result.discarded.bytes,
+        active_sha256_before: result.active_before.sha256,
+        active_bytes_before: result.active_before.bytes,
+        restored_inactive_sha256: result.restored_inactive.sha256,
+        restored_inactive_bytes: result.restored_inactive.bytes,
+        active_sha256_after: result.active_after.sha256,
+        active_bytes_after: result.active_after.bytes,
         active_source_unchanged: true,
         inactive_version_exists_after: false,
         activation_response_parsed: result.activation_response_parsed,
@@ -145,7 +145,7 @@ mod tests {
 
     use super::*;
     use crate::cli::{Cli, Command, EditCommand};
-    use fractal::sap::editable_source::EditableAdtSourceIdentity;
+    use fractal::sap::editable_source::{AdtSourceSnapshot, EditableAdtSourceIdentity};
 
     #[test]
     fn parses_discard_arguments() {
@@ -185,14 +185,26 @@ mod tests {
                     source_uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
                 },
                 transport: Some("DE3K900575".to_owned()),
-                discarded_sha256: "inactive-hash".to_owned(),
-                discarded_bytes: 45,
-                active_sha256_before: "active-hash".to_owned(),
-                active_bytes_before: 40,
-                restored_inactive_sha256: "active-hash".to_owned(),
-                restored_inactive_bytes: 40,
-                active_sha256_after: "active-hash".to_owned(),
-                active_bytes_after: 40,
+                discarded: AdtSourceSnapshot::from_parts(
+                    "edited source".to_owned(),
+                    "inactive-hash".to_owned(),
+                    45,
+                ),
+                active_before: AdtSourceSnapshot::from_parts(
+                    "live source".to_owned(),
+                    "active-hash".to_owned(),
+                    40,
+                ),
+                restored_inactive: AdtSourceSnapshot::from_parts(
+                    "live source".to_owned(),
+                    "active-hash".to_owned(),
+                    40,
+                ),
+                active_after: AdtSourceSnapshot::from_parts(
+                    "live source".to_owned(),
+                    "active-hash".to_owned(),
+                    40,
+                ),
                 activation_response_parsed: true,
                 sap_reported_activation_executed: Some(true),
             },

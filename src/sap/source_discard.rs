@@ -7,8 +7,8 @@ use super::{
         read_adt_source_in_stateful_session, release_adt_object_lock, write_adt_source,
     },
     editable_source::{
-        AdtEditTargetValidationError, AdtSourceReadError, AdtSourceReadResult, AdtSourceVersion,
-        EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
+        AdtEditTargetValidationError, AdtSourceReadError, AdtSourceReadResult, AdtSourceSnapshot,
+        AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
         validate_adt_edit_target,
     },
     source_activation::{AdtSourceActivationError, activate_validated_adt_source},
@@ -26,14 +26,10 @@ pub struct AdtInactiveSourceDiscardRequest {
 pub struct AdtInactiveSourceDiscardResult {
     pub identity: EditableAdtSourceIdentity,
     pub transport: Option<String>,
-    pub discarded_sha256: String,
-    pub discarded_bytes: usize,
-    pub active_sha256_before: String,
-    pub active_bytes_before: usize,
-    pub restored_inactive_sha256: String,
-    pub restored_inactive_bytes: usize,
-    pub active_sha256_after: String,
-    pub active_bytes_after: usize,
+    pub discarded: AdtSourceSnapshot,
+    pub active_before: AdtSourceSnapshot,
+    pub restored_inactive: AdtSourceSnapshot,
+    pub active_after: AdtSourceSnapshot,
     pub activation_response_parsed: bool,
     pub sap_reported_activation_executed: Option<bool>,
 }
@@ -216,24 +212,20 @@ pub async fn discard_inactive_adt_source(
     .await
     .map_err(AdtInactiveSourceDiscardError::RestoredSourceActivation)?;
 
-    if activation.active_sha256 != prepared.active_before.sha256 {
+    if activation.active.sha256 != prepared.active_before.snapshot.sha256 {
         return Err(AdtInactiveSourceDiscardError::ActiveSourceChanged {
-            before_sha256: prepared.active_before.sha256,
-            after_sha256: activation.active_sha256,
+            before_sha256: prepared.active_before.snapshot.sha256,
+            after_sha256: activation.active.sha256,
         });
     }
 
     Ok(AdtInactiveSourceDiscardResult {
         identity,
         transport,
-        discarded_sha256: prepared.inactive_before.sha256,
-        discarded_bytes: prepared.inactive_before.bytes,
-        active_sha256_before: prepared.active_before.sha256,
-        active_bytes_before: prepared.active_before.bytes,
-        restored_inactive_sha256: prepared.restored_inactive.sha256,
-        restored_inactive_bytes: prepared.restored_inactive.bytes,
-        active_sha256_after: activation.active_sha256,
-        active_bytes_after: activation.active_bytes,
+        discarded: prepared.inactive_before.snapshot,
+        active_before: prepared.active_before.snapshot,
+        restored_inactive: prepared.restored_inactive.snapshot,
+        active_after: activation.active,
         activation_response_parsed: activation.activation_response_parsed,
         sap_reported_activation_executed: activation.sap_reported_activation_executed,
     })
@@ -262,7 +254,7 @@ async fn prepare_discard_while_locked(
     let inactive_before =
         inactive_before.map_err(AdtInactiveSourceDiscardError::InactiveSourceRead)?;
 
-    write_adt_source(sap, identity, lock, &active_before.source)
+    write_adt_source(sap, identity, lock, &active_before.snapshot.source)
         .await
         .map_err(AdtInactiveSourceDiscardError::Session)?;
     let restored_inactive =
@@ -270,10 +262,10 @@ async fn prepare_discard_while_locked(
             .await
             .map_err(AdtInactiveSourceDiscardError::RestoredSourceRead)?;
 
-    if restored_inactive.sha256 != active_before.sha256 {
+    if restored_inactive.snapshot.sha256 != active_before.snapshot.sha256 {
         return Err(AdtInactiveSourceDiscardError::RestoreVerificationMismatch {
-            active_sha256: active_before.sha256,
-            restored_sha256: restored_inactive.sha256,
+            active_sha256: active_before.snapshot.sha256,
+            restored_sha256: restored_inactive.snapshot.sha256,
         });
     }
 

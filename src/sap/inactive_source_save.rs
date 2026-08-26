@@ -67,7 +67,7 @@ where
 
     let stored = read_adt_source_by_identity(sap, identity, AdtSourceVersion::Inactive)
         .await
-        .map(AdtSourceSnapshot::from)
+        .map(|read| read.snapshot)
         .map_err(InactiveSourceSaveError::StoredSourceRead)?;
 
     Ok(SavedInactiveSourceChange {
@@ -89,7 +89,7 @@ where
 {
     let original = read_adt_source_in_stateful_session(sap, identity, AdtSourceVersion::Inactive)
         .await
-        .map(AdtSourceSnapshot::from)
+        .map(|read| read.snapshot)
         .map_err(InactiveSourceSaveError::LockedSourceRead)?;
     let planned = planner(&original).map_err(InactiveSourceSaveError::Plan)?;
     write_adt_source(sap, identity, lock, &planned.proposed.source)

@@ -98,10 +98,10 @@ fn map_source_activation_result(
             .into_iter()
             .map(map_precheck_message)
             .collect(),
-        inactive_sha256_before: result.inactive_sha256,
-        inactive_bytes_before: result.inactive_bytes,
-        active_sha256_after: result.active_sha256,
-        active_bytes_after: result.active_bytes,
+        inactive_sha256_before: result.inactive.sha256,
+        inactive_bytes_before: result.inactive.bytes,
+        active_sha256_after: result.active.sha256,
+        active_bytes_after: result.active.bytes,
         active_matches_inactive: true,
         inactive_version_exists_after: false,
         sap_reported_activation_executed: result.sap_reported_activation_executed,
@@ -211,7 +211,9 @@ mod tests {
     use crate::cli::{Cli, Command, EditCommand};
     use fractal::sap::{
         adt_message_severity::AdtMessageSeverity,
-        editable_source::{AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceIdentity},
+        editable_source::{
+            AdtSourceSnapshot, AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceIdentity,
+        },
         source_activation::{AdtSourceActivationMessage, AdtSourceActivationResult},
         source_check::AdtSourceCheckResult,
     };
@@ -274,10 +276,16 @@ mod tests {
                         line: Some(8),
                     }],
                 },
-                inactive_sha256: "same".to_owned(),
-                inactive_bytes: 100,
-                active_sha256: "same".to_owned(),
-                active_bytes: 100,
+                inactive: AdtSourceSnapshot::from_parts(
+                    "CLASS zcl_sample DEFINITION.\nENDCLASS.\n".to_owned(),
+                    "same".to_owned(),
+                    100,
+                ),
+                active: AdtSourceSnapshot::from_parts(
+                    "CLASS zcl_sample DEFINITION.\nENDCLASS.\n".to_owned(),
+                    "same".to_owned(),
+                    100,
+                ),
                 sap_reported_activation_executed: Some(true),
                 activation_response_parsed: true,
                 activation_messages: vec![AdtSourceActivationMessage {

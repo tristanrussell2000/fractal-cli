@@ -214,14 +214,14 @@ async fn patches_under_lock_and_reports_the_source_sap_actually_stored() {
             .unwrap();
 
     assert_eq!(result.identity.name, "ZSAMPLE");
-    assert_eq!(result.original_sha256, source_sha256(ORIGINAL_SOURCE));
-    assert_eq!(result.proposed_sha256, source_sha256(PROPOSED_SOURCE));
-    assert_eq!(result.stored_sha256, source_sha256(normalized_source));
-    assert_eq!(result.original_bytes, ORIGINAL_SOURCE.len());
-    assert_eq!(result.proposed_bytes, PROPOSED_SOURCE.len());
-    assert_eq!(result.stored_bytes, normalized_source.len());
+    assert_eq!(result.original.sha256, source_sha256(ORIGINAL_SOURCE));
+    assert_eq!(result.proposed.sha256, source_sha256(PROPOSED_SOURCE));
+    assert_eq!(result.stored.sha256, source_sha256(normalized_source));
+    assert_eq!(result.original.bytes, ORIGINAL_SOURCE.len());
+    assert_eq!(result.proposed.bytes, PROPOSED_SOURCE.len());
+    assert_eq!(result.stored.bytes, normalized_source.len());
     assert_eq!(result.replacements, 1);
-    assert_eq!(result.stored_source, normalized_source);
+    assert_eq!(result.stored.source, normalized_source);
 
     let requests = server.received_requests().await.unwrap();
     let workflow = requests
@@ -280,12 +280,12 @@ async fn previews_a_patch_without_csrf_lock_write_or_unlock_requests() {
         .unwrap();
 
     assert_eq!(preview.identity.name, "ZSAMPLE");
-    assert_eq!(preview.original_sha256, source_sha256(ORIGINAL_SOURCE));
-    assert_eq!(preview.proposed_sha256, source_sha256(PROPOSED_SOURCE));
-    assert_eq!(preview.original_bytes, ORIGINAL_SOURCE.len());
-    assert_eq!(preview.proposed_bytes, PROPOSED_SOURCE.len());
+    assert_eq!(preview.original.sha256, source_sha256(ORIGINAL_SOURCE));
+    assert_eq!(preview.proposed.sha256, source_sha256(PROPOSED_SOURCE));
+    assert_eq!(preview.original.bytes, ORIGINAL_SOURCE.len());
+    assert_eq!(preview.proposed.bytes, PROPOSED_SOURCE.len());
     assert_eq!(preview.replacements, 1);
-    assert_eq!(preview.proposed_source, PROPOSED_SOURCE);
+    assert_eq!(preview.proposed.source, PROPOSED_SOURCE);
     assert_eq!(preview.transport.as_deref(), Some("DE3K900575"));
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);

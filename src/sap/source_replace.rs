@@ -29,11 +29,8 @@ pub struct AdtSourceReplacementRequest {
 pub struct AdtSourceReplacementPreview {
     pub identity: EditableAdtSourceIdentity,
     pub transport: Option<String>,
-    pub original_sha256: String,
-    pub replacement_sha256: String,
-    pub original_bytes: usize,
-    pub replacement_bytes: usize,
-    pub replacement_source: String,
+    pub original: AdtSourceSnapshot,
+    pub replacement: AdtSourceSnapshot,
 }
 
 /// Source versions observed before and after a complete inactive-source replacement.
@@ -41,14 +38,9 @@ pub struct AdtSourceReplacementPreview {
 pub struct AdtSourceReplacementWriteResult {
     pub identity: EditableAdtSourceIdentity,
     pub transport: Option<String>,
-    pub original_sha256: String,
-    pub replacement_sha256: String,
-    pub stored_sha256: String,
-    pub original_bytes: usize,
-    pub replacement_bytes: usize,
-    pub stored_bytes: usize,
-    pub replacement_source: String,
-    pub stored_source: String,
+    pub original: AdtSourceSnapshot,
+    pub replacement: AdtSourceSnapshot,
+    pub stored: AdtSourceSnapshot,
     pub sap_normalized_source: bool,
 }
 
@@ -142,16 +134,17 @@ pub async fn preview_adt_source_replacement(
     )
     .await
     .map_err(AdtSourceReplacementError::PreviewSourceRead)?;
-    let plan = plan_replacement(&original.source, request)?;
+    let plan = plan_replacement(&original.snapshot.source, request)?;
 
     Ok(AdtSourceReplacementPreview {
         identity,
         transport,
-        original_sha256: plan.original_sha256,
-        replacement_sha256: plan.replacement_sha256,
-        original_bytes: plan.original_bytes,
-        replacement_bytes: plan.replacement_bytes,
-        replacement_source: plan.replacement_source,
+        original: original.snapshot,
+        replacement: AdtSourceSnapshot::from_parts(
+            plan.replacement_source,
+            plan.replacement_sha256,
+            plan.replacement_bytes,
+        ),
     })
 }
 
@@ -197,14 +190,9 @@ pub async fn replace_adt_source_atomically(
     Ok(AdtSourceReplacementWriteResult {
         identity,
         transport,
-        original_sha256: saved.original.sha256,
-        replacement_sha256: saved.proposed.sha256,
-        stored_sha256: saved.stored.sha256,
-        original_bytes: saved.original.bytes,
-        replacement_bytes: saved.proposed.bytes,
-        stored_bytes: saved.stored.bytes,
-        replacement_source: saved.proposed.source,
-        stored_source: saved.stored.source,
+        original: saved.original,
+        replacement: saved.proposed,
+        stored: saved.stored,
         sap_normalized_source,
     })
 }
