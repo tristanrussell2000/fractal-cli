@@ -1,8 +1,6 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+mod adt_edit_mock;
 
+use adt_edit_mock::{AdtEditSession, SequentialResponses};
 use fractal::{
     config::Profile,
     sap::{
@@ -17,24 +15,26 @@ use fractal::{
     source_change::{SourceChangePlanError, source_sha256},
 };
 use wiremock::{
-    Mock, MockServer, Request, Respond, ResponseTemplate,
-    matchers::{body_string, header, method, path, query_param, query_param_is_missing},
+    Mock, MockServer, Request, ResponseTemplate,
+    matchers::{body_string, header, method, path, query_param},
+};
+
+const SESSION: AdtEditSession = AdtEditSession {
+    sap_client: "903",
+    csrf_token: "replace-csrf",
+    session_cookie: "SAP_SESSIONID=replace-test",
+    object_path: "/sap/bc/adt/programs/programs/zsample",
+    source_path: "/sap/bc/adt/programs/programs/zsample/source/main",
+    lock_handle: "202608251234567890",
 };
 
 const OBJECT_PATH: &str = "/sap/bc/adt/programs/programs/zsample";
 const SOURCE_PATH: &str = "/sap/bc/adt/programs/programs/zsample/source/main";
-const LOCK_HANDLE: &str = "202608251234567890";
 const ORIGINAL_SOURCE: &str = "REPORT zsample.\nWRITE 'before'.\n";
 const REPLACEMENT_SOURCE: &str = "REPORT zsample.\nWRITE 'after'.\n";
 
 fn profile(base_url: String) -> Profile {
-    Profile {
-        base_url,
-        client: "903".to_owned(),
-        username: "developer".to_owned(),
-        insecure_tls: false,
-        customer_namespaces: vec!["Z*".to_owned()],
-    }
+    SESSION.profile(base_url, &["Z*"])
 }
 
 fn replacement_request() -> AdtSourceReplacementRequest {
@@ -48,75 +48,33 @@ fn replacement_request() -> AdtSourceReplacementRequest {
 }
 
 async fn mount_csrf_session(server: &MockServer) {
-    Mock::given(method("GET"))
-        .and(path("/sap/bc/adt/core/discovery"))
-        .and(query_param("sap-client", "903"))
-        .and(header("x-csrf-token", "Fetch"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("x-csrf-token", "replace-csrf")
-                .insert_header("set-cookie", "SAP_SESSIONID=replace-test; Path=/"),
-        )
-        .expect(1)
-        .mount(server)
-        .await;
+    SESSION.mount_csrf_session(server).await;
 }
 
 async fn mount_lock(server: &MockServer, transport: Option<&str>) {
-    let mut mock = Mock::given(method("POST"))
-        .and(path(OBJECT_PATH))
-        .and(query_param("_action", "LOCK"))
-        .and(query_param("accessMode", "MODIFY"))
-        .and(query_param("sap-client", "903"))
-        .and(header("x-csrf-token", "replace-csrf"))
-        .and(header("cookie", "SAP_SESSIONID=replace-test"))
-        .and(header("x-sap-adt-sessiontype", "stateful"));
-    mock = if let Some(transport) = transport {
-        mock.and(query_param("corrNr", transport))
-    } else {
-        mock.and(query_param_is_missing("corrNr"))
-    };
-    mock.respond_with(ResponseTemplate::new(200).set_body_string(format!(
-        "<lockResult><LOCK_HANDLE>{LOCK_HANDLE}</LOCK_HANDLE></lockResult>"
-    )))
-    .expect(1)
-    .mount(server)
-    .await;
+    SESSION.mount_lock(server, transport).await;
 }
 
 async fn mount_unlock(server: &MockServer, status: u16) {
-    Mock::given(method("POST"))
-        .and(path(OBJECT_PATH))
-        .and(query_param("_action", "UNLOCK"))
-        .and(query_param("lockHandle", LOCK_HANDLE))
-        .and(query_param("sap-client", "903"))
-        .and(query_param_is_missing("corrNr"))
-        .and(header("x-sap-adt-sessiontype", "stateful"))
-        .respond_with(
+    SESSION
+        .mount_unlock(
+            server,
             ResponseTemplate::new(status)
                 .set_body_string("<error><message>mock unlock response</message></error>"),
         )
-        .expect(1)
-        .mount(server)
         .await;
 }
 
+/// The complete-source PUT. The exact body is this suite's central assertion:
+/// SAP must receive the replacement source verbatim.
 async fn mount_write(server: &MockServer, transport: Option<&str>, response: ResponseTemplate) {
-    let mut mock = Mock::given(method("PUT"))
-        .and(path(SOURCE_PATH))
-        .and(query_param("lockHandle", LOCK_HANDLE))
-        .and(query_param("sap-client", "903"))
-        .and(header("x-csrf-token", "replace-csrf"))
-        .and(header("cookie", "SAP_SESSIONID=replace-test"))
-        .and(header("x-sap-adt-sessiontype", "stateful"))
-        .and(header("content-type", "text/plain; charset=utf-8"))
-        .and(body_string(REPLACEMENT_SOURCE));
-    mock = if let Some(transport) = transport {
-        mock.and(query_param("corrNr", transport))
-    } else {
-        mock.and(query_param_is_missing("corrNr"))
-    };
-    mock.respond_with(response).expect(1).mount(server).await;
+    SESSION
+        .source_write(transport)
+        .and(body_string(REPLACEMENT_SOURCE))
+        .respond_with(response)
+        .expect(1)
+        .mount(server)
+        .await;
 }
 
 async fn mount_single_source_read(server: &MockServer, source: &'static str) {
@@ -124,61 +82,25 @@ async fn mount_single_source_read(server: &MockServer, source: &'static str) {
 }
 
 async fn mount_single_source_response(server: &MockServer, response: ResponseTemplate) {
-    Mock::given(method("GET"))
-        .and(path(SOURCE_PATH))
-        .and(query_param("version", "inactive"))
-        .and(query_param("sap-client", "903"))
+    SESSION
+        .source_read("inactive")
         .respond_with(response)
         .expect(1)
         .mount(server)
         .await;
 }
 
-#[derive(Clone)]
-struct SequentialSourceResponder {
-    calls: Arc<AtomicUsize>,
-    stored_source: &'static str,
-}
-
-impl Respond for SequentialSourceResponder {
-    fn respond(&self, _request: &Request) -> ResponseTemplate {
-        let source = if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
-            ORIGINAL_SOURCE
-        } else {
-            self.stored_source
-        };
-        ResponseTemplate::new(200).set_body_string(source)
-    }
-}
-
+/// The locked read followed by the post-write verification read.
 async fn mount_source_sequence(server: &MockServer, stored_source: &'static str) {
-    Mock::given(method("GET"))
-        .and(path(SOURCE_PATH))
-        .and(query_param("version", "inactive"))
-        .and(query_param("sap-client", "903"))
-        .respond_with(SequentialSourceResponder {
-            calls: Arc::new(AtomicUsize::new(0)),
+    SESSION
+        .source_read("inactive")
+        .respond_with(SequentialResponses::sources(&[
+            ORIGINAL_SOURCE,
             stored_source,
-        })
+        ]))
         .expect(2)
         .mount(server)
         .await;
-}
-
-#[derive(Clone)]
-struct FailingVerificationResponder {
-    calls: Arc<AtomicUsize>,
-}
-
-impl Respond for FailingVerificationResponder {
-    fn respond(&self, _request: &Request) -> ResponseTemplate {
-        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
-            ResponseTemplate::new(200).set_body_string(ORIGINAL_SOURCE)
-        } else {
-            ResponseTemplate::new(500)
-                .set_body_string("<error><message>Verification unavailable</message></error>")
-        }
-    }
 }
 
 #[tokio::test]
@@ -529,12 +451,13 @@ async fn failed_post_write_verification_maps_to_stored_source_read_error() {
     let server = MockServer::start().await;
     mount_csrf_session(&server).await;
     mount_lock(&server, None).await;
-    Mock::given(method("GET"))
-        .and(path(SOURCE_PATH))
-        .and(query_param("version", "inactive"))
-        .respond_with(FailingVerificationResponder {
-            calls: Arc::new(AtomicUsize::new(0)),
-        })
+    SESSION
+        .source_read("inactive")
+        .respond_with(SequentialResponses::new(vec![
+            ResponseTemplate::new(200).set_body_string(ORIGINAL_SOURCE),
+            ResponseTemplate::new(500)
+                .set_body_string("<error><message>Verification unavailable</message></error>"),
+        ]))
         .expect(2)
         .mount(&server)
         .await;

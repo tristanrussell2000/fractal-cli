@@ -1,8 +1,6 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+mod adt_edit_mock;
 
+use adt_edit_mock::{AdtEditSession, SequentialResponses};
 use fractal::{
     config::Profile,
     sap::{
@@ -18,24 +16,26 @@ use fractal::{
     source_change::source_sha256,
 };
 use wiremock::{
-    Mock, MockServer, Request, Respond, ResponseTemplate,
+    Mock, MockServer, Request, ResponseTemplate,
     matchers::{body_string, header, method, path, query_param, query_param_is_missing},
+};
+
+const SESSION: AdtEditSession = AdtEditSession {
+    sap_client: "100",
+    csrf_token: "discard-csrf",
+    session_cookie: "SAP_SESSIONID=discard-test",
+    object_path: "/sap/bc/adt/oo/classes/zcl_sample",
+    source_path: "/sap/bc/adt/oo/classes/zcl_sample/source/main",
+    lock_handle: "202608241234567890",
 };
 
 const OBJECT_URI: &str = "/sap/bc/adt/oo/classes/zcl_sample";
 const SOURCE_URI: &str = "/sap/bc/adt/oo/classes/zcl_sample/source/main";
 const ACTIVE_SOURCE: &str = "CLASS zcl_sample DEFINITION.\nENDCLASS.\n";
 const INACTIVE_SOURCE: &str = "CLASS zcl_sample DEFINITION PUBLIC.\nENDCLASS.\n";
-const LOCK_HANDLE: &str = "202608241234567890";
 
 fn profile(base_url: String) -> Profile {
-    Profile {
-        base_url,
-        client: "100".to_owned(),
-        username: "developer".to_owned(),
-        insecure_tls: false,
-        customer_namespaces: vec!["Z*".to_owned()],
-    }
+    SESSION.profile(base_url, &["Z*"])
 }
 
 fn discard_request(transport: Option<&str>) -> AdtInactiveSourceDiscardRequest {
@@ -47,127 +47,57 @@ fn discard_request(transport: Option<&str>) -> AdtInactiveSourceDiscardRequest {
 }
 
 async fn mount_csrf_session(server: &MockServer) {
-    Mock::given(method("GET"))
-        .and(path("/sap/bc/adt/core/discovery"))
-        .and(query_param("sap-client", "100"))
-        .and(header("x-csrf-token", "Fetch"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("x-csrf-token", "discard-csrf")
-                .insert_header("set-cookie", "SAP_SESSIONID=discard-test; Path=/"),
-        )
-        .expect(1)
-        .mount(server)
-        .await;
+    SESSION.mount_csrf_session(server).await;
 }
 
 async fn mount_lock(server: &MockServer) {
-    mount_lock_with_transport(server, None).await;
+    SESSION.mount_lock(server, None).await;
 }
 
 async fn mount_lock_with_transport(server: &MockServer, transport: Option<&str>) {
-    let mut mock = Mock::given(method("POST"))
-        .and(path(OBJECT_URI))
-        .and(query_param("_action", "LOCK"))
-        .and(query_param("accessMode", "MODIFY"))
-        .and(query_param("sap-client", "100"))
-        .and(header("x-csrf-token", "discard-csrf"))
-        .and(header("cookie", "SAP_SESSIONID=discard-test"))
-        .and(header("x-sap-adt-sessiontype", "stateful"));
-    mock = if let Some(transport) = transport {
-        mock.and(query_param("corrNr", transport))
-    } else {
-        mock.and(query_param_is_missing("corrNr"))
-    };
-    mock.respond_with(ResponseTemplate::new(200).set_body_string(format!(
-        "<lockResult><LOCK_HANDLE>{LOCK_HANDLE}</LOCK_HANDLE></lockResult>"
-    )))
-    .expect(1)
-    .mount(server)
-    .await;
+    SESSION.mount_lock(server, transport).await;
 }
 
 async fn mount_unlock(server: &MockServer, response: ResponseTemplate) {
-    Mock::given(method("POST"))
-        .and(path(OBJECT_URI))
-        .and(query_param("_action", "UNLOCK"))
-        .and(query_param("lockHandle", LOCK_HANDLE))
-        .and(query_param("sap-client", "100"))
-        .and(header("x-sap-adt-sessiontype", "stateful"))
-        .respond_with(response)
-        .expect(1)
-        .mount(server)
-        .await;
+    SESSION.mount_unlock(server, response).await;
 }
 
-#[derive(Clone)]
-struct InactiveObjectSequence {
-    calls: Arc<AtomicUsize>,
-    visible_calls: usize,
-}
-
-impl Respond for InactiveObjectSequence {
-    fn respond(&self, _request: &Request) -> ResponseTemplate {
-        let call = self.calls.fetch_add(1, Ordering::SeqCst);
-        let body = if call < self.visible_calls {
-            format!("<objects><object uri=\"{OBJECT_URI}\"/></objects>")
-        } else {
-            "<objects/>".to_owned()
-        };
-        ResponseTemplate::new(200).set_body_string(body)
-    }
-}
-
+/// The inactive-object worklist, which must report the object as present
+/// before the discard and absent after activation.
 async fn mount_inactive_sequence(server: &MockServer, visible_calls: usize, calls: u64) {
+    let mut responses: Vec<_> = (0..visible_calls)
+        .map(|_| {
+            ResponseTemplate::new(200)
+                .set_body_string(format!("<objects><object uri=\"{OBJECT_URI}\"/></objects>"))
+        })
+        .collect();
+    responses.push(ResponseTemplate::new(200).set_body_string("<objects/>"));
     Mock::given(method("GET"))
         .and(path("/sap/bc/adt/activation/inactiveobjects"))
         .and(query_param("sap-client", "100"))
-        .respond_with(InactiveObjectSequence {
-            calls: Arc::new(AtomicUsize::new(0)),
-            visible_calls,
-        })
+        .respond_with(SequentialResponses::new(responses))
         .expect(calls)
         .mount(server)
         .await;
 }
 
-#[derive(Clone)]
-struct LockedInactiveSourceSequence {
-    calls: Arc<AtomicUsize>,
-    restored_source: &'static str,
-}
-
-impl Respond for LockedInactiveSourceSequence {
-    fn respond(&self, _request: &Request) -> ResponseTemplate {
-        let call = self.calls.fetch_add(1, Ordering::SeqCst);
-        let source = if call == 0 {
-            INACTIVE_SOURCE
-        } else {
-            self.restored_source
-        };
-        ResponseTemplate::new(200).set_body_string(source)
-    }
-}
-
+/// Both source versions read under the lock, then the re-read that proves the
+/// active bytes were restored over the inactive version.
 async fn mount_locked_source_reads(server: &MockServer, restored_source: &'static str) {
-    Mock::given(method("GET"))
-        .and(path(SOURCE_URI))
-        .and(query_param("version", "active"))
-        .and(query_param("sap-client", "100"))
+    SESSION
+        .source_read("active")
         .and(header("x-sap-adt-sessiontype", "stateful"))
         .respond_with(ResponseTemplate::new(200).set_body_string(ACTIVE_SOURCE))
         .expect(1)
         .mount(server)
         .await;
-    Mock::given(method("GET"))
-        .and(path(SOURCE_URI))
-        .and(query_param("version", "inactive"))
-        .and(query_param("sap-client", "100"))
+    SESSION
+        .source_read("inactive")
         .and(header("x-sap-adt-sessiontype", "stateful"))
-        .respond_with(LockedInactiveSourceSequence {
-            calls: Arc::new(AtomicUsize::new(0)),
+        .respond_with(SequentialResponses::sources(&[
+            INACTIVE_SOURCE,
             restored_source,
-        })
+        ]))
         .expect(2)
         .mount(server)
         .await;
@@ -196,24 +126,20 @@ async fn mount_restore_write(server: &MockServer, response: ResponseTemplate) {
     mount_restore_write_with_transport(server, None, response).await;
 }
 
+/// The restore PUT. The exact body is this suite's central assertion: discard
+/// writes the *active* bytes over the inactive version.
 async fn mount_restore_write_with_transport(
     server: &MockServer,
     transport: Option<&str>,
     response: ResponseTemplate,
 ) {
-    let mut mock = Mock::given(method("PUT"))
-        .and(path(SOURCE_URI))
-        .and(query_param("lockHandle", LOCK_HANDLE))
-        .and(query_param("sap-client", "100"))
-        .and(header("x-sap-adt-sessiontype", "stateful"))
-        .and(header("content-type", "text/plain; charset=utf-8"))
-        .and(body_string(ACTIVE_SOURCE));
-    mock = if let Some(transport) = transport {
-        mock.and(query_param("corrNr", transport))
-    } else {
-        mock.and(query_param_is_missing("corrNr"))
-    };
-    mock.respond_with(response).expect(1).mount(server).await;
+    SESSION
+        .source_write(transport)
+        .and(body_string(ACTIVE_SOURCE))
+        .respond_with(response)
+        .expect(1)
+        .mount(server)
+        .await;
 }
 
 fn checkrun_body() -> String {
