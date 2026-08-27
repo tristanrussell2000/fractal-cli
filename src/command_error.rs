@@ -261,7 +261,7 @@ mod tests {
         edit_session::AdtEditSessionError,
         editable_source::{
             AdtEditTargetValidationError, AdtSourceReadError, CustomerNamespaceError,
-            EditableAdtSourceTargetError,
+            EditableAdtObjectType, EditableAdtSourceIdentity, EditableAdtSourceTargetError,
         },
         source_activation::AdtSourceActivationError,
         source_check::AdtSourceCheckError,
@@ -270,6 +270,15 @@ mod tests {
         source_replace::AdtSourceReplacementError,
         table::{TableError, TableQueryError, TableQueryErrorKind},
     };
+
+    fn sample_identity() -> Box<EditableAdtSourceIdentity> {
+        Box::new(EditableAdtSourceIdentity {
+            object_type: EditableAdtObjectType::Class,
+            name: "ZCL_SAMPLE".to_owned(),
+            object_uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
+            source_uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
+        })
+    }
 
     #[test]
     fn preserves_structured_sap_error_fields() {
@@ -385,30 +394,38 @@ mod tests {
 
     #[test]
     fn preserves_source_activation_stage_and_http_status() {
-        let error = CommandError::from(AdtSourceActivationError::ActivationRequest(
-            SapError::Http {
+        let error = CommandError::from(AdtSourceActivationError::ActivationRequest {
+            identity: sample_identity(),
+            source: SapError::Http {
                 kind: SapErrorKind::Forbidden,
                 status: StatusCode::FORBIDDEN,
                 url: "https://sap.example/sap/bc/adt/activation".to_owned(),
                 message: "Activation authorization missing".to_owned(),
             },
-        ));
+        });
 
         assert_eq!(error.code(), "edit_activation_request_failed");
         assert_eq!(error.status(), Some(403));
         assert!(error.message().contains("Activation authorization missing"));
-        assert!(error.hint().unwrap().contains("may have reached SAP"));
+        let hint = error.hint().unwrap();
+        assert!(hint.contains("may have reached SAP"));
+        assert!(
+            hint.contains("fractal edit check --type CLAS --name ZCL_SAMPLE --version inactive")
+        );
     }
 
     #[test]
     fn preserves_source_discard_stage_and_http_status() {
         let error = CommandError::from(AdtInactiveSourceDiscardError::RestoredSourceActivation(
-            AdtSourceActivationError::ActivationRequest(SapError::Http {
-                kind: SapErrorKind::Other,
-                status: StatusCode::CONFLICT,
-                url: "https://sap.example/sap/bc/adt/activation".to_owned(),
-                message: "Restored source could not be activated".to_owned(),
-            }),
+            AdtSourceActivationError::ActivationRequest {
+                identity: sample_identity(),
+                source: SapError::Http {
+                    kind: SapErrorKind::Other,
+                    status: StatusCode::CONFLICT,
+                    url: "https://sap.example/sap/bc/adt/activation".to_owned(),
+                    message: "Restored source could not be activated".to_owned(),
+                },
+            },
         ));
 
         assert_eq!(error.code(), "edit_discard_activation_failed");

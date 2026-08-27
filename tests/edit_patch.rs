@@ -460,7 +460,10 @@ async fn stale_optional_hash_is_checked_under_lock_and_then_unlocked() {
 
     assert!(matches!(
         error,
-        AdtSourcePatchError::Patch(SourceChangePlanError::SourceHashMismatch { .. })
+        AdtSourcePatchError::Patch {
+            source: SourceChangePlanError::SourceHashMismatch { .. },
+            ..
+        }
     ));
     assert_eq!(error.code(), "source_hash_mismatch");
     assert!(
@@ -492,8 +495,20 @@ async fn missing_patch_anchor_is_checked_under_lock_and_then_unlocked() {
 
     assert!(matches!(
         error,
-        AdtSourcePatchError::Patch(SourceChangePlanError::AnchorNotFound)
+        AdtSourcePatchError::Patch {
+            source: SourceChangePlanError::AnchorNotFound,
+            ..
+        }
     ));
+    // The pure planner cannot name the object; the patch workflow can, so the
+    // hint must carry a command the caller can run as-is.
+    assert!(
+        error
+            .hint()
+            .contains("fractal edit read --type PROG --name ZSAMPLE --version inactive"),
+        "anchor hint should name a runnable read command: {}",
+        error.hint()
+    );
     server.verify().await;
 }
 
@@ -595,7 +610,10 @@ async fn reports_when_a_completed_write_cannot_be_verified() {
             .await
             .unwrap_err();
 
-    assert!(matches!(error, AdtSourcePatchError::StoredSourceRead(_)));
+    assert!(matches!(
+        error,
+        AdtSourcePatchError::StoredSourceRead { .. }
+    ));
     assert_eq!(error.code(), "edit_source_verification_failed");
     assert!(error.to_string().contains("Verification unavailable"));
     assert!(error.hint().contains("write and unlock succeeded"));

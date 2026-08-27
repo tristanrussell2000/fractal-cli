@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use super::editable_source::{
     AdtEditTargetValidationError, AdtSourceReadError, AdtSourceVersion, EditableAdtObjectType,
-    EditableAdtSourceIdentity, read_adt_source_for_edit,
+    EditableAdtSourceIdentity, edit_read_command, read_adt_source_for_edit,
 };
 use super::{
     client::{SapClient, SapError},
@@ -57,10 +57,19 @@ pub enum AdtSourcePatchError {
     LockedSourceRead(#[source] AdtSourceReadError),
     #[error("could not read the current editable source for a patch preview: {0}")]
     PreviewSourceRead(#[source] AdtSourceReadError),
-    #[error(transparent)]
-    Patch(SourceChangePlanError),
-    #[error("the patched source was written, but SAP's stored source could not be re-read: {0}")]
-    StoredSourceRead(#[source] AdtSourceReadError),
+    #[error("{source}")]
+    Patch {
+        identity: Box<EditableAdtSourceIdentity>,
+        source: SourceChangePlanError,
+    },
+    #[error(
+        "the patched source was written, but SAP's stored source could not be re-read: {source}"
+    )]
+    StoredSourceRead {
+        identity: Box<EditableAdtSourceIdentity>,
+        #[source]
+        source: AdtSourceReadError,
+    },
 }
 
 impl AdtSourcePatchError {
@@ -69,10 +78,10 @@ impl AdtSourcePatchError {
         match self {
             Self::Validation(error) => error.code(),
             Self::Session(error) => error.code(),
-            Self::Patch(error) => error.code(),
+            Self::Patch { source, .. } => source.code(),
             Self::LockedSourceRead(_) => "edit_locked_source_read_failed",
             Self::PreviewSourceRead(_) => "edit_preview_source_read_failed",
-            Self::StoredSourceRead(_) => "edit_source_verification_failed",
+            Self::StoredSourceRead { .. } => "edit_source_verification_failed",
         }
     }
 
@@ -82,11 +91,23 @@ impl AdtSourcePatchError {
             Self::Validation(error) => error.hint(),
             Self::Session(error) => error.hint(),
             Self::LockedSourceRead(error) | Self::PreviewSourceRead(error) => error.hint(),
-            Self::Patch(error) => error.hint(),
-            Self::StoredSourceRead(_) => {
-                "The write and unlock succeeded, but its stored result could not be verified; re-read the inactive source before making another change."
-                    .to_owned()
-            }
+            // The pure planner cannot name the object, so the operation error —
+            // the layer that validated the identity — adds the exact command
+            // that produces a usable anchor or a current revision hash.
+            Self::Patch { identity, source } => match source {
+                SourceChangePlanError::AnchorNotFound
+                | SourceChangePlanError::AnchorAmbiguous { .. }
+                | SourceChangePlanError::SourceHashMismatch { .. } => format!(
+                    "{} Run `{}` to read the current source.",
+                    source.hint(),
+                    edit_read_command(identity, AdtSourceVersion::Inactive)
+                ),
+                _ => source.hint(),
+            },
+            Self::StoredSourceRead { identity, .. } => format!(
+                "The write and unlock succeeded, but its stored result could not be verified; re-read the inactive source before making another change. Run `{}`.",
+                edit_read_command(identity, AdtSourceVersion::Inactive)
+            ),
         }
     }
 
@@ -95,9 +116,9 @@ impl AdtSourcePatchError {
         match self {
             Self::LockedSourceRead(error)
             | Self::PreviewSourceRead(error)
-            | Self::StoredSourceRead(error) => error.sap_error(),
+            | Self::StoredSourceRead { source: error, .. } => error.sap_error(),
             Self::Session(error) => error.sap_error(),
-            Self::Validation(_) | Self::Patch(_) => None,
+            Self::Validation(_) | Self::Patch { .. } => None,
         }
     }
 }
@@ -152,7 +173,7 @@ pub async fn patch_adt_source_atomically(
         })
     })
     .await
-    .map_err(map_patch_save_error)?;
+    .map_err(|error| map_patch_save_error(error, &target.identity))?;
     let identity = target.identity;
     let transport = target.transport;
 
@@ -208,7 +229,10 @@ pub async fn preview_adt_source_patch(
         &request.replace,
         expected_sha256,
     )
-    .map_err(AdtSourcePatchError::Patch)?;
+    .map_err(|source| AdtSourcePatchError::Patch {
+        identity: Box::new(identity.clone()),
+        source,
+    })?;
 
     Ok(AdtSourcePatchPreview {
         identity,
@@ -225,15 +249,22 @@ pub async fn preview_adt_source_patch(
 
 fn map_patch_save_error(
     error: InactiveSourceSaveError<SourceChangePlanError>,
+    identity: &EditableAdtSourceIdentity,
 ) -> AdtSourcePatchError {
     match error {
         InactiveSourceSaveError::Session(error) => AdtSourcePatchError::Session(error),
         InactiveSourceSaveError::LockedSourceRead(error) => {
             AdtSourcePatchError::LockedSourceRead(error)
         }
-        InactiveSourceSaveError::Plan(error) => AdtSourcePatchError::Patch(error),
-        InactiveSourceSaveError::StoredSourceRead(error) => {
-            AdtSourcePatchError::StoredSourceRead(error)
+        InactiveSourceSaveError::Plan(source) => AdtSourcePatchError::Patch {
+            identity: Box::new(identity.clone()),
+            source,
+        },
+        InactiveSourceSaveError::StoredSourceRead(source) => {
+            AdtSourcePatchError::StoredSourceRead {
+                identity: Box::new(identity.clone()),
+                source,
+            }
         }
     }
 }

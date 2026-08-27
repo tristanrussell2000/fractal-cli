@@ -8,7 +8,7 @@ use super::{
     editable_source::{
         AdtEditTargetValidationError, AdtSourceReadError, AdtSourceSnapshot, AdtSourceVersion,
         EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
-        read_adt_source_for_edit, validate_adt_edit_target,
+        edit_check_command, edit_read_command, read_adt_source_for_edit, validate_adt_edit_target,
     },
     find_attribute_value,
     source_check::{
@@ -52,10 +52,9 @@ pub enum AdtSourceActivationError {
     Validation(#[from] AdtEditTargetValidationError),
     #[error("could not determine whether the object has inactive source: {0}")]
     InactiveVersionProbe(#[source] AdtInactiveSourceProbeError),
-    #[error("{object_type} object '{name}' has no inactive source to activate")]
+    #[error("{} object '{}' has no inactive source to activate", identity.object_type.as_str(), identity.name)]
     NoInactiveVersion {
-        object_type: &'static str,
-        name: String,
+        identity: Box<EditableAdtSourceIdentity>,
     },
     #[error("could not read the inactive source before activation: {0}")]
     InactiveSourceRead(#[source] AdtSourceReadError),
@@ -63,14 +62,19 @@ pub enum AdtSourceActivationError {
     Precheck(#[source] AdtSourceCheckError),
     #[error("the inactive source has {errors} syntax error(s), so activation was not attempted")]
     PrecheckRejected {
+        identity: Box<EditableAdtSourceIdentity>,
         errors: usize,
         warnings: usize,
         messages: Vec<AdtSourceCheckMessage>,
     },
     #[error("could not attach the object to the requested transport before activation: {0}")]
     TransportAttachment(#[source] AdtEditSessionError),
-    #[error("the ADT activation request failed: {0}")]
-    ActivationRequest(#[source] SapError),
+    #[error("the ADT activation request failed: {source}")]
+    ActivationRequest {
+        identity: Box<EditableAdtSourceIdentity>,
+        #[source]
+        source: SapError,
+    },
     #[error("SAP returned malformed activation XML and the inactive version still exists: {0}")]
     ActivationResponseInvalid(#[source] roxmltree::Error),
     #[error("SAP did not remove the inactive version, so activation was not completed")]
@@ -78,16 +82,27 @@ pub enum AdtSourceActivationError {
         sap_reported_activation_executed: Option<bool>,
         messages: Vec<AdtSourceActivationMessage>,
     },
-    #[error("SAP accepted the activation request, but the active source could not be read: {0}")]
-    ActiveSourceRead(#[source] AdtSourceReadError),
     #[error(
-        "SAP accepted the activation request, but its inactive-source state could not be verified: {0}"
+        "SAP accepted the activation request, but the active source could not be read: {source}"
     )]
-    PostActivationProbe(#[source] AdtInactiveSourceProbeError),
+    ActiveSourceRead {
+        identity: Box<EditableAdtSourceIdentity>,
+        #[source]
+        source: AdtSourceReadError,
+    },
+    #[error(
+        "SAP accepted the activation request, but its inactive-source state could not be verified: {source}"
+    )]
+    PostActivationProbe {
+        identity: Box<EditableAdtSourceIdentity>,
+        #[source]
+        source: AdtInactiveSourceProbeError,
+    },
     #[error(
         "activation removed the inactive version, but active source SHA-256 {active_sha256} does not match the pre-activation inactive source SHA-256 {inactive_sha256}"
     )]
     VerificationMismatch {
+        identity: Box<EditableAdtSourceIdentity>,
         inactive_sha256: String,
         active_sha256: String,
     },
@@ -104,11 +119,11 @@ impl AdtSourceActivationError {
             Self::Precheck(_) => "edit_activation_precheck_failed",
             Self::PrecheckRejected { .. } => "edit_activation_precheck_rejected",
             Self::TransportAttachment(_) => "edit_activation_transport_failed",
-            Self::ActivationRequest(_) => "edit_activation_request_failed",
+            Self::ActivationRequest { .. } => "edit_activation_request_failed",
             Self::ActivationResponseInvalid(_) => "edit_activation_response_invalid",
             Self::ActivationRefused { .. } => "edit_activation_refused",
-            Self::ActiveSourceRead(_) => "edit_activation_active_read_failed",
-            Self::PostActivationProbe(_) => "edit_activation_verification_probe_failed",
+            Self::ActiveSourceRead { .. } => "edit_activation_active_read_failed",
+            Self::PostActivationProbe { .. } => "edit_activation_verification_probe_failed",
             Self::VerificationMismatch { .. } => "edit_activation_verification_mismatch",
         }
     }
@@ -122,21 +137,26 @@ impl AdtSourceActivationError {
             }
             Self::Validation(error) => error.hint(),
             Self::InactiveVersionProbe(error) => error.hint(),
-            Self::NoInactiveVersion { .. } => {
-                "Create or save an inactive change first; use `fractal edit read --version active` to inspect what is already live."
-                    .to_owned()
-            }
+            Self::NoInactiveVersion { identity } => format!(
+                "Create or save an inactive change first. Run `{}` to inspect what is already live.",
+                edit_read_command(identity, AdtSourceVersion::Active)
+            ),
             Self::InactiveSourceRead(error) => error.hint(),
             Self::Precheck(error) => error.hint(),
-            Self::PrecheckRejected { messages, .. } => first_message_hint(
+            Self::PrecheckRejected {
+                identity, messages, ..
+            } => first_message_hint(
                 messages.iter().map(|message| message.text.as_str()),
-                "Run `fractal edit check --version inactive` to inspect every syntax finding.",
+                &format!(
+                    "Run `{}` to inspect every syntax finding.",
+                    edit_check_command(identity, AdtSourceVersion::Inactive)
+                ),
             ),
             Self::TransportAttachment(error) => error.hint(),
-            Self::ActivationRequest(_) => {
-                "The request may have reached SAP. Re-run `fractal edit check --version inactive` before retrying activation."
-                    .to_owned()
-            }
+            Self::ActivationRequest { identity, .. } => format!(
+                "The request may have reached SAP. Re-run `{}` before retrying activation.",
+                edit_check_command(identity, AdtSourceVersion::Inactive)
+            ),
             Self::ActivationResponseInvalid(_) => {
                 "SAP did not clear the inactive version, and its response could not be interpreted; inspect the object in ADT before retrying."
                     .to_owned()
@@ -145,24 +165,28 @@ impl AdtSourceActivationError {
                 messages.iter().map(|message| message.text.as_str()),
                 "Review SAP's activation messages and the object's transport before retrying.",
             ),
-            Self::ActiveSourceRead(_) | Self::PostActivationProbe(_) => {
-                "Activation may have succeeded. Read both active source and the inactive-object state before retrying."
-                    .to_owned()
+            Self::ActiveSourceRead { identity, .. } | Self::PostActivationProbe { identity, .. } => {
+                format!(
+                    "Activation may have succeeded. Read both active source and the inactive-object state before retrying. Run `{}`.",
+                    edit_read_command(identity, AdtSourceVersion::Active)
+                )
             }
-            Self::VerificationMismatch { .. } => {
-                "Do not retry blindly: SAP activated different source than the version Fractal prechecked. Read the active and inactive versions and review the object history."
-                    .to_owned()
-            }
+            Self::VerificationMismatch { identity, .. } => format!(
+                "Do not retry blindly: SAP activated different source than the version Fractal prechecked. Review the object history, starting with `{}`.",
+                edit_read_command(identity, AdtSourceVersion::Active)
+            ),
         }
     }
 
     #[must_use]
     pub const fn sap_error(&self) -> Option<&SapError> {
         match self {
-            Self::InactiveSourceRead(error) | Self::ActiveSourceRead(error) => error.sap_error(),
+            Self::InactiveSourceRead(error) | Self::ActiveSourceRead { source: error, .. } => {
+                error.sap_error()
+            }
             Self::InactiveVersionProbe(error) => error.sap_error(),
-            Self::ActivationRequest(error) => Some(error),
-            Self::PostActivationProbe(error) => error.sap_error(),
+            Self::ActivationRequest { source, .. } => Some(source),
+            Self::PostActivationProbe { source: error, .. } => error.sap_error(),
             Self::Precheck(error) => error.sap_error(),
             Self::TransportAttachment(error) => error.sap_error(),
             Self::Validation(_)
@@ -217,8 +241,7 @@ pub(super) async fn activate_validated_adt_source(
         .map_err(AdtSourceActivationError::InactiveVersionProbe)?;
     if !inactive_exists {
         return Err(AdtSourceActivationError::NoInactiveVersion {
-            object_type: identity.object_type.as_str(),
-            name: identity.name,
+            identity: Box::new(identity),
         });
     }
 
@@ -244,6 +267,7 @@ pub(super) async fn activate_validated_adt_source(
             Ok(precheck)
         } else {
             Err(AdtSourceActivationError::PrecheckRejected {
+                identity: Box::new(identity.clone()),
                 errors: precheck.errors,
                 warnings: precheck.warnings,
                 messages: precheck.messages,
@@ -270,7 +294,10 @@ pub(super) async fn activate_validated_adt_source(
             headers,
         )
         .await
-        .map_err(AdtSourceActivationError::ActivationRequest)?;
+        .map_err(|source| AdtSourceActivationError::ActivationRequest {
+            identity: Box::new(identity.clone()),
+            source,
+        })?;
 
     // SAP's activation response is advisory: activationExecuted="false" has
     // been observed after a successful activation, and malformed XML does not
@@ -297,12 +324,18 @@ pub(super) async fn activate_validated_adt_source(
             active_result = &mut active_read => {
                 let inactive_still_exists = inactive_probe
                     .await
-                    .map_err(AdtSourceActivationError::PostActivationProbe)?;
+                    .map_err(|source| AdtSourceActivationError::PostActivationProbe {
+                        identity: Box::new(identity.clone()),
+                        source,
+                    })?;
                 (!inactive_still_exists).then_some(active_result)
             }
             probe_result = &mut inactive_probe => {
-                let inactive_still_exists = probe_result
-                    .map_err(AdtSourceActivationError::PostActivationProbe)?;
+                let inactive_still_exists =
+                    probe_result.map_err(|source| AdtSourceActivationError::PostActivationProbe {
+                        identity: Box::new(identity.clone()),
+                        source,
+                    })?;
                 if inactive_still_exists {
                     None
                 } else {
@@ -321,9 +354,13 @@ pub(super) async fn activate_validated_adt_source(
             Err(error) => Err(AdtSourceActivationError::ActivationResponseInvalid(error)),
         };
     };
-    let active = active_result.map_err(AdtSourceActivationError::ActiveSourceRead)?;
+    let active = active_result.map_err(|source| AdtSourceActivationError::ActiveSourceRead {
+        identity: Box::new(identity.clone()),
+        source,
+    })?;
     if active.snapshot.sha256 != inactive.snapshot.sha256 {
         return Err(AdtSourceActivationError::VerificationMismatch {
+            identity: Box::new(identity.clone()),
             inactive_sha256: inactive.snapshot.sha256,
             active_sha256: active.snapshot.sha256,
         });

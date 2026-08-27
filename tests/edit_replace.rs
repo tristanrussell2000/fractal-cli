@@ -238,7 +238,10 @@ async fn stale_expected_hash_is_checked_under_lock_and_then_unlocked() {
 
     assert!(matches!(
         error,
-        AdtSourceReplacementError::Replacement(SourceChangePlanError::SourceHashMismatch { .. })
+        AdtSourceReplacementError::Replacement {
+            source: SourceChangePlanError::SourceHashMismatch { .. },
+            ..
+        }
     ));
     assert!(
         server
@@ -269,7 +272,10 @@ async fn unchanged_source_is_rejected_under_lock_without_writing() {
 
     assert!(matches!(
         error,
-        AdtSourceReplacementError::Replacement(SourceChangePlanError::SourceReplacementNoChanges)
+        AdtSourceReplacementError::Replacement {
+            source: SourceChangePlanError::SourceReplacementNoChanges,
+            ..
+        }
     ));
     assert!(
         server
@@ -300,7 +306,10 @@ async fn invalid_expected_hash_format_is_rejected_under_lock_without_writing() {
 
     assert!(matches!(
         error,
-        AdtSourceReplacementError::Replacement(SourceChangePlanError::InvalidExpectedSha256)
+        AdtSourceReplacementError::Replacement {
+            source: SourceChangePlanError::InvalidExpectedSha256,
+            ..
+        }
     ));
     assert!(
         server
@@ -476,7 +485,7 @@ async fn failed_post_write_verification_maps_to_stored_source_read_error() {
 
     assert!(matches!(
         error,
-        AdtSourceReplacementError::StoredSourceRead(_)
+        AdtSourceReplacementError::StoredSourceRead { .. }
     ));
     assert_eq!(error.code(), "edit_source_replacement_verification_failed");
     assert!(error.to_string().contains("Verification unavailable"));
@@ -495,7 +504,10 @@ async fn validates_blank_source_namespace_and_transport_before_http() {
         .unwrap_err();
     assert!(matches!(
         error,
-        AdtSourceReplacementError::Replacement(SourceChangePlanError::BlankReplacementSource)
+        AdtSourceReplacementError::Replacement {
+            source: SourceChangePlanError::BlankReplacementSource,
+            ..
+        }
     ));
 
     let mut invalid_transport = replacement_request();

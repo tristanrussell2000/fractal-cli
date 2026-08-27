@@ -421,7 +421,7 @@ async fn activation_failure_is_reported_as_an_incomplete_restored_discard() {
     assert!(matches!(
         error,
         AdtInactiveSourceDiscardError::RestoredSourceActivation(
-            AdtSourceActivationError::ActivationRequest(_)
+            AdtSourceActivationError::ActivationRequest { .. }
         )
     ));
     assert!(error.hint().contains("now contains"));

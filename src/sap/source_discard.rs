@@ -9,7 +9,7 @@ use super::{
     editable_source::{
         AdtEditTargetValidationError, AdtSourceReadError, AdtSourceReadResult, AdtSourceSnapshot,
         AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
-        validate_adt_edit_target,
+        edit_read_command, validate_adt_edit_target,
     },
     source_activation::{AdtSourceActivationError, activate_validated_adt_source},
     source_check::{AdtInactiveSourceProbeError, probe_inactive_adt_source},
@@ -57,6 +57,7 @@ pub enum AdtInactiveSourceDiscardError {
         "SAP stored restored inactive source SHA-256 {restored_sha256}, which does not match active source SHA-256 {active_sha256}"
     )]
     RestoreVerificationMismatch {
+        identity: Box<EditableAdtSourceIdentity>,
         active_sha256: String,
         restored_sha256: String,
     },
@@ -66,6 +67,7 @@ pub enum AdtInactiveSourceDiscardError {
         "discard activation changed active source SHA-256 from {before_sha256} to {after_sha256}"
     )]
     ActiveSourceChanged {
+        identity: Box<EditableAdtSourceIdentity>,
         before_sha256: String,
         after_sha256: String,
     },
@@ -115,18 +117,18 @@ impl AdtInactiveSourceDiscardError {
             Self::NoInactiveVersion { .. } => {
                 "There are no visible unactivated changes to discard.".to_owned()
             }
-            Self::RestoreVerificationMismatch { .. } => {
-                "The inactive source was overwritten but not activated because SAP did not preserve the active bytes exactly. Inspect both versions in ADT before continuing."
-                    .to_owned()
-            }
+            Self::RestoreVerificationMismatch { identity, .. } => format!(
+                "The inactive source was overwritten but not activated because SAP did not preserve the active bytes exactly. Inspect both versions before continuing, starting with `{}`.",
+                edit_read_command(identity, AdtSourceVersion::Inactive)
+            ),
             Self::RestoredSourceActivation(error) => format!(
                 "The inactive source now contains the previous active source, but activation did not complete. {}",
                 error.hint()
             ),
-            Self::ActiveSourceChanged { .. } => {
-                "Do not retry blindly: inspect the object history because a discard operation must preserve active source exactly."
-                    .to_owned()
-            }
+            Self::ActiveSourceChanged { identity, .. } => format!(
+                "Do not retry blindly: a discard must preserve active source exactly, so inspect the object history, starting with `{}`.",
+                edit_read_command(identity, AdtSourceVersion::Active)
+            ),
         }
     }
 
@@ -214,6 +216,7 @@ pub async fn discard_inactive_adt_source(
 
     if activation.active.sha256 != prepared.active_before.snapshot.sha256 {
         return Err(AdtInactiveSourceDiscardError::ActiveSourceChanged {
+            identity: Box::new(identity.clone()),
             before_sha256: prepared.active_before.snapshot.sha256,
             after_sha256: activation.active.sha256,
         });
@@ -264,6 +267,7 @@ async fn prepare_discard_while_locked(
 
     if restored_inactive.snapshot.sha256 != active_before.snapshot.sha256 {
         return Err(AdtInactiveSourceDiscardError::RestoreVerificationMismatch {
+            identity: Box::new(identity.clone()),
             active_sha256: active_before.snapshot.sha256,
             restored_sha256: restored_inactive.snapshot.sha256,
         });

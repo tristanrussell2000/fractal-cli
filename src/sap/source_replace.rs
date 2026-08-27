@@ -6,7 +6,7 @@ use super::{
     editable_source::{
         AdtEditTargetValidationError, AdtSourceReadError, AdtSourceSnapshot, AdtSourceVersion,
         EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
-        read_adt_source_for_edit, validate_adt_edit_target,
+        edit_read_command, read_adt_source_for_edit, validate_adt_edit_target,
     },
     inactive_source_save::{
         InactiveSourceSaveError, PlannedInactiveSourceChange, save_inactive_source_atomically,
@@ -55,12 +55,19 @@ pub enum AdtSourceReplacementError {
     LockedSourceRead(#[source] AdtSourceReadError),
     #[error("could not read current source for replacement preview: {0}")]
     PreviewSourceRead(#[source] AdtSourceReadError),
-    #[error(transparent)]
-    Replacement(SourceChangePlanError),
+    #[error("{source}")]
+    Replacement {
+        identity: Box<EditableAdtSourceIdentity>,
+        source: SourceChangePlanError,
+    },
     #[error(
-        "complete source was written and unlocked, but SAP's stored source could not be read: {0}"
+        "complete source was written and unlocked, but SAP's stored source could not be read: {source}"
     )]
-    StoredSourceRead(#[source] AdtSourceReadError),
+    StoredSourceRead {
+        identity: Box<EditableAdtSourceIdentity>,
+        #[source]
+        source: AdtSourceReadError,
+    },
 }
 
 impl AdtSourceReplacementError {
@@ -68,7 +75,7 @@ impl AdtSourceReplacementError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::Validation(error) => error.code(),
-            Self::Replacement(error) => error.code(),
+            Self::Replacement { source, .. } => source.code(),
             Self::Session(
                 AdtEditSessionError::LockFailed { .. }
                 | AdtEditSessionError::LockHandleMissing { .. },
@@ -81,19 +88,32 @@ impl AdtSourceReplacementError {
             }
             Self::LockedSourceRead(_) => "edit_source_replacement_locked_read_failed",
             Self::PreviewSourceRead(_) => "edit_source_replacement_preview_read_failed",
-            Self::StoredSourceRead(_) => "edit_source_replacement_verification_failed",
+            Self::StoredSourceRead { .. } => "edit_source_replacement_verification_failed",
         }
     }
 
     #[must_use]
     pub fn hint(&self) -> String {
         match self {
-            Self::LockedSourceRead(error)
-            | Self::PreviewSourceRead(error)
-            | Self::StoredSourceRead(error) => error.hint(),
+            Self::LockedSourceRead(error) | Self::PreviewSourceRead(error) => error.hint(),
             Self::Validation(error) => error.hint(),
-            Self::Replacement(error) => error.hint(),
+            // The pure planner cannot name the object; this layer validated it.
+            Self::Replacement {
+                identity,
+                source:
+                    source @ (SourceChangePlanError::SourceHashMismatch { .. }
+                    | SourceChangePlanError::SourceReplacementNoChanges),
+            } => format!(
+                "{} Run `{}` to read the current source.",
+                source.hint(),
+                edit_read_command(identity, AdtSourceVersion::Inactive)
+            ),
+            Self::Replacement { source, .. } => source.hint(),
             Self::Session(error) => error.hint(),
+            Self::StoredSourceRead { identity, .. } => format!(
+                "The write and unlock succeeded, but its stored result could not be verified; re-read the inactive source before making another change. Run `{}`.",
+                edit_read_command(identity, AdtSourceVersion::Inactive)
+            ),
         }
     }
 
@@ -102,9 +122,9 @@ impl AdtSourceReplacementError {
         match self {
             Self::LockedSourceRead(error)
             | Self::PreviewSourceRead(error)
-            | Self::StoredSourceRead(error) => error.sap_error(),
+            | Self::StoredSourceRead { source: error, .. } => error.sap_error(),
             Self::Session(error) => error.sap_error(),
-            Self::Validation(_) | Self::Replacement(_) => None,
+            Self::Validation(_) | Self::Replacement { .. } => None,
         }
     }
 }
@@ -134,7 +154,7 @@ pub async fn preview_adt_source_replacement(
     )
     .await
     .map_err(AdtSourceReplacementError::PreviewSourceRead)?;
-    let plan = plan_replacement(&original.snapshot.source, request)?;
+    let plan = plan_replacement(&original.snapshot.source, request, &identity)?;
 
     Ok(AdtSourceReplacementPreview {
         identity,
@@ -182,7 +202,7 @@ pub async fn replace_adt_source_atomically(
         })
     })
     .await
-    .map_err(map_replacement_save_error)?;
+    .map_err(|error| map_replacement_save_error(error, &target.identity))?;
     let identity = target.identity;
     let transport = target.transport;
     let sap_normalized_source = saved.stored.source != saved.proposed.source;
@@ -208,9 +228,10 @@ fn validate_replacement_request(
         request.transport.as_deref(),
     )?;
     if request.replacement_source.trim().is_empty() {
-        return Err(AdtSourceReplacementError::Replacement(
-            SourceChangePlanError::BlankReplacementSource,
-        ));
+        return Err(AdtSourceReplacementError::Replacement {
+            identity: Box::new(target.identity),
+            source: SourceChangePlanError::BlankReplacementSource,
+        });
     }
     Ok(target)
 }
@@ -218,26 +239,37 @@ fn validate_replacement_request(
 fn plan_replacement(
     original_source: &str,
     request: &AdtSourceReplacementRequest,
+    identity: &EditableAdtSourceIdentity,
 ) -> Result<SourceReplacementPlan, AdtSourceReplacementError> {
     plan_source_replacement(
         original_source,
         &request.replacement_source,
         request.expected_sha256.as_deref(),
     )
-    .map_err(AdtSourceReplacementError::Replacement)
+    .map_err(|source| AdtSourceReplacementError::Replacement {
+        identity: Box::new(identity.clone()),
+        source,
+    })
 }
 
 fn map_replacement_save_error(
     error: InactiveSourceSaveError<SourceChangePlanError>,
+    identity: &EditableAdtSourceIdentity,
 ) -> AdtSourceReplacementError {
     match error {
         InactiveSourceSaveError::Session(error) => AdtSourceReplacementError::Session(error),
         InactiveSourceSaveError::LockedSourceRead(error) => {
             AdtSourceReplacementError::LockedSourceRead(error)
         }
-        InactiveSourceSaveError::Plan(error) => AdtSourceReplacementError::Replacement(error),
-        InactiveSourceSaveError::StoredSourceRead(error) => {
-            AdtSourceReplacementError::StoredSourceRead(error)
+        InactiveSourceSaveError::Plan(source) => AdtSourceReplacementError::Replacement {
+            identity: Box::new(identity.clone()),
+            source,
+        },
+        InactiveSourceSaveError::StoredSourceRead(source) => {
+            AdtSourceReplacementError::StoredSourceRead {
+                identity: Box::new(identity.clone()),
+                source,
+            }
         }
     }
 }

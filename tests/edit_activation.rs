@@ -340,6 +340,13 @@ async fn refuses_to_activate_when_no_inactive_version_exists() {
         AdtSourceActivationError::NoInactiveVersion { .. }
     ));
     assert_eq!(error.code(), "edit_activation_no_inactive_source");
+    assert!(
+        error
+            .hint()
+            .contains("fractal edit read --type CLAS --name ZCL_SAMPLE --version active"),
+        "hint should name the object to inspect: {}",
+        error.hint()
+    );
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
     server.verify().await;
 }
@@ -373,6 +380,13 @@ async fn syntax_errors_stop_before_transport_or_activation() {
     .await
     .unwrap_err();
 
+    assert!(
+        error
+            .hint()
+            .contains("fractal edit check --type CLAS --name ZCL_SAMPLE --version inactive"),
+        "precheck hint should name a runnable check command: {}",
+        error.hint()
+    );
     let AdtSourceActivationError::PrecheckRejected {
         errors, messages, ..
     } = error
@@ -451,7 +465,7 @@ async fn preserves_activation_http_failures_as_a_distinct_stage() {
 
     assert!(matches!(
         error,
-        AdtSourceActivationError::ActivationRequest(_)
+        AdtSourceActivationError::ActivationRequest { .. }
     ));
     assert_eq!(error.code(), "edit_activation_request_failed");
     assert!(
@@ -516,6 +530,7 @@ async fn distinguishes_post_activation_source_mismatch() {
     let AdtSourceActivationError::VerificationMismatch {
         inactive_sha256,
         active_sha256,
+        ..
     } = error
     else {
         panic!("expected verification mismatch");

@@ -141,6 +141,43 @@ pub struct EditableAdtSourceIdentity {
     pub source_uri: String,
 }
 
+/// Builds the `fractal edit read` command that fetches this object's source.
+///
+/// Errors name a runnable command so a caller does not have to rebuild the
+/// object's type and canonical name from context it may no longer have. The
+/// library authoring CLI commands is deliberate: the layer that knows which
+/// operation failed at which stage is the only layer that knows the remedy,
+/// and this CLI is the library's only consumer.
+#[must_use]
+pub fn edit_read_command(
+    identity: &EditableAdtSourceIdentity,
+    version: AdtSourceVersion,
+) -> String {
+    edit_command("read", identity, version)
+}
+
+/// Builds the `fractal edit check` command that syntax-checks this object.
+#[must_use]
+pub fn edit_check_command(
+    identity: &EditableAdtSourceIdentity,
+    version: AdtSourceVersion,
+) -> String {
+    edit_command("check", identity, version)
+}
+
+fn edit_command(
+    operation: &str,
+    identity: &EditableAdtSourceIdentity,
+    version: AdtSourceVersion,
+) -> String {
+    format!(
+        "fractal edit {operation} --type {} --name {} --version {}",
+        identity.object_type.as_str(),
+        identity.name,
+        version.as_str()
+    )
+}
+
 /// A syntactically valid source object type and name.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum EditableAdtSourceTargetError {
@@ -460,6 +497,21 @@ fn validate_object_name(name: &str) -> Result<String, EditableAdtSourceTargetErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builds_runnable_remedial_commands_from_an_identity() {
+        let identity =
+            editable_source_identity(EditableAdtObjectType::Class, "zcl_example").unwrap();
+
+        assert_eq!(
+            edit_read_command(&identity, AdtSourceVersion::Inactive),
+            "fractal edit read --type CLAS --name ZCL_EXAMPLE --version inactive"
+        );
+        assert_eq!(
+            edit_check_command(&identity, AdtSourceVersion::Active),
+            "fractal edit check --type CLAS --name ZCL_EXAMPLE --version active"
+        );
+    }
 
     #[test]
     fn maps_every_initial_object_type_to_a_fixed_adt_root() {
