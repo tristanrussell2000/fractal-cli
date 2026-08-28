@@ -6,13 +6,14 @@ use super::{
     editable_source::{
         AdtEditTargetValidationError, AdtSourceReadError, AdtSourceSnapshot, AdtSourceVersion,
         EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
-        edit_read_command, read_adt_source_for_edit, validate_adt_edit_target,
+        read_adt_source_for_edit, validate_adt_edit_target,
     },
     inactive_source_save::{
         InactiveSourceSaveError, PlannedInactiveSourceChange, save_inactive_source_atomically,
     },
 };
 use crate::source_change::{SourceChangePlanError, SourceReplacementPlan, plan_source_replacement};
+use crate::suggested_command;
 
 /// One complete source replacement to preview or save as inactive source.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,14 +107,47 @@ impl AdtSourceReplacementError {
             } => format!(
                 "{} Run `{}` to read the current source.",
                 source.hint(),
-                edit_read_command(identity, AdtSourceVersion::Inactive)
+                suggested_command::edit_read(
+                    identity.object_type.as_str(),
+                    &identity.name,
+                    AdtSourceVersion::Inactive.as_str()
+                )
             ),
             Self::Replacement { source, .. } => source.hint(),
             Self::Session(error) => error.hint(),
             Self::StoredSourceRead { identity, .. } => format!(
                 "The write and unlock succeeded, but its stored result could not be verified; re-read the inactive source before making another change. Run `{}`.",
-                edit_read_command(identity, AdtSourceVersion::Inactive)
+                suggested_command::edit_read(
+                    identity.object_type.as_str(),
+                    &identity.name,
+                    AdtSourceVersion::Inactive.as_str()
+                )
             ),
+        }
+    }
+
+    /// A read-only command that diagnoses this failure, if one exists.
+    ///
+    /// Lock and write failures return `None`: their remedy is to retry the
+    /// write, which must never appear in a field a caller may execute.
+    #[must_use]
+    pub fn suggested_command(&self) -> Option<String> {
+        match self {
+            Self::Replacement {
+                identity,
+                source:
+                    SourceChangePlanError::SourceHashMismatch { .. }
+                    | SourceChangePlanError::SourceReplacementNoChanges,
+            }
+            | Self::StoredSourceRead { identity, .. } => Some(suggested_command::edit_read(
+                identity.object_type.as_str(),
+                &identity.name,
+                AdtSourceVersion::Inactive.as_str(),
+            )),
+            Self::LockedSourceRead(error) | Self::PreviewSourceRead(error) => {
+                error.suggested_command()
+            }
+            Self::Replacement { .. } | Self::Validation(_) | Self::Session(_) => None,
         }
     }
 

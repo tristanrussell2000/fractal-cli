@@ -101,6 +101,7 @@ fn print_error(error: &CommandError, output: OutputFormat) {
         status: error.status(),
         message: error.message(),
         hint: error.hint(),
+        suggested_command: error.suggested_command(),
     };
     match output {
         OutputFormat::Json => print_json(&result),
@@ -108,6 +109,9 @@ fn print_error(error: &CommandError, output: OutputFormat) {
             eprintln!("error [{}]: {}", result.code, result.message);
             if let Some(hint) = result.hint {
                 eprintln!("hint: {hint}");
+            }
+            if let Some(command) = result.suggested_command {
+                eprintln!("try: {command}");
             }
         }
     }
@@ -122,4 +126,51 @@ struct ErrorResult {
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    suggested_command: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ErrorResult;
+
+    #[test]
+    fn omits_the_suggested_command_when_no_remedy_is_derivable() {
+        // The field is additive: an existing consumer must not start seeing a
+        // new key on error paths that have no runnable remedy.
+        let json = serde_json::to_value(ErrorResult {
+            ok: false,
+            code: "patch_no_change",
+            status: None,
+            message: "the patch would not change the source".to_owned(),
+            hint: Some("Use replacement text that differs from the anchor.".to_owned()),
+            suggested_command: None,
+        })
+        .unwrap();
+
+        assert_eq!(json["code"], "patch_no_change");
+        assert!(json.get("suggested_command").is_none());
+        assert!(json.get("status").is_none());
+    }
+
+    #[test]
+    fn serializes_a_derivable_remedy_alongside_the_prose_hint() {
+        let json = serde_json::to_value(ErrorResult {
+            ok: false,
+            code: "patch_anchor_not_found",
+            status: None,
+            message: "patch find text was not found in the source".to_owned(),
+            hint: Some("Copy the exact anchor.".to_owned()),
+            suggested_command: Some(
+                "fractal edit read --type CLAS --name ZCL_SAMPLE --version inactive".to_owned(),
+            ),
+        })
+        .unwrap();
+
+        assert_eq!(
+            json["suggested_command"],
+            "fractal edit read --type CLAS --name ZCL_SAMPLE --version inactive"
+        );
+        assert_eq!(json["hint"], "Copy the exact anchor.");
+    }
 }

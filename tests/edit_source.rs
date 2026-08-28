@@ -163,7 +163,13 @@ async fn preserves_sap_errors_from_the_source_request() {
     .await
     .unwrap_err();
 
-    assert!(matches!(error, AdtSourceReadError::Sap(_)));
+    assert!(matches!(error, AdtSourceReadError::Sap { .. }));
+    // A 404 means the name is probably wrong, so point at object search
+    // rather than repeating the read that just failed.
+    assert_eq!(
+        error.suggested_command().as_deref(),
+        Some("fractal object search ZIF_MISSING --kind INTF")
+    );
     assert_eq!(error.code(), "not_found");
     assert!(error.sap_error().is_some());
     server.verify().await;

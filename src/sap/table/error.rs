@@ -6,6 +6,7 @@ use thiserror::Error;
 use super::{TableColumn, TableDdlParseError};
 use crate::sap::adt::AdtError;
 use crate::sap::client::SapError;
+use crate::suggested_command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableQueryErrorKind {
@@ -29,6 +30,10 @@ impl TableQueryErrorKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableQueryError {
     pub kind: TableQueryErrorKind,
+    /// The one DDIC entity queried, when there is one. A complete
+    /// caller-authored statement may join several sources, so no single
+    /// entity can be named and field remedies are not derivable.
+    pub entity: Option<String>,
     pub identifier: Option<String>,
     pub suggestions: Vec<String>,
     pub message: String,
@@ -83,8 +88,8 @@ pub enum TableError {
     CountMissing,
     #[error("invalid DDIC entity name: {0}")]
     InvalidEntityName(String),
-    #[error("invalid field name: {0}")]
-    InvalidFieldName(String),
+    #[error("invalid field name: {field}")]
+    InvalidFieldName { entity: String, field: String },
     #[error("the where clause must not contain a semicolon")]
     WhereContainsSemicolon,
     #[error("a full table query is required")]
@@ -110,7 +115,7 @@ impl TableError {
             Self::Parse(_) => "table_response_parse_error",
             Self::CountMissing => "table_count_response_error",
             Self::InvalidEntityName(_) => "invalid_table_entity_name",
-            Self::InvalidFieldName(_) => "invalid_table_field_name",
+            Self::InvalidFieldName { .. } => "invalid_table_field_name",
             Self::WhereContainsSemicolon => "where_contains_semicolon",
             Self::QueryRequired => "table_query_required",
             Self::QueryMustBeSelect => "table_query_must_be_select",
@@ -122,7 +127,7 @@ impl TableError {
     #[must_use]
     pub fn hint(&self) -> Option<String> {
         match self {
-            Self::Sap(error) => Some(error.hint().to_owned()),
+            Self::Sap(error) => Some(error.hint()),
             Self::DdlSource(error) => error.hint(),
             Self::DdlParse(_) => Some(
                 "The SAP table source did not match the expected `define table` DDL format."
@@ -141,9 +146,10 @@ impl TableError {
                 "Use a DDIC table, view, or CDS view name: letters, digits, underscore, and slash only."
                     .to_owned(),
             ),
-            Self::InvalidFieldName(_) => Some(
-                "Field names may only contain letters, digits, and underscore.".to_owned(),
-            ),
+            Self::InvalidFieldName { entity, .. } => Some(format!(
+                "Field names may only contain letters, digits, and underscore. Run `{}` to list this entity's fields.",
+                suggested_command::table_metadata(entity)
+            )),
             Self::WhereContainsSemicolon => Some(
                 "Semicolons are rejected to prevent multi-statement injection; express the filter as a single WHERE fragment, or use `fractal query` for a full statement."
                     .to_owned(),
@@ -158,6 +164,30 @@ impl TableError {
             Self::PreviewRangeTooLarge { maximum, .. } => Some(format!(
                 "Reduce --offset or --limit so offset + limit is at most {maximum}."
             )),
+        }
+    }
+
+    /// A read-only command that diagnoses this failure, if one exists.
+    #[must_use]
+    pub fn suggested_command(&self) -> Option<String> {
+        match self {
+            // The Levenshtein suggestions name likely columns; this names the
+            // command that lists every valid one.
+            Self::Query {
+                query:
+                    TableQueryError {
+                        kind: TableQueryErrorKind::UnknownColumn,
+                        entity: Some(entity),
+                        ..
+                    },
+                ..
+            }
+            | Self::InvalidFieldName { entity, .. } => {
+                Some(suggested_command::table_metadata(entity))
+            }
+            Self::Sap(error) => error.suggested_command(),
+            Self::Query { source, .. } => source.suggested_command(),
+            _ => None,
         }
     }
 
@@ -215,7 +245,11 @@ static QUERY_ERROR_PATTERNS: LazyLock<[QueryErrorPattern; 3]> = LazyLock::new(||
     ]
 });
 
-pub(super) fn classify_query_error(error: SapError, columns: &[TableColumn]) -> TableError {
+pub(super) fn classify_query_error(
+    error: SapError,
+    columns: &[TableColumn],
+    entity: Option<&str>,
+) -> TableError {
     let SapError::Http { message, .. } = &error else {
         return TableError::Sap(error);
     };
@@ -230,6 +264,7 @@ pub(super) fn classify_query_error(error: SapError, columns: &[TableColumn]) -> 
     };
     let query = TableQueryError {
         kind,
+        entity: entity.map(str::to_owned),
         identifier: Some(identifier),
         suggestions,
         message: message.clone(),
@@ -337,7 +372,7 @@ mod tests {
         ];
 
         for (message, expected_kind, expected_identifier, expected_code) in cases {
-            let error = classify_query_error(http_error(message), &[]);
+            let error = classify_query_error(http_error(message), &[], None);
             assert_eq!(error.code(), expected_code);
             assert!(matches!(
                 &error,
@@ -359,7 +394,11 @@ mod tests {
     #[test]
     fn suggests_the_closest_columns_for_an_unknown_column() {
         let columns = [column("EVENT_ID"), column("EVENT_DATE"), column("STATUS")];
-        let error = classify_query_error(http_error("Unknown column name \"EVNT_ID\"."), &columns);
+        let error = classify_query_error(
+            http_error("Unknown column name \"EVNT_ID\"."),
+            &columns,
+            Some("ZDEMO_EVENT_LOG"),
+        );
 
         let TableError::Query { query, .. } = &error else {
             panic!("expected a structured query error");
@@ -370,7 +409,7 @@ mod tests {
 
     #[test]
     fn preserves_unrecognized_sap_errors_without_reclassification() {
-        let error = classify_query_error(http_error("Request could not be processed"), &[]);
+        let error = classify_query_error(http_error("Request could not be processed"), &[], None);
         assert!(matches!(error, TableError::Sap(SapError::Http { .. })));
         assert_eq!(error.code(), "http_error");
     }

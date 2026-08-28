@@ -205,7 +205,7 @@ async fn rejects_malformed_checkrun_xml_with_a_stable_error() {
     .await
     .unwrap_err();
 
-    assert!(matches!(error, AdtSourceCheckError::Parse(_)));
+    assert!(matches!(error, AdtSourceCheckError::Parse { .. }));
     assert_eq!(error.code(), "edit_source_check_response_invalid");
     server.verify().await;
 }
@@ -232,7 +232,13 @@ async fn preserves_sap_failures_from_the_checkrun_request() {
     .await
     .unwrap_err();
 
-    assert!(matches!(error, AdtSourceCheckError::Sap(_)));
+    assert!(matches!(error, AdtSourceCheckError::Sap { .. }));
+    // When the check cannot run, reading the version being checked is the
+    // remaining way to inspect the source.
+    assert_eq!(
+        error.suggested_command().as_deref(),
+        Some("fractal edit read --type CLAS --name ZCL_SAMPLE --version active")
+    );
     assert_eq!(error.code(), "edit_source_check_failed");
     assert!(error.to_string().contains("Check authorization missing"));
     assert!(error.sap_error().is_some());

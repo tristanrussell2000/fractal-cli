@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::suggested_command;
+
 use super::{
     client::{SapClient, SapError},
     edit_session::{
@@ -9,7 +11,7 @@ use super::{
     editable_source::{
         AdtEditTargetValidationError, AdtSourceReadError, AdtSourceReadResult, AdtSourceSnapshot,
         AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
-        edit_read_command, validate_adt_edit_target,
+        validate_adt_edit_target,
     },
     source_activation::{AdtSourceActivationError, activate_validated_adt_source},
     source_check::{AdtInactiveSourceProbeError, probe_inactive_adt_source},
@@ -119,7 +121,7 @@ impl AdtInactiveSourceDiscardError {
             }
             Self::RestoreVerificationMismatch { identity, .. } => format!(
                 "The inactive source was overwritten but not activated because SAP did not preserve the active bytes exactly. Inspect both versions before continuing, starting with `{}`.",
-                edit_read_command(identity, AdtSourceVersion::Inactive)
+                suggested_command::edit_read(identity.object_type.as_str(), &identity.name, AdtSourceVersion::Inactive.as_str())
             ),
             Self::RestoredSourceActivation(error) => format!(
                 "The inactive source now contains the previous active source, but activation did not complete. {}",
@@ -127,8 +129,39 @@ impl AdtInactiveSourceDiscardError {
             ),
             Self::ActiveSourceChanged { identity, .. } => format!(
                 "Do not retry blindly: a discard must preserve active source exactly, so inspect the object history, starting with `{}`.",
-                edit_read_command(identity, AdtSourceVersion::Active)
+                suggested_command::edit_read(identity.object_type.as_str(), &identity.name, AdtSourceVersion::Active.as_str())
             ),
+        }
+    }
+
+    /// A read-only command that diagnoses this failure, if one exists.
+    ///
+    /// A failed unlock after the restore write returns `None` even though its
+    /// remedy is known: finishing the discard requires `fractal edit activate`,
+    /// a mutation, so that instruction stays in prose where a caller decides.
+    #[must_use]
+    pub fn suggested_command(&self) -> Option<String> {
+        match self {
+            Self::RestoreVerificationMismatch { identity, .. } => {
+                Some(suggested_command::edit_read(
+                    identity.object_type.as_str(),
+                    &identity.name,
+                    AdtSourceVersion::Inactive.as_str(),
+                ))
+            }
+            Self::ActiveSourceChanged { identity, .. } => Some(suggested_command::edit_read(
+                identity.object_type.as_str(),
+                &identity.name,
+                AdtSourceVersion::Active.as_str(),
+            )),
+            Self::ActiveSourceRead(error)
+            | Self::InactiveSourceRead(error)
+            | Self::RestoredSourceRead(error) => error.suggested_command(),
+            Self::RestoredSourceActivation(error) => error.suggested_command(),
+            Self::Validation(_)
+            | Self::Session(_)
+            | Self::InactiveVersionProbe(_)
+            | Self::NoInactiveVersion { .. } => None,
         }
     }
 

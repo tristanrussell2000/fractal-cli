@@ -7,7 +7,7 @@ use super::{
     adt::RepositoryKind,
     client::{SapClient, SapError},
 };
-use crate::{pattern::glob_matches, source_change::source_sha256};
+use crate::{pattern::glob_matches, source_change::source_sha256, suggested_command};
 
 const SOURCE_SUFFIX: &str = "/source/main";
 
@@ -141,43 +141,6 @@ pub struct EditableAdtSourceIdentity {
     pub source_uri: String,
 }
 
-/// Builds the `fractal edit read` command that fetches this object's source.
-///
-/// Errors name a runnable command so a caller does not have to rebuild the
-/// object's type and canonical name from context it may no longer have. The
-/// library authoring CLI commands is deliberate: the layer that knows which
-/// operation failed at which stage is the only layer that knows the remedy,
-/// and this CLI is the library's only consumer.
-#[must_use]
-pub fn edit_read_command(
-    identity: &EditableAdtSourceIdentity,
-    version: AdtSourceVersion,
-) -> String {
-    edit_command("read", identity, version)
-}
-
-/// Builds the `fractal edit check` command that syntax-checks this object.
-#[must_use]
-pub fn edit_check_command(
-    identity: &EditableAdtSourceIdentity,
-    version: AdtSourceVersion,
-) -> String {
-    edit_command("check", identity, version)
-}
-
-fn edit_command(
-    operation: &str,
-    identity: &EditableAdtSourceIdentity,
-    version: AdtSourceVersion,
-) -> String {
-    format!(
-        "fractal edit {operation} --type {} --name {} --version {}",
-        identity.object_type.as_str(),
-        identity.name,
-        version.as_str()
-    )
-}
-
 /// A syntactically valid source object type and name.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum EditableAdtSourceTargetError {
@@ -302,8 +265,13 @@ pub(super) struct ValidatedAdtEditTarget {
 pub enum AdtSourceReadError {
     #[error(transparent)]
     InvalidTarget(#[from] EditableAdtSourceTargetError),
-    #[error(transparent)]
-    Sap(#[from] SapError),
+    #[error("{source}")]
+    Sap {
+        object_type: &'static str,
+        name: String,
+        #[source]
+        source: SapError,
+    },
     #[error("SAP returned non-UTF-8 source for {object_type} object '{name}': {source}")]
     InvalidSourceEncoding {
         object_type: &'static str,
@@ -318,7 +286,7 @@ impl AdtSourceReadError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::InvalidTarget(error) => error.code(),
-            Self::Sap(error) => error.code(),
+            Self::Sap { source, .. } => source.code(),
             Self::InvalidSourceEncoding { .. } => "edit_source_encoding_error",
         }
     }
@@ -327,7 +295,7 @@ impl AdtSourceReadError {
     pub fn hint(&self) -> String {
         match self {
             Self::InvalidTarget(error) => error.hint(),
-            Self::Sap(error) => error.hint().to_owned(),
+            Self::Sap { source, .. } => source.hint(),
             Self::InvalidSourceEncoding { .. } => {
                 "The native ADT source response must be valid UTF-8 before it can be patched safely."
                     .to_owned()
@@ -338,7 +306,21 @@ impl AdtSourceReadError {
     #[must_use]
     pub const fn sap_error(&self) -> Option<&SapError> {
         match self {
-            Self::Sap(error) => Some(error),
+            Self::Sap { source, .. } => Some(source),
+            Self::InvalidTarget(_) | Self::InvalidSourceEncoding { .. } => None,
+        }
+    }
+
+    /// A read-only command that diagnoses this failure, if one exists.
+    #[must_use]
+    pub fn suggested_command(&self) -> Option<String> {
+        match self {
+            Self::Sap {
+                object_type,
+                name,
+                source,
+            } if source.is_not_found() => Some(suggested_command::object_search(object_type, name)),
+            Self::Sap { source, .. } => source.suggested_command(),
             Self::InvalidTarget(_) | Self::InvalidSourceEncoding { .. } => None,
         }
     }
@@ -384,7 +366,12 @@ pub(super) async fn read_adt_source(
             &[("version", version.as_str())],
             headers,
         )
-        .await?;
+        .await
+        .map_err(|source| AdtSourceReadError::Sap {
+            object_type: identity.object_type.as_str(),
+            name: identity.name.clone(),
+            source,
+        })?;
     let bytes = response_bytes.len();
     let source = String::from_utf8(response_bytes).map_err(|source| {
         AdtSourceReadError::InvalidSourceEncoding {
@@ -497,21 +484,6 @@ fn validate_object_name(name: &str) -> Result<String, EditableAdtSourceTargetErr
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn builds_runnable_remedial_commands_from_an_identity() {
-        let identity =
-            editable_source_identity(EditableAdtObjectType::Class, "zcl_example").unwrap();
-
-        assert_eq!(
-            edit_read_command(&identity, AdtSourceVersion::Inactive),
-            "fractal edit read --type CLAS --name ZCL_EXAMPLE --version inactive"
-        );
-        assert_eq!(
-            edit_check_command(&identity, AdtSourceVersion::Active),
-            "fractal edit check --type CLAS --name ZCL_EXAMPLE --version active"
-        );
-    }
 
     #[test]
     fn maps_every_initial_object_type_to_a_fixed_adt_root() {

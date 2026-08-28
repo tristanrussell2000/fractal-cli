@@ -60,7 +60,7 @@ impl AdtEditSessionError {
             }
             Self::SourceWriteFailed { transport, source } => {
                 transport_failure_hint(transport.as_deref(), source)
-                    .unwrap_or_else(|| source.hint().to_owned())
+                    .unwrap_or_else(|| source.hint())
             }
             Self::UnlockFailed(_) => {
                 "The source operation may have succeeded, but the SAP lock may remain; close or unlock the object before retrying."

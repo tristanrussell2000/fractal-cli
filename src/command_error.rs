@@ -136,6 +136,20 @@ impl CommandError {
         }
     }
 
+    /// A read-only command that diagnoses this failure, if one exists.
+    ///
+    /// Deliberately absent for credential and profile failures: their remedy is
+    /// `fractal auth login`, which mutates local state and prompts for a
+    /// password, so it stays in prose where a human decides to run it.
+    pub(crate) fn suggested_command(&self) -> Option<String> {
+        match self {
+            Self::Sap(error) | Self::Package(PackageError::Sap(error)) => error.suggested_command(),
+            Self::Edit(error) => error.diagnostics().suggested_command(),
+            Self::Table(error) => error.suggested_command(),
+            _ => None,
+        }
+    }
+
     pub(crate) fn hint(&self) -> Option<String> {
         match self {
             Self::Config(config::ConfigError::NoProfileSelected) => Some(
@@ -147,7 +161,7 @@ impl CommandError {
             )),
             Self::Config(_) | Self::Credential(_) => None,
             Self::Sap(error) | Self::Package(PackageError::Sap(error)) => {
-                Some(error.hint().to_owned())
+                Some(error.hint())
             }
             Self::Adt(error) => error.hint(),
             Self::Edit(error) => Some(error.diagnostics().hint()),
@@ -260,8 +274,9 @@ mod tests {
         client::{SapError, SapErrorKind},
         edit_session::AdtEditSessionError,
         editable_source::{
-            AdtEditTargetValidationError, AdtSourceReadError, CustomerNamespaceError,
-            EditableAdtObjectType, EditableAdtSourceIdentity, EditableAdtSourceTargetError,
+            AdtEditTargetValidationError, AdtSourceReadError, AdtSourceVersion,
+            CustomerNamespaceError, EditableAdtObjectType, EditableAdtSourceIdentity,
+            EditableAdtSourceTargetError,
         },
         source_activation::AdtSourceActivationError,
         source_check::AdtSourceCheckError,
@@ -316,6 +331,7 @@ mod tests {
         let error = CommandError::from(TableError::Query {
             query: TableQueryError {
                 kind: TableQueryErrorKind::UnknownColumn,
+                entity: Some("ZDEMO_EVENT_LOG".to_owned()),
                 identifier: Some("EVNT_ID".to_owned()),
                 suggestions: vec!["EVENT_ID".to_owned()],
                 message: "Unknown column name \"EVNT_ID\".".to_owned(),
@@ -338,12 +354,16 @@ mod tests {
         assert_eq!(validation.status(), None);
         assert!(validation.hint().unwrap().contains("CLAS"));
 
-        let sap = CommandError::from(AdtSourceReadError::Sap(SapError::Http {
-            kind: SapErrorKind::NotFound,
-            status: reqwest::StatusCode::NOT_FOUND,
-            url: "https://sap.example/sap/bc/adt/oo/classes/zmissing/source/main".to_owned(),
-            message: "Object not found".to_owned(),
-        }));
+        let sap = CommandError::from(AdtSourceReadError::Sap {
+            object_type: "CLAS",
+            name: "ZMISSING".to_owned(),
+            source: SapError::Http {
+                kind: SapErrorKind::NotFound,
+                status: reqwest::StatusCode::NOT_FOUND,
+                url: "https://sap.example/sap/bc/adt/oo/classes/zmissing/source/main".to_owned(),
+                message: "Object not found".to_owned(),
+            },
+        });
         assert_eq!(sap.code(), "not_found");
         assert_eq!(sap.status(), Some(404));
         assert!(sap.message().contains("Object not found"));
@@ -379,12 +399,16 @@ mod tests {
 
     #[test]
     fn preserves_source_check_stage_and_http_status() {
-        let error = CommandError::from(AdtSourceCheckError::Sap(SapError::Http {
-            kind: SapErrorKind::Forbidden,
-            status: StatusCode::FORBIDDEN,
-            url: "https://sap.example/sap/bc/adt/checkruns".to_owned(),
-            message: "Check authorization missing".to_owned(),
-        }));
+        let error = CommandError::from(AdtSourceCheckError::Sap {
+            identity: sample_identity(),
+            version: AdtSourceVersion::Inactive,
+            source: SapError::Http {
+                kind: SapErrorKind::Forbidden,
+                status: StatusCode::FORBIDDEN,
+                url: "https://sap.example/sap/bc/adt/checkruns".to_owned(),
+                message: "Check authorization missing".to_owned(),
+            },
+        });
 
         assert_eq!(error.code(), "edit_source_check_failed");
         assert_eq!(error.status(), Some(403));
@@ -437,13 +461,17 @@ mod tests {
     #[test]
     fn preserves_source_replacement_stage_and_http_status() {
         let error = CommandError::from(AdtSourceReplacementError::PreviewSourceRead(
-            AdtSourceReadError::Sap(SapError::Http {
-                kind: SapErrorKind::Forbidden,
-                status: StatusCode::FORBIDDEN,
-                url: "https://sap.example/sap/bc/adt/programs/programs/zsample/source/main"
-                    .to_owned(),
-                message: "Source read authorization missing".to_owned(),
-            }),
+            AdtSourceReadError::Sap {
+                object_type: "PROG",
+                name: "ZSAMPLE".to_owned(),
+                source: SapError::Http {
+                    kind: SapErrorKind::Forbidden,
+                    status: StatusCode::FORBIDDEN,
+                    url: "https://sap.example/sap/bc/adt/programs/programs/zsample/source/main"
+                        .to_owned(),
+                    message: "Source read authorization missing".to_owned(),
+                },
+            },
         ));
 
         assert_eq!(error.code(), "edit_source_replacement_preview_read_failed");

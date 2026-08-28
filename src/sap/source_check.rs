@@ -1,6 +1,8 @@
 use reqwest::header::{HeaderMap, HeaderValue};
 use thiserror::Error;
 
+use crate::suggested_command;
+
 use super::{
     adt_message_severity::AdtMessageSeverity,
     client::{SapClient, SapError},
@@ -38,10 +40,20 @@ pub struct AdtSourceCheckResult {
 pub enum AdtSourceCheckError {
     #[error("invalid source-check object: {0}")]
     InvalidObject(#[source] EditableAdtSourceTargetError),
-    #[error("SAP source check failed: {0}")]
-    Sap(#[source] SapError),
-    #[error("SAP returned malformed source-check XML: {0}")]
-    Parse(#[source] roxmltree::Error),
+    #[error("SAP source check failed: {source}")]
+    Sap {
+        identity: Box<EditableAdtSourceIdentity>,
+        version: AdtSourceVersion,
+        #[source]
+        source: SapError,
+    },
+    #[error("SAP returned malformed source-check XML: {source}")]
+    Parse {
+        identity: Box<EditableAdtSourceIdentity>,
+        version: AdtSourceVersion,
+        #[source]
+        source: roxmltree::Error,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -64,7 +76,7 @@ impl AdtInactiveSourceProbeError {
     #[must_use]
     pub fn hint(&self) -> String {
         match self {
-            Self::Sap(error) => error.hint().to_owned(),
+            Self::Sap(error) => error.hint(),
             Self::Parse(_) => {
                 "The SAP inactive-object response did not contain valid ADT XML.".to_owned()
             }
@@ -77,8 +89,8 @@ impl AdtSourceCheckError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::InvalidObject(error) => error.code(),
-            Self::Sap(_) => "edit_source_check_failed",
-            Self::Parse(_) => "edit_source_check_response_invalid",
+            Self::Sap { .. } => "edit_source_check_failed",
+            Self::Parse { .. } => "edit_source_check_response_invalid",
         }
     }
 
@@ -86,8 +98,8 @@ impl AdtSourceCheckError {
     pub fn hint(&self) -> String {
         match self {
             Self::InvalidObject(error) => error.hint(),
-            Self::Sap(error) => error.hint().to_owned(),
-            Self::Parse(_) => {
+            Self::Sap { source, .. } => source.hint(),
+            Self::Parse { .. } => {
                 "The SAP checkrun response did not match the expected ADT check-message XML."
                     .to_owned()
             }
@@ -97,8 +109,29 @@ impl AdtSourceCheckError {
     #[must_use]
     pub const fn sap_error(&self) -> Option<&SapError> {
         match self {
-            Self::Sap(error) => Some(error),
-            Self::InvalidObject(_) | Self::Parse(_) => None,
+            Self::Sap { source, .. } => Some(source),
+            Self::InvalidObject(_) | Self::Parse { .. } => None,
+        }
+    }
+
+    /// A read-only command that diagnoses this failure, if one exists.
+    ///
+    /// When the check itself cannot run, reading the version that was being
+    /// checked is the remaining way to inspect the source.
+    #[must_use]
+    pub fn suggested_command(&self) -> Option<String> {
+        match self {
+            Self::Sap {
+                identity, version, ..
+            }
+            | Self::Parse {
+                identity, version, ..
+            } => Some(suggested_command::edit_read(
+                identity.object_type.as_str(),
+                &identity.name,
+                version.as_str(),
+            )),
+            Self::InvalidObject(_) => None,
         }
     }
 }
@@ -136,7 +169,11 @@ pub async fn check_adt_stored_source(
     }
     sap.establish_csrf_session()
         .await
-        .map_err(AdtSourceCheckError::Sap)?;
+        .map_err(|source| AdtSourceCheckError::Sap {
+            identity: Box::new(identity.clone()),
+            version,
+            source,
+        })?;
     check_adt_source_by_identity(sap, &identity, version, inactive_version_exists).await
 }
 
@@ -185,8 +222,12 @@ pub(super) async fn check_adt_source_by_identity(
             headers,
         )
         .await
-        .map_err(AdtSourceCheckError::Sap)?;
-    let parsed = parse_checkrun_response(&response)?;
+        .map_err(|source| AdtSourceCheckError::Sap {
+            identity: Box::new(identity.clone()),
+            version,
+            source,
+        })?;
+    let parsed = parse_checkrun_response(&response, identity, version)?;
 
     Ok(AdtSourceCheckResult {
         identity: identity.clone(),
@@ -236,8 +277,17 @@ struct ParsedCheckrunResponse {
     messages: Vec<AdtSourceCheckMessage>,
 }
 
-fn parse_checkrun_response(response: &str) -> Result<ParsedCheckrunResponse, AdtSourceCheckError> {
-    let document = roxmltree::Document::parse(response).map_err(AdtSourceCheckError::Parse)?;
+fn parse_checkrun_response(
+    response: &str,
+    identity: &EditableAdtSourceIdentity,
+    version: AdtSourceVersion,
+) -> Result<ParsedCheckrunResponse, AdtSourceCheckError> {
+    let document =
+        roxmltree::Document::parse(response).map_err(|source| AdtSourceCheckError::Parse {
+            identity: Box::new(identity.clone()),
+            version,
+            source,
+        })?;
     let messages = document
         .descendants()
         .filter(|node| node.is_element() && node.tag_name().name() == "checkMessage")
@@ -278,6 +328,10 @@ fn parse_checkrun_response(response: &str) -> Result<ParsedCheckrunResponse, Adt
 mod tests {
     use super::*;
 
+    fn sample_identity() -> EditableAdtSourceIdentity {
+        editable_source_identity(EditableAdtObjectType::Class, "zcl_sample").unwrap()
+    }
+
     #[test]
     fn parses_check_messages_and_decodes_xml_attributes() {
         let parsed = parse_checkrun_response(
@@ -286,6 +340,8 @@ mod tests {
                 <chkrun:checkMessage chkrun:type="W" chkrun:shortText="Unused variable"/>
                 <chkrun:checkMessage chkrun:type="I" chkrun:shortText="Check completed" chkrun:line="not-a-number"/>
             </chkrun:checkMessageList>"#,
+            &sample_identity(),
+            AdtSourceVersion::Inactive,
         )
         .unwrap();
 
@@ -301,6 +357,8 @@ mod tests {
     fn accepts_a_well_formed_response_with_no_messages_as_clean() {
         let parsed = parse_checkrun_response(
             r#"<chkrun:checkMessageList xmlns:chkrun="http://www.sap.com/adt/checkrun"/>"#,
+            &sample_identity(),
+            AdtSourceVersion::Inactive,
         )
         .unwrap();
 
@@ -311,8 +369,12 @@ mod tests {
     #[test]
     fn rejects_malformed_checkrun_xml() {
         assert!(matches!(
-            parse_checkrun_response("<not-closed>"),
-            Err(AdtSourceCheckError::Parse(_))
+            parse_checkrun_response(
+                "<not-closed>",
+                &sample_identity(),
+                AdtSourceVersion::Inactive,
+            ),
+            Err(AdtSourceCheckError::Parse { .. })
         ));
     }
 

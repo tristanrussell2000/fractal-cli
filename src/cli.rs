@@ -397,3 +397,83 @@ pub struct UriArgs {
     /// ADT object URI.
     pub(crate) uri: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::{Cli, Command, EditCommand, ObjectCommand, SystemCommand, TableCommand};
+    use fractal::suggested_command;
+
+    /// Every command an error can offer as a remedy must actually parse as a
+    /// `fractal` invocation. Without this, renaming a flag or a subcommand in
+    /// this file would silently start handing callers instructions that do not
+    /// run, and nothing would fail to compile.
+    #[test]
+    fn every_suggested_command_parses_as_a_cli_invocation() {
+        let commands = [
+            suggested_command::system_test(),
+            suggested_command::edit_read("CLAS", "ZCL_SAMPLE", "inactive"),
+            suggested_command::edit_read("CLAS", "/ACME/EXAMPLE", "active"),
+            suggested_command::edit_check("PROG", "ZSAMPLE", "inactive"),
+            suggested_command::object_search("INTF", "ZIF_SAMPLE"),
+            suggested_command::table_metadata("ZDEMO_EVENT_LOG"),
+        ];
+
+        for command in commands {
+            assert!(
+                Cli::try_parse_from(command.split(' ')).is_ok(),
+                "suggested command does not parse: {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn suggested_commands_bind_their_arguments_to_the_intended_flags() {
+        // Parsing is not enough: a renamed flag could still parse while
+        // carrying the value into the wrong field.
+        let cli = Cli::try_parse_from(
+            suggested_command::edit_read("CLAS", "ZCL_SAMPLE", "inactive").split(' '),
+        )
+        .unwrap();
+        let Command::Edit {
+            command: EditCommand::Read(args),
+        } = cli.command
+        else {
+            panic!("expected edit read");
+        };
+        assert_eq!(args.object_type, "CLAS");
+        assert_eq!(args.name, "ZCL_SAMPLE");
+        assert_eq!(args.version, super::EditSourceVersionArg::Inactive);
+
+        let cli =
+            Cli::try_parse_from(suggested_command::object_search("INTF", "ZIF_SAMPLE").split(' '))
+                .unwrap();
+        let Command::Object {
+            command: ObjectCommand::Search(args),
+        } = cli.command
+        else {
+            panic!("expected object search");
+        };
+        assert_eq!(args.query, "ZIF_SAMPLE");
+        assert_eq!(args.kind.as_deref(), Some("INTF"));
+
+        let cli =
+            Cli::try_parse_from(suggested_command::table_metadata("ZDEMO").split(' ')).unwrap();
+        let Command::Table {
+            command: TableCommand::Metadata(args),
+        } = cli.command
+        else {
+            panic!("expected table metadata");
+        };
+        assert_eq!(args.name, "ZDEMO");
+
+        let cli = Cli::try_parse_from(suggested_command::system_test().split(' ')).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::System {
+                command: SystemCommand::Test
+            }
+        ));
+    }
+}

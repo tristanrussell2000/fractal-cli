@@ -8,7 +8,7 @@ use reqwest::{
 use serde::Serialize;
 use thiserror::Error;
 
-use crate::config::Profile;
+use crate::{config::Profile, suggested_command};
 
 const DISCOVERY_PATH: &str = "/sap/bc/adt/core/discovery";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -75,6 +75,19 @@ pub enum SapError {
 }
 
 impl SapError {
+    /// Whether SAP answered 404, meaning the requested object or endpoint does
+    /// not exist rather than that the request itself was refused.
+    #[must_use]
+    pub const fn is_not_found(&self) -> bool {
+        matches!(
+            self,
+            Self::Http {
+                kind: SapErrorKind::NotFound,
+                ..
+            }
+        )
+    }
+
     #[must_use]
     pub fn is_csrf_failure(&self) -> bool {
         match self {
@@ -92,6 +105,23 @@ impl SapError {
         }
     }
 
+    /// A read-only command that diagnoses this failure, if one exists.
+    ///
+    /// Only connectivity and authentication failures have a general remedy.
+    /// A 404 or 403 depends on what the caller was doing, so the operation
+    /// that wrapped this error supplies the command instead.
+    #[must_use]
+    pub fn suggested_command(&self) -> Option<String> {
+        match self {
+            Self::Network { .. }
+            | Self::Http {
+                kind: SapErrorKind::AuthenticationFailed,
+                ..
+            } => Some(suggested_command::system_test()),
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
@@ -102,16 +132,23 @@ impl SapError {
         }
     }
 
+    /// Advice for this failure, with the diagnostic command appended when one
+    /// applies. The command is built by `suggested_command` rather than spelled
+    /// here, so a renamed subcommand cannot leave stale text behind.
     #[must_use]
-    pub const fn hint(&self) -> &'static str {
-        match self {
+    pub fn hint(&self) -> String {
+        let advice = match self {
             Self::Client(_) => "The local HTTP client could not be initialized.",
             Self::InvalidUrl { .. } => "Use a complete SAP URL including http:// or https://.",
             Self::Network { .. } => {
                 "Check the VPN, hostname, port, and whether the SAP service is reachable."
             }
             Self::Http { kind, .. } => kind.hint(),
-        }
+        };
+        self.suggested_command().map_or_else(
+            || advice.to_owned(),
+            |command| format!("{advice} Run `{command}` to verify the connection."),
+        )
     }
 }
 

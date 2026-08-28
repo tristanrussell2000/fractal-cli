@@ -56,7 +56,7 @@ impl AdtError {
     #[must_use]
     pub fn hint(&self) -> Option<String> {
         match self {
-            Self::Sap(error) => Some(error.hint().to_owned()),
+            Self::Sap(error) => Some(error.hint()),
             Self::InvalidQuery(_) => Some("Provide a non-empty object search query.".to_owned()),
             Self::Parse(_) => {
                 Some("The SAP ADT response did not match the expected search format.".to_owned())

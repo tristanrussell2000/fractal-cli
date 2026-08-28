@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use super::editable_source::{
     AdtEditTargetValidationError, AdtSourceReadError, AdtSourceVersion, EditableAdtObjectType,
-    EditableAdtSourceIdentity, edit_read_command, read_adt_source_for_edit,
+    EditableAdtSourceIdentity, read_adt_source_for_edit,
 };
 use super::{
     client::{SapClient, SapError},
@@ -13,6 +13,7 @@ use super::{
     },
 };
 use crate::source_change::{SourceChangePlanError, plan_patch};
+use crate::suggested_command;
 
 /// One exact source replacement to preview or perform against an ADT object.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,14 +101,48 @@ impl AdtSourcePatchError {
                 | SourceChangePlanError::SourceHashMismatch { .. } => format!(
                     "{} Run `{}` to read the current source.",
                     source.hint(),
-                    edit_read_command(identity, AdtSourceVersion::Inactive)
+                    suggested_command::edit_read(
+                        identity.object_type.as_str(),
+                        &identity.name,
+                        AdtSourceVersion::Inactive.as_str()
+                    )
                 ),
                 _ => source.hint(),
             },
             Self::StoredSourceRead { identity, .. } => format!(
                 "The write and unlock succeeded, but its stored result could not be verified; re-read the inactive source before making another change. Run `{}`.",
-                edit_read_command(identity, AdtSourceVersion::Inactive)
+                suggested_command::edit_read(
+                    identity.object_type.as_str(),
+                    &identity.name,
+                    AdtSourceVersion::Inactive.as_str()
+                )
             ),
+        }
+    }
+
+    /// A read-only command that diagnoses this failure, if one exists.
+    ///
+    /// Lock and write failures return `None`: their remedy is to retry the
+    /// write, which must never appear in a field a caller may execute.
+    #[must_use]
+    pub fn suggested_command(&self) -> Option<String> {
+        match self {
+            Self::Patch {
+                identity,
+                source:
+                    SourceChangePlanError::AnchorNotFound
+                    | SourceChangePlanError::AnchorAmbiguous { .. }
+                    | SourceChangePlanError::SourceHashMismatch { .. },
+            }
+            | Self::StoredSourceRead { identity, .. } => Some(suggested_command::edit_read(
+                identity.object_type.as_str(),
+                &identity.name,
+                AdtSourceVersion::Inactive.as_str(),
+            )),
+            Self::LockedSourceRead(error) | Self::PreviewSourceRead(error) => {
+                error.suggested_command()
+            }
+            Self::Patch { .. } | Self::Validation(_) | Self::Session(_) => None,
         }
     }
 

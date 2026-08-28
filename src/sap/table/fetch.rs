@@ -207,7 +207,7 @@ pub async fn get_table_data(
                 let columns = metadata_result
                     .as_ref()
                     .map_or(&[][..], |metadata| metadata.columns.as_slice());
-                return Err(classify_query_error(error, columns));
+                return Err(classify_query_error(error, columns, Some(&entity)));
             }
         };
         if let Some(metadata_result) = metadata_result {
@@ -237,7 +237,7 @@ pub async fn run_query(
     sap.establish_csrf_session().await?;
     let xml = post_freestyle_preview(sap, &break_sql_lines(query), row_count)
         .await
-        .map_err(|error| classify_query_error(error, &[]))?;
+        .map_err(|error| classify_query_error(error, &[], None))?;
     let mut result = parse_table_data(&xml)?;
     apply_local_page(&mut result, options.offset, options.limit);
     Ok(result)
@@ -331,7 +331,7 @@ fn build_simple_query(
     where_clause: Option<&str>,
 ) -> Result<String, TableError> {
     let entity = validate_entity_name(entity)?;
-    let fields = validate_field_names(fields)?;
+    let fields = validate_field_names(fields, &entity)?;
     let select_list = if fields.is_empty() {
         "*".to_owned()
     } else {
@@ -365,7 +365,7 @@ fn validate_entity_name(name: &str) -> Result<String, TableError> {
     }
 }
 
-fn validate_field_names(fields: &[String]) -> Result<Vec<String>, TableError> {
+fn validate_field_names(fields: &[String], entity: &str) -> Result<Vec<String>, TableError> {
     fields
         .iter()
         .map(String::as_str)
@@ -378,7 +378,10 @@ fn validate_field_names(fields: &[String]) -> Result<Vec<String>, TableError> {
             {
                 Ok(field.to_ascii_uppercase())
             } else {
-                Err(TableError::InvalidFieldName(field.to_owned()))
+                Err(TableError::InvalidFieldName {
+                    entity: entity.to_owned(),
+                    field: field.to_owned(),
+                })
             }
         })
         .collect()

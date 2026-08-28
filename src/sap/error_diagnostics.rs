@@ -31,6 +31,18 @@ pub trait AdtErrorDiagnostics: Display {
     #[must_use]
     fn sap_error(&self) -> Option<&SapError>;
 
+    /// A command that diagnoses this failure, if one can be derived.
+    ///
+    /// **Read-only by construction.** A caller may reasonably execute this
+    /// value directly, so it must never contain a mutation: a write appearing
+    /// here would defeat the save-only, activate-explicitly discipline the edit
+    /// design rests on. Retry-the-write advice — including transport retries —
+    /// stays in prose `hint`.
+    #[must_use]
+    fn suggested_command(&self) -> Option<String> {
+        None
+    }
+
     /// The HTTP status of the underlying SAP failure, when there is one.
     #[must_use]
     fn http_status(&self) -> Option<u16> {
@@ -68,6 +80,10 @@ impl AdtErrorDiagnostics for AdtSourceReadError {
     fn sap_error(&self) -> Option<&SapError> {
         Self::sap_error(self)
     }
+
+    fn suggested_command(&self) -> Option<String> {
+        Self::suggested_command(self)
+    }
 }
 
 impl AdtErrorDiagnostics for AdtSourcePatchError {
@@ -81,6 +97,10 @@ impl AdtErrorDiagnostics for AdtSourcePatchError {
 
     fn sap_error(&self) -> Option<&SapError> {
         Self::sap_error(self)
+    }
+
+    fn suggested_command(&self) -> Option<String> {
+        Self::suggested_command(self)
     }
 }
 
@@ -96,6 +116,10 @@ impl AdtErrorDiagnostics for AdtSourceReplacementError {
     fn sap_error(&self) -> Option<&SapError> {
         Self::sap_error(self)
     }
+
+    fn suggested_command(&self) -> Option<String> {
+        Self::suggested_command(self)
+    }
 }
 
 impl AdtErrorDiagnostics for AdtSourceCheckError {
@@ -109,6 +133,10 @@ impl AdtErrorDiagnostics for AdtSourceCheckError {
 
     fn sap_error(&self) -> Option<&SapError> {
         Self::sap_error(self)
+    }
+
+    fn suggested_command(&self) -> Option<String> {
+        Self::suggested_command(self)
     }
 }
 
@@ -124,11 +152,19 @@ impl AdtErrorDiagnostics for AdtSourceActivationError {
     fn sap_error(&self) -> Option<&SapError> {
         Self::sap_error(self)
     }
+
+    fn suggested_command(&self) -> Option<String> {
+        Self::suggested_command(self)
+    }
 }
 
 impl AdtErrorDiagnostics for AdtInactiveSourceDiscardError {
     fn code(&self) -> &'static str {
         Self::code(self)
+    }
+
+    fn suggested_command(&self) -> Option<String> {
+        Self::suggested_command(self)
     }
 
     fn hint(&self) -> String {
@@ -145,22 +181,145 @@ mod tests {
     use reqwest::StatusCode;
 
     use super::*;
-    use crate::sap::client::SapErrorKind;
+    use crate::{
+        sap::{
+            client::SapErrorKind,
+            edit_session::AdtEditSessionError,
+            editable_source::{
+                AdtEditTargetValidationError, AdtSourceVersion, EditableAdtObjectType,
+                EditableAdtSourceIdentity, TransportRequestError,
+            },
+            source_activation::AdtSourceActivationError,
+            source_discard::AdtInactiveSourceDiscardError,
+            source_patch::AdtSourcePatchError,
+            source_replace::AdtSourceReplacementError,
+        },
+        source_change::SourceChangePlanError,
+    };
+
+    /// Every verb that writes to SAP. A suggested command starting with one of
+    /// these would invite a caller to execute a mutation it never asked for.
+    const MUTATING_COMMANDS: [&str; 4] = [
+        "fractal edit patch",
+        "fractal edit set",
+        "fractal edit activate",
+        "fractal edit discard",
+    ];
+
+    fn identity() -> Box<EditableAdtSourceIdentity> {
+        Box::new(EditableAdtSourceIdentity {
+            object_type: EditableAdtObjectType::Class,
+            name: "ZCL_SAMPLE".to_owned(),
+            object_uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
+            source_uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
+        })
+    }
+
+    fn lock_conflict() -> AdtEditSessionError {
+        AdtEditSessionError::LockFailed {
+            transport: Some("DE3K900575".to_owned()),
+            source: SapError::Http {
+                kind: SapErrorKind::Other,
+                status: StatusCode::CONFLICT,
+                url: "https://sap.example/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
+                message: "Object is already locked in request DE3K900575".to_owned(),
+            },
+        }
+    }
+
+    #[test]
+    fn no_mutating_workflow_ever_suggests_a_write_command() {
+        let errors: Vec<Box<dyn AdtErrorDiagnostics>> = vec![
+            Box::new(AdtSourcePatchError::Patch {
+                identity: identity(),
+                source: SourceChangePlanError::AnchorNotFound,
+            }),
+            Box::new(AdtSourcePatchError::Session(lock_conflict())),
+            Box::new(AdtSourceReplacementError::Replacement {
+                identity: identity(),
+                source: SourceChangePlanError::SourceReplacementNoChanges,
+            }),
+            Box::new(AdtSourceReplacementError::Session(lock_conflict())),
+            Box::new(AdtSourceActivationError::NoInactiveVersion {
+                identity: identity(),
+            }),
+            Box::new(AdtSourceActivationError::TransportAttachment(
+                lock_conflict(),
+            )),
+            Box::new(AdtInactiveSourceDiscardError::ActiveSourceChanged {
+                identity: identity(),
+                before_sha256: "a".repeat(64),
+                after_sha256: "b".repeat(64),
+            }),
+            Box::new(AdtInactiveSourceDiscardError::Session(
+                AdtEditSessionError::UnlockFailed(SapError::Network {
+                    url: "https://sap.example".to_owned(),
+                    message: "connection reset".to_owned(),
+                }),
+            )),
+        ];
+
+        for error in errors {
+            let Some(command) = error.suggested_command() else {
+                continue;
+            };
+            assert!(
+                command.starts_with("fractal "),
+                "a suggested command must be runnable as printed: {command}"
+            );
+            for mutation in MUTATING_COMMANDS {
+                assert!(
+                    !command.starts_with(mutation),
+                    "{} suggested the mutating command {command}",
+                    error.code()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn transport_retry_advice_stays_in_prose() {
+        // The one remedy that is genuinely "re-run your write, differently".
+        // It must reach the caller as a hint and never as an executable field.
+        let error = AdtSourcePatchError::Session(lock_conflict());
+
+        assert!(error.hint().contains("DE3K900575"));
+        assert_eq!(error.suggested_command(), None);
+    }
+
+    #[test]
+    fn local_validation_failures_have_no_command_to_offer() {
+        let error = AdtSourcePatchError::Validation(
+            AdtEditTargetValidationError::InvalidTransport(TransportRequestError {
+                value: "not a request".to_owned(),
+            }),
+        );
+
+        assert_eq!(error.suggested_command(), None);
+    }
 
     #[test]
     fn derives_http_status_only_from_a_sap_http_failure() {
-        let http: &dyn AdtErrorDiagnostics = &AdtSourceCheckError::Sap(SapError::Http {
-            kind: SapErrorKind::Forbidden,
-            status: StatusCode::FORBIDDEN,
-            url: "https://sap.example/sap/bc/adt/checkruns".to_owned(),
-            message: "Check authorization missing".to_owned(),
-        });
+        let http: &dyn AdtErrorDiagnostics = &AdtSourceCheckError::Sap {
+            identity: identity(),
+            version: AdtSourceVersion::Inactive,
+            source: SapError::Http {
+                kind: SapErrorKind::Forbidden,
+                status: StatusCode::FORBIDDEN,
+                url: "https://sap.example/sap/bc/adt/checkruns".to_owned(),
+                message: "Check authorization missing".to_owned(),
+            },
+        };
         assert_eq!(http.http_status(), Some(403));
 
-        let network: &dyn AdtErrorDiagnostics = &AdtSourceCheckError::Sap(SapError::Network {
-            url: "https://sap.example/sap/bc/adt/checkruns".to_owned(),
-            message: "connection refused".to_owned(),
-        });
+        let network: &dyn AdtErrorDiagnostics = &AdtSourceCheckError::Sap {
+            identity: identity(),
+            version: AdtSourceVersion::Inactive,
+            source: SapError::Network {
+                url: "https://sap.example/sap/bc/adt/checkruns".to_owned(),
+                message: "connection refused".to_owned(),
+            },
+        };
         assert_eq!(network.http_status(), None);
 
         let local: &dyn AdtErrorDiagnostics =
