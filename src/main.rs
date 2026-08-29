@@ -28,6 +28,11 @@ use output::{
     run_and_print_with_async,
 };
 
+// A flat dispatch table: one arm per command, each forwarding to its handler.
+// Splitting it into per-family functions would add a layer of indirection
+// without making any arm easier to read, and `main.rs` is deliberately nothing
+// but this table.
+#[allow(clippy::too_many_lines)]
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();

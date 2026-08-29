@@ -8,8 +8,8 @@ use super::{
     client::{SapClient, SapClientError},
     edit_session::{AdtEditSessionError, attach_adt_object_to_transport},
     editable_source::{
-        AdtEditTargetValidationError, AdtSourceReadError, AdtSourceSnapshot, AdtSourceVersion,
-        EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
+        AdtEditTargetValidationError, AdtSourceReadError, AdtSourceReadResult, AdtSourceSnapshot,
+        AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
         read_adt_source_for_edit, validate_adt_edit_target,
     },
     find_attribute_value,
@@ -118,9 +118,10 @@ impl AdtSourceActivationError {
             Self::InactiveSourceRead(error) | Self::ActiveSourceRead { source: error, .. } => {
                 error.sap_error()
             }
-            Self::InactiveVersionProbe(error) => error.sap_error(),
+            Self::InactiveVersionProbe(error) | Self::PostActivationProbe { source: error, .. } => {
+                error.sap_error()
+            }
             Self::ActivationRequest { source, .. } => Some(source),
-            Self::PostActivationProbe { source: error, .. } => error.sap_error(),
             Self::Precheck(error) => error.sap_error(),
             Self::TransportAttachment(error) => error.sap_error(),
             Self::Validation(_)
@@ -290,33 +291,7 @@ pub(super) async fn activate_validated_adt_source(
             source,
         })
     })?;
-    let inactive_read = async {
-        read_adt_source_for_edit(
-            sap,
-            identity.object_type,
-            &identity.name,
-            AdtSourceVersion::Inactive,
-        )
-        .await
-        .map_err(AdtSourceActivationError::InactiveSourceRead)
-    };
-    let precheck_run = async {
-        let precheck =
-            check_adt_source_by_identity(sap, &identity, AdtSourceVersion::Inactive, Some(true))
-                .await
-                .map_err(AdtSourceActivationError::Precheck)?;
-        if precheck.clean {
-            Ok(precheck)
-        } else {
-            Err(AdtSourceActivationError::PrecheckRejected {
-                identity: Box::new(identity.clone()),
-                errors: precheck.errors,
-                warnings: precheck.warnings,
-                messages: precheck.messages,
-            })
-        }
-    };
-    let (inactive, precheck) = tokio::try_join!(inactive_read, precheck_run)?;
+    let (inactive, precheck) = read_and_precheck_inactive_source(sap, &identity).await?;
 
     if let Some(transport) = &transport {
         attach_adt_object_to_transport(sap, &identity.object_uri, transport)
@@ -347,45 +322,7 @@ pub(super) async fn activate_validated_adt_source(
     // source checks establish whether a response problem is fatal.
     let parsed_response = parse_activation_response(&response);
 
-    let active_result = {
-        let active_read = read_adt_source_for_edit(
-            sap,
-            identity.object_type,
-            &identity.name,
-            AdtSourceVersion::Active,
-        );
-        let inactive_probe = probe_inactive_adt_source(sap, &identity.object_uri);
-        tokio::pin!(active_read, inactive_probe);
-
-        // Poll both verification requests together. The inactive-object result
-        // is decisive: when that version still exists, return without waiting
-        // for the active-source body. If the active read finishes first, retain
-        // its result until the probe establishes whether activation occurred.
-        tokio::select! {
-            biased;
-            active_result = &mut active_read => {
-                let inactive_still_exists = inactive_probe
-                    .await
-                    .map_err(|source| AdtSourceActivationError::PostActivationProbe {
-                        identity: Box::new(identity.clone()),
-                        source,
-                    })?;
-                (!inactive_still_exists).then_some(active_result)
-            }
-            probe_result = &mut inactive_probe => {
-                let inactive_still_exists =
-                    probe_result.map_err(|source| AdtSourceActivationError::PostActivationProbe {
-                        identity: Box::new(identity.clone()),
-                        source,
-                    })?;
-                if inactive_still_exists {
-                    None
-                } else {
-                    Some(active_read.await)
-                }
-            }
-        }
-    };
+    let active_result = verify_activation_post_state(sap, &identity).await?;
 
     let Some(active_result) = active_result else {
         return match parsed_response {
@@ -409,10 +346,10 @@ pub(super) async fn activate_validated_adt_source(
     }
 
     // Post-state now proves success, so preserve malformed response XML as metadata.
-    let (activation_response_parsed, parsed) = match parsed_response {
-        Ok(parsed) => (true, parsed),
-        Err(_) => (false, ParsedActivationResponse::default()),
-    };
+    let (activation_response_parsed, parsed) = parsed_response.map_or_else(
+        |_| (false, ParsedActivationResponse::default()),
+        |parsed| (true, parsed),
+    );
     Ok(AdtSourceActivationResult {
         identity,
         transport,
@@ -422,6 +359,89 @@ pub(super) async fn activate_validated_adt_source(
         sap_reported_activation_executed: parsed.activation_executed,
         activation_response_parsed,
         activation_messages: parsed.messages,
+    })
+}
+
+/// Snapshots the inactive source and syntax-checks it concurrently.
+///
+/// Refuses before any mutation when the check reports errors: activation must
+/// never be attempted on source that will not compile.
+async fn read_and_precheck_inactive_source(
+    sap: &SapClient,
+    identity: &EditableAdtSourceIdentity,
+) -> Result<(AdtSourceReadResult, AdtSourceCheckResult), AdtSourceActivationError> {
+    let inactive_read = async {
+        read_adt_source_for_edit(
+            sap,
+            identity.object_type,
+            &identity.name,
+            AdtSourceVersion::Inactive,
+        )
+        .await
+        .map_err(AdtSourceActivationError::InactiveSourceRead)
+    };
+    let precheck_run = async {
+        let precheck =
+            check_adt_source_by_identity(sap, identity, AdtSourceVersion::Inactive, Some(true))
+                .await
+                .map_err(AdtSourceActivationError::Precheck)?;
+        if precheck.clean {
+            Ok(precheck)
+        } else {
+            Err(AdtSourceActivationError::PrecheckRejected {
+                identity: Box::new(identity.clone()),
+                errors: precheck.errors,
+                warnings: precheck.warnings,
+                messages: precheck.messages,
+            })
+        }
+    };
+    tokio::try_join!(inactive_read, precheck_run)
+}
+
+/// Reads the active source and re-probes the inactive worklist together.
+///
+/// Returns the active-source result only when the inactive version is gone.
+/// The probe is decisive: if that version survives, activation did not happen
+/// and the active body is irrelevant, so the race returns without waiting for
+/// it. If the active read finishes first, its result is held until the probe
+/// establishes whether activation occurred.
+async fn verify_activation_post_state(
+    sap: &SapClient,
+    identity: &EditableAdtSourceIdentity,
+) -> Result<Option<Result<AdtSourceReadResult, AdtSourceReadError>>, AdtSourceActivationError> {
+    let active_read = read_adt_source_for_edit(
+        sap,
+        identity.object_type,
+        &identity.name,
+        AdtSourceVersion::Active,
+    );
+    let inactive_probe = probe_inactive_adt_source(sap, &identity.object_uri);
+    tokio::pin!(active_read, inactive_probe);
+
+    Ok(tokio::select! {
+        biased;
+        active_result = &mut active_read => {
+            let inactive_still_exists = inactive_probe
+                .await
+                .map_err(|source| AdtSourceActivationError::PostActivationProbe {
+                    identity: Box::new(identity.clone()),
+                    source,
+                })?;
+            (!inactive_still_exists).then_some(active_result)
+        }
+        probe_result = &mut inactive_probe => {
+            let inactive_still_exists =
+                probe_result.map_err(|source| AdtSourceActivationError::PostActivationProbe {
+                    identity: Box::new(identity.clone()),
+                    source,
+                })?;
+            if inactive_still_exists {
+                None
+            } else {
+                Some(active_read.await)
+            }
+        }
     })
 }
 
@@ -494,7 +514,7 @@ fn descendant_text(node: roxmltree::Node<'_, '_>, name: &str) -> Option<String> 
         .find(|descendant| descendant.is_element() && descendant.tag_name().name() == name)?;
     let text = descendant
         .descendants()
-        .filter(|node| node.is_text())
+        .filter(roxmltree::Node::is_text)
         .filter_map(|node| node.text())
         .collect();
     Some(text)

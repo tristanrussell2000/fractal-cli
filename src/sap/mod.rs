@@ -29,8 +29,8 @@ pub(crate) fn non_empty_attribute(value: Option<&str>) -> Option<String> {
 
 /// Returns an XML attribute value by local name, independent of its namespace
 /// prefix. SAP may bind the same ADT schema under different prefixes.
-pub(crate) fn find_attribute_value<'a, 'input>(
-    node: roxmltree::Node<'a, 'input>,
+pub(crate) fn find_attribute_value<'a>(
+    node: roxmltree::Node<'a, '_>,
     name: &str,
 ) -> Option<&'a str> {
     node.attributes()

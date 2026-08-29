@@ -27,6 +27,11 @@ pub struct EditSourceActivationDiagnosticOutput {
     object_description: Option<String>,
 }
 
+// The flags are the agent-facing JSON contract: `dry_run`, `wrote_source`, and
+// `activated` are separately meaningful because a caller must be able to tell a
+// preview from a save from an activation without parsing prose. Collapsing them
+// into a state enum would change the emitted schema.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Serialize)]
 pub struct EditSourceActivationOutput {
     ok: bool,

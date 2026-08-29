@@ -52,7 +52,7 @@ where
     let operation = plan_and_write_while_locked(sap, identity, &lock, planner).await;
     let unlock = release_adt_object_lock(sap, &identity.object_uri, &lock).await;
 
-    let (original, planned) = match operation {
+    let (original, change) = match operation {
         Err(primary) => {
             // Cleanup errors must not replace the planning/read/write failure,
             // but releasing the lock was still attempted above.
@@ -72,9 +72,9 @@ where
 
     Ok(SavedInactiveSourceChange {
         original,
-        proposed: planned.proposed,
+        proposed: change.proposed,
         stored,
-        metadata: planned.metadata,
+        metadata: change.metadata,
     })
 }
 
@@ -91,9 +91,9 @@ where
         .await
         .map(|read| read.snapshot)
         .map_err(InactiveSourceSaveError::LockedSourceRead)?;
-    let planned = planner(&original).map_err(InactiveSourceSaveError::Plan)?;
-    write_adt_source(sap, identity, lock, &planned.proposed.source)
+    let change = planner(&original).map_err(InactiveSourceSaveError::Plan)?;
+    write_adt_source(sap, identity, lock, &change.proposed.source)
         .await
         .map_err(InactiveSourceSaveError::Session)?;
-    Ok((original, planned))
+    Ok((original, change))
 }

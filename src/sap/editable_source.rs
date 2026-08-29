@@ -119,7 +119,7 @@ pub struct AdtSourceSnapshot {
 
 impl AdtSourceSnapshot {
     #[must_use]
-    pub fn from_parts(source: String, sha256: String, bytes: usize) -> Self {
+    pub const fn from_parts(source: String, sha256: String, bytes: usize) -> Self {
         Self {
             source,
             sha256,
