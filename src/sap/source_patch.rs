@@ -5,7 +5,7 @@ use super::editable_source::{
     EditableAdtSourceIdentity, read_adt_source_for_edit,
 };
 use super::{
-    client::{SapClient, SapError},
+    client::{SapClient, SapClientError},
     edit_session::AdtEditSessionError,
     editable_source::{AdtSourceSnapshot, validate_adt_edit_target},
     inactive_source_save::{
@@ -147,7 +147,7 @@ impl AdtSourcePatchError {
     }
 
     #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapError> {
+    pub const fn sap_error(&self) -> Option<&SapClientError> {
         match self {
             Self::LockedSourceRead(error)
             | Self::PreviewSourceRead(error)

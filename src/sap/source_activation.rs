@@ -5,7 +5,7 @@ use crate::suggested_command;
 
 use super::{
     adt_message_severity::AdtMessageSeverity,
-    client::{SapClient, SapError},
+    client::{SapClient, SapClientError},
     edit_session::{AdtEditSessionError, attach_adt_object_to_transport},
     editable_source::{
         AdtEditTargetValidationError, AdtSourceReadError, AdtSourceSnapshot, AdtSourceVersion,
@@ -75,7 +75,7 @@ pub enum AdtSourceActivationError {
     ActivationRequest {
         identity: Box<EditableAdtSourceIdentity>,
         #[source]
-        source: SapError,
+        source: SapClientError,
     },
     #[error("SAP returned malformed activation XML and the inactive version still exists: {0}")]
     ActivationResponseInvalid(#[source] roxmltree::Error),
@@ -213,7 +213,7 @@ impl AdtSourceActivationError {
     }
 
     #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapError> {
+    pub const fn sap_error(&self) -> Option<&SapClientError> {
         match self {
             Self::InactiveSourceRead(error) | Self::ActiveSourceRead { source: error, .. } => {
                 error.sap_error()

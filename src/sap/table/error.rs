@@ -4,7 +4,7 @@ use regex::Regex;
 use thiserror::Error;
 
 use super::{TableColumn, TableDdlParseError};
-use crate::sap::client::SapError;
+use crate::sap::client::SapClientError;
 use crate::sap::object_source::ObjectSourceError;
 use crate::suggested_command;
 
@@ -71,7 +71,7 @@ impl fmt::Display for TableQueryError {
 #[derive(Debug, Error)]
 pub enum TableError {
     #[error(transparent)]
-    Sap(#[from] SapError),
+    Sap(#[from] SapClientError),
     #[error("could not fetch table DDL source: {0}")]
     DdlSource(#[source] ObjectSourceError),
     #[error("could not parse table DDL source: {0}")]
@@ -80,7 +80,7 @@ pub enum TableError {
     Query {
         query: TableQueryError,
         #[source]
-        source: Box<SapError>,
+        source: Box<SapClientError>,
     },
     #[error("could not parse table data response: {0}")]
     Parse(String),
@@ -192,7 +192,7 @@ impl TableError {
     }
 
     #[must_use]
-    pub fn sap_error(&self) -> Option<&SapError> {
+    pub fn sap_error(&self) -> Option<&SapClientError> {
         match self {
             Self::Sap(error) | Self::DdlSource(ObjectSourceError::Sap(error)) => Some(error),
             Self::Query { source, .. } => Some(source.as_ref()),
@@ -246,11 +246,11 @@ static QUERY_ERROR_PATTERNS: LazyLock<[QueryErrorPattern; 3]> = LazyLock::new(||
 });
 
 pub(super) fn classify_query_error(
-    error: SapError,
+    error: SapClientError,
     columns: &[TableColumn],
     entity: Option<&str>,
 ) -> TableError {
-    let SapError::Http { message, .. } = &error else {
+    let SapClientError::Http { message, .. } = &error else {
         return TableError::Sap(error);
     };
     let Some((kind, identifier)) = classify_query_message(message) else {
@@ -327,11 +327,11 @@ mod tests {
     use reqwest::StatusCode;
 
     use super::*;
-    use crate::sap::client::SapErrorKind;
+    use crate::sap::client::SapHttpErrorKind;
 
-    fn http_error(message: &str) -> SapError {
-        SapError::Http {
-            kind: SapErrorKind::Other,
+    fn http_error(message: &str) -> SapClientError {
+        SapClientError::Http {
+            kind: SapHttpErrorKind::Other,
             status: StatusCode::BAD_REQUEST,
             url: "https://sap.example/sap/bc/adt/datapreview/freestyle".to_owned(),
             message: message.to_owned(),
@@ -383,7 +383,7 @@ mod tests {
             ));
             assert!(matches!(
                 error.sap_error(),
-                Some(SapError::Http {
+                Some(SapClientError::Http {
                     status: StatusCode::BAD_REQUEST,
                     ..
                 })
@@ -410,7 +410,10 @@ mod tests {
     #[test]
     fn preserves_unrecognized_sap_errors_without_reclassification() {
         let error = classify_query_error(http_error("Request could not be processed"), &[], None);
-        assert!(matches!(error, TableError::Sap(SapError::Http { .. })));
+        assert!(matches!(
+            error,
+            TableError::Sap(SapClientError::Http { .. })
+        ));
         assert_eq!(error.code(), "http_error");
     }
 

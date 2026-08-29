@@ -4,7 +4,7 @@ use reqwest::header::HeaderMap;
 use thiserror::Error;
 
 use super::{
-    client::{SapClient, SapError},
+    client::{SapClient, SapClientError},
     repository_kind::RepositoryKind,
 };
 use crate::{pattern::glob_matches, source_change::source_sha256, suggested_command};
@@ -270,7 +270,7 @@ pub enum AdtSourceReadError {
         object_type: &'static str,
         name: String,
         #[source]
-        source: SapError,
+        source: SapClientError,
     },
     #[error("SAP returned non-UTF-8 source for {object_type} object '{name}': {source}")]
     InvalidSourceEncoding {
@@ -304,7 +304,7 @@ impl AdtSourceReadError {
     }
 
     #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapError> {
+    pub const fn sap_error(&self) -> Option<&SapClientError> {
         match self {
             Self::Sap { source, .. } => Some(source),
             Self::InvalidTarget(_) | Self::InvalidSourceEncoding { .. } => None,

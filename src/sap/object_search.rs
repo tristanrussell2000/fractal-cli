@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use super::{
     adt_response::{AdtResponseParseError, parse_adt_document},
-    client::{SapClient, SapError},
+    client::{SapClient, SapClientError},
     non_empty_attribute,
     repository_kind::{AdtObjectType, RepositoryKind},
 };
@@ -19,7 +19,7 @@ const HARD_SEARCH_MAX: usize = 500;
 #[derive(Debug, Error)]
 pub enum ObjectSearchError {
     #[error(transparent)]
-    Sap(#[from] SapError),
+    Sap(#[from] SapClientError),
     #[error("invalid object search query: {0}")]
     InvalidQuery(String),
     #[error(transparent)]
@@ -53,7 +53,7 @@ impl ObjectSearchError {
     }
 
     #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapError> {
+    pub const fn sap_error(&self) -> Option<&SapClientError> {
         match self {
             Self::Sap(error) => Some(error),
             _ => None,
@@ -163,7 +163,7 @@ fn build_search_queries(query: &str, patterns: &[String]) -> Vec<String> {
 async fn fetch_search_responses(
     sap: &SapClient,
     queries: &[String],
-) -> Vec<Result<String, SapError>> {
+) -> Vec<Result<String, SapClientError>> {
     futures::future::join_all(queries.iter().map(|search_query| async {
         let query_params = [
             ("operation", "quickSearch"),
@@ -176,7 +176,7 @@ async fn fetch_search_responses(
 }
 
 fn aggregate_search_results(
-    responses: Vec<Result<String, SapError>>,
+    responses: Vec<Result<String, SapClientError>>,
     patterns: &[String],
     kind: Option<RepositoryKind>,
 ) -> Result<AggregatedSearch, ObjectSearchError> {
@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn aggregation_keeps_partial_success_and_reports_total_failure() {
         let xml = r#"<objectReferences><objectReference name="ZOK" type="CLAS/OC" packageName="ZAPP" uri="/ok"/></objectReferences>"#;
-        let network_error = SapError::Network {
+        let network_error = SapClientError::Network {
             url: "http://sap".to_owned(),
             message: "offline".to_owned(),
         };

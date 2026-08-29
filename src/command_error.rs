@@ -1,7 +1,7 @@
 use fractal::{
     config, credentials,
     sap::{
-        client::SapError,
+        client::SapClientError,
         editable_source::{AdtSourceReadError, EditableAdtSourceTargetError},
         error_diagnostics::AdtErrorDiagnostics,
         object_info::ObjectInfoError,
@@ -22,7 +22,7 @@ use fractal::{
 pub enum CommandError {
     Config(config::ConfigError),
     Credential(credentials::CredentialError),
-    Sap(SapError),
+    Sap(SapClientError),
     Object(ObjectCommandError),
     Edit(EditCommandError),
     Package(PackageError),
@@ -139,9 +139,9 @@ impl CommandError {
     #[must_use]
     pub(crate) fn status(&self) -> Option<u16> {
         match self {
-            Self::Sap(SapError::Http { status, .. }) => Some(status.as_u16()),
+            Self::Sap(SapClientError::Http { status, .. }) => Some(status.as_u16()),
             Self::Table(error) => match error.sap_error() {
-                Some(SapError::Http { status, .. }) => Some(status.as_u16()),
+                Some(SapClientError::Http { status, .. }) => Some(status.as_u16()),
                 _ => None,
             },
             Self::Edit(error) => error.diagnostics().http_status(),
@@ -215,8 +215,8 @@ impl From<credentials::CredentialError> for CommandError {
     }
 }
 
-impl From<SapError> for CommandError {
-    fn from(error: SapError) -> Self {
+impl From<SapClientError> for CommandError {
+    fn from(error: SapClientError) -> Self {
         Self::Sap(error)
     }
 }
@@ -317,7 +317,7 @@ mod tests {
 
     use super::CommandError;
     use fractal::sap::{
-        client::{SapError, SapErrorKind},
+        client::{SapClientError, SapHttpErrorKind},
         edit_session::AdtEditSessionError,
         editable_source::{
             AdtEditTargetValidationError, AdtSourceReadError, AdtSourceVersion,
@@ -343,8 +343,8 @@ mod tests {
 
     #[test]
     fn preserves_structured_sap_error_fields() {
-        let error = CommandError::from(SapError::Http {
-            kind: SapErrorKind::AuthenticationFailed,
+        let error = CommandError::from(SapClientError::Http {
+            kind: SapHttpErrorKind::AuthenticationFailed,
             status: StatusCode::UNAUTHORIZED,
             url: "https://sap.example/sap/bc/adt/core/discovery".to_owned(),
             message: "Invalid credentials".to_owned(),
@@ -368,8 +368,8 @@ mod tests {
 
     #[test]
     fn preserves_structured_table_error_fields_and_http_status() {
-        let source = SapError::Http {
-            kind: SapErrorKind::Other,
+        let source = SapClientError::Http {
+            kind: SapHttpErrorKind::Other,
             status: StatusCode::BAD_REQUEST,
             url: "https://sap.example/sap/bc/adt/datapreview/freestyle".to_owned(),
             message: "Unknown column name \"EVNT_ID\".".to_owned(),
@@ -403,8 +403,8 @@ mod tests {
         let sap = CommandError::from(AdtSourceReadError::Sap {
             object_type: "CLAS",
             name: "ZMISSING".to_owned(),
-            source: SapError::Http {
-                kind: SapErrorKind::NotFound,
+            source: SapClientError::Http {
+                kind: SapHttpErrorKind::NotFound,
                 status: reqwest::StatusCode::NOT_FOUND,
                 url: "https://sap.example/sap/bc/adt/oo/classes/zmissing/source/main".to_owned(),
                 message: "Object not found".to_owned(),
@@ -430,8 +430,8 @@ mod tests {
         let lock = CommandError::from(AdtSourcePatchError::Session(
             AdtEditSessionError::LockFailed {
                 transport: None,
-                source: SapError::Http {
-                    kind: SapErrorKind::Other,
+                source: SapClientError::Http {
+                    kind: SapHttpErrorKind::Other,
                     status: StatusCode::CONFLICT,
                     url: "https://sap.example/sap/bc/adt/programs/programs/zsample".to_owned(),
                     message: "Object is locked".to_owned(),
@@ -448,8 +448,8 @@ mod tests {
         let error = CommandError::from(AdtSourceCheckError::Sap {
             identity: sample_identity(),
             version: AdtSourceVersion::Inactive,
-            source: SapError::Http {
-                kind: SapErrorKind::Forbidden,
+            source: SapClientError::Http {
+                kind: SapHttpErrorKind::Forbidden,
                 status: StatusCode::FORBIDDEN,
                 url: "https://sap.example/sap/bc/adt/checkruns".to_owned(),
                 message: "Check authorization missing".to_owned(),
@@ -466,8 +466,8 @@ mod tests {
     fn preserves_source_activation_stage_and_http_status() {
         let error = CommandError::from(AdtSourceActivationError::ActivationRequest {
             identity: sample_identity(),
-            source: SapError::Http {
-                kind: SapErrorKind::Forbidden,
+            source: SapClientError::Http {
+                kind: SapHttpErrorKind::Forbidden,
                 status: StatusCode::FORBIDDEN,
                 url: "https://sap.example/sap/bc/adt/activation".to_owned(),
                 message: "Activation authorization missing".to_owned(),
@@ -489,8 +489,8 @@ mod tests {
         let error = CommandError::from(AdtInactiveSourceDiscardError::RestoredSourceActivation(
             AdtSourceActivationError::ActivationRequest {
                 identity: sample_identity(),
-                source: SapError::Http {
-                    kind: SapErrorKind::Other,
+                source: SapClientError::Http {
+                    kind: SapHttpErrorKind::Other,
                     status: StatusCode::CONFLICT,
                     url: "https://sap.example/sap/bc/adt/activation".to_owned(),
                     message: "Restored source could not be activated".to_owned(),
@@ -510,8 +510,8 @@ mod tests {
             AdtSourceReadError::Sap {
                 object_type: "PROG",
                 name: "ZSAMPLE".to_owned(),
-                source: SapError::Http {
-                    kind: SapErrorKind::Forbidden,
+                source: SapClientError::Http {
+                    kind: SapHttpErrorKind::Forbidden,
                     status: StatusCode::FORBIDDEN,
                     url: "https://sap.example/sap/bc/adt/programs/programs/zsample/source/main"
                         .to_owned(),

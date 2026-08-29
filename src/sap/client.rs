@@ -14,7 +14,7 @@ const DISCOVERY_PATH: &str = "/sap/bc/adt/core/discovery";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum SapErrorKind {
+pub enum SapHttpErrorKind {
     AuthenticationFailed,
     Forbidden,
     NotFound,
@@ -22,7 +22,7 @@ pub enum SapErrorKind {
     Other,
 }
 
-impl SapErrorKind {
+impl SapHttpErrorKind {
     #[must_use]
     pub const fn code(self) -> &'static str {
         match self {
@@ -55,9 +55,9 @@ impl SapErrorKind {
 }
 
 #[derive(Debug, Error)]
-pub enum SapError {
+pub enum SapClientError {
     #[error("could not build SAP HTTP client: {0}")]
-    Client(#[source] reqwest::Error),
+    Build(#[source] reqwest::Error),
     #[error("invalid SAP base URL '{url}': {source}")]
     InvalidUrl {
         url: String,
@@ -67,14 +67,14 @@ pub enum SapError {
     Network { url: String, message: String },
     #[error("SAP returned HTTP {status} from {url}: {message}")]
     Http {
-        kind: SapErrorKind,
+        kind: SapHttpErrorKind,
         status: StatusCode,
         url: String,
         message: String,
     },
 }
 
-impl SapError {
+impl SapClientError {
     /// Whether SAP answered 404, meaning the requested object or endpoint does
     /// not exist rather than that the request itself was refused.
     #[must_use]
@@ -82,7 +82,7 @@ impl SapError {
         matches!(
             self,
             Self::Http {
-                kind: SapErrorKind::NotFound,
+                kind: SapHttpErrorKind::NotFound,
                 ..
             }
         )
@@ -115,7 +115,7 @@ impl SapError {
         match self {
             Self::Network { .. }
             | Self::Http {
-                kind: SapErrorKind::AuthenticationFailed,
+                kind: SapHttpErrorKind::AuthenticationFailed,
                 ..
             } => Some(suggested_command::system_test()),
             _ => None,
@@ -125,7 +125,7 @@ impl SapError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::Client(_) => "client_error",
+            Self::Build(_) => "client_error",
             Self::InvalidUrl { .. } => "invalid_url",
             Self::Network { .. } => "network_error",
             Self::Http { kind, .. } => kind.code(),
@@ -138,7 +138,7 @@ impl SapError {
     #[must_use]
     pub fn hint(&self) -> String {
         let advice = match self {
-            Self::Client(_) => "The local HTTP client could not be initialized.",
+            Self::Build(_) => "The local HTTP client could not be initialized.",
             Self::InvalidUrl { .. } => "Use a complete SAP URL including http:// or https://.",
             Self::Network { .. } => {
                 "Check the VPN, hostname, port, and whether the SAP service is reachable."
@@ -175,9 +175,9 @@ impl SapClient {
     ///
     /// Returns an error when the profile URL is invalid or the HTTP client
     /// cannot be initialized.
-    pub fn new(profile: &Profile, password: String) -> Result<Self, SapError> {
+    pub fn new(profile: &Profile, password: String) -> Result<Self, SapClientError> {
         let base_url = Url::parse(profile.base_url.trim_end_matches('/')).map_err(|source| {
-            SapError::InvalidUrl {
+            SapClientError::InvalidUrl {
                 url: profile.base_url.clone(),
                 source,
             }
@@ -188,7 +188,7 @@ impl SapClient {
             .danger_accept_invalid_certs(profile.insecure_tls)
             .timeout(REQUEST_TIMEOUT)
             .build()
-            .map_err(SapError::Client)?;
+            .map_err(SapClientError::Build)?;
 
         Ok(Self {
             http,
@@ -204,8 +204,8 @@ impl SapClient {
     ///
     /// # Errors
     ///
-    /// Returns [`SapError`] for URL, network, HTTP, or response-body failures.
-    pub async fn get_text(&self, path: &str) -> Result<String, SapError> {
+    /// Returns [`SapClientError`] for URL, network, HTTP, or response-body failures.
+    pub async fn get_text(&self, path: &str) -> Result<String, SapClientError> {
         self.get_text_with_query(path, &[]).await
     }
 
@@ -216,17 +216,20 @@ impl SapClient {
     ///
     /// # Errors
     ///
-    /// Returns [`SapError`] for URL, network, HTTP, or response-body failures.
+    /// Returns [`SapClientError`] for URL, network, HTTP, or response-body failures.
     pub async fn get_text_with_query(
         &self,
         path: &str,
         query: &[(&str, &str)],
-    ) -> Result<String, SapError> {
+    ) -> Result<String, SapClientError> {
         let (_, response) = self.get_read_only(path, query, HeaderMap::new()).await?;
-        response.text().await.map_err(|error| SapError::Network {
-            url: self.base_url.to_string(),
-            message: format!("could not read SAP response body: {error}"),
-        })
+        response
+            .text()
+            .await
+            .map_err(|error| SapClientError::Network {
+                url: self.base_url.to_string(),
+                message: format!("could not read SAP response body: {error}"),
+            })
     }
 
     /// Fetches response bytes with caller-provided headers.
@@ -238,13 +241,13 @@ impl SapClient {
         path: &str,
         query: &[(&str, &str)],
         headers: HeaderMap,
-    ) -> Result<Vec<u8>, SapError> {
+    ) -> Result<Vec<u8>, SapClientError> {
         let (_, response) = self.get_read_only(path, query, headers).await?;
         response
             .bytes()
             .await
             .map(|bytes| bytes.to_vec())
-            .map_err(|error| SapError::Network {
+            .map_err(|error| SapClientError::Network {
                 url: self.base_url.to_string(),
                 message: format!("could not read SAP response body: {error}"),
             })
@@ -257,14 +260,14 @@ impl SapClient {
     ///
     /// # Errors
     ///
-    /// Returns [`SapError`] when the CSRF handshake, request, or response fails.
+    /// Returns [`SapClientError`] when the CSRF handshake, request, or response fails.
     pub async fn put_text(
         &mut self,
         path: &str,
         query: &[(&str, &str)],
         body: &str,
         headers: HeaderMap,
-    ) -> Result<String, SapError> {
+    ) -> Result<String, SapClientError> {
         self.ensure_csrf().await?;
         let url = self.request_url(path, query)?;
         let request = self
@@ -277,7 +280,7 @@ impl SapClient {
             .apply_session_headers(request, true)
             .send()
             .await
-            .map_err(|error| SapError::Network {
+            .map_err(|error| SapClientError::Network {
                 url: url.to_string(),
                 message: describe_network_error(&error),
             })?;
@@ -285,10 +288,13 @@ impl SapClient {
             return Err(http_error(url, response).await);
         }
         self.capture_csrf_token(&response);
-        response.text().await.map_err(|error| SapError::Network {
-            url: self.base_url.to_string(),
-            message: format!("could not read SAP response body: {error}"),
-        })
+        response
+            .text()
+            .await
+            .map_err(|error| SapClientError::Network {
+                url: self.base_url.to_string(),
+                message: format!("could not read SAP response body: {error}"),
+            })
     }
 
     /// Sends a text POST request using the SAP session and CSRF token.
@@ -299,14 +305,14 @@ impl SapClient {
     ///
     /// # Errors
     ///
-    /// Returns [`SapError`] when the CSRF handshake, request, or response fails.
+    /// Returns [`SapClientError`] when the CSRF handshake, request, or response fails.
     pub async fn post_text(
         &mut self,
         path: &str,
         query: &[(&str, &str)],
         body: Option<&str>,
         headers: HeaderMap,
-    ) -> Result<String, SapError> {
+    ) -> Result<String, SapClientError> {
         self.ensure_csrf().await?;
         let url = self.request_url(path, query)?;
         let mut request = self
@@ -321,7 +327,7 @@ impl SapClient {
             .apply_session_headers(request, true)
             .send()
             .await
-            .map_err(|error| SapError::Network {
+            .map_err(|error| SapClientError::Network {
                 url: url.to_string(),
                 message: describe_network_error(&error),
             })?;
@@ -329,10 +335,13 @@ impl SapClient {
             return Err(http_error(url, response).await);
         }
         self.capture_csrf_token(&response);
-        response.text().await.map_err(|error| SapError::Network {
-            url: self.base_url.to_string(),
-            message: format!("could not read SAP response body: {error}"),
-        })
+        response
+            .text()
+            .await
+            .map_err(|error| SapClientError::Network {
+                url: self.base_url.to_string(),
+                message: format!("could not read SAP response body: {error}"),
+            })
     }
 
     /// Ensures that a CSRF token and session are available for read-only POSTs.
@@ -343,8 +352,8 @@ impl SapClient {
     ///
     /// # Errors
     ///
-    /// Returns [`SapError`] when the discovery handshake fails.
-    pub async fn establish_csrf_session(&mut self) -> Result<(), SapError> {
+    /// Returns [`SapClientError`] when the discovery handshake fails.
+    pub async fn establish_csrf_session(&mut self) -> Result<(), SapClientError> {
         self.ensure_csrf().await
     }
 
@@ -356,14 +365,14 @@ impl SapClient {
     ///
     /// # Errors
     ///
-    /// Returns [`SapError`] when the request or response fails.
+    /// Returns [`SapClientError`] when the request or response fails.
     pub async fn post_text_read_only(
         &self,
         path: &str,
         query: &[(&str, &str)],
         body: Option<&str>,
         headers: HeaderMap,
-    ) -> Result<String, SapError> {
+    ) -> Result<String, SapClientError> {
         let url = self.request_url(path, query)?;
         let mut request = self
             .http
@@ -377,25 +386,28 @@ impl SapClient {
             .apply_session_headers(request, true)
             .send()
             .await
-            .map_err(|error| SapError::Network {
+            .map_err(|error| SapClientError::Network {
                 url: url.to_string(),
                 message: describe_network_error(&error),
             })?;
         if !response.status().is_success() {
             return Err(http_error(url, response).await);
         }
-        response.text().await.map_err(|error| SapError::Network {
-            url: self.base_url.to_string(),
-            message: format!("could not read SAP response body: {error}"),
-        })
+        response
+            .text()
+            .await
+            .map_err(|error| SapClientError::Network {
+                url: self.base_url.to_string(),
+                message: format!("could not read SAP response body: {error}"),
+            })
     }
 
     /// Refreshes the CSRF token and session state through ADT discovery.
     ///
     /// # Errors
     ///
-    /// Returns [`SapError`] when the discovery handshake fails.
-    pub async fn refresh_csrf(&mut self) -> Result<(), SapError> {
+    /// Returns [`SapClientError`] when the discovery handshake fails.
+    pub async fn refresh_csrf(&mut self) -> Result<(), SapClientError> {
         self.csrf_token = None;
         let mut headers = HeaderMap::new();
         headers.insert("X-CSRF-Token", HeaderValue::from_static("Fetch"));
@@ -407,8 +419,8 @@ impl SapClient {
     ///
     /// # Errors
     ///
-    /// Returns [`SapError`] when discovery cannot be reached or SAP rejects the request.
-    pub async fn test_connection(&mut self) -> Result<DiscoveryResult, SapError> {
+    /// Returns [`SapClientError`] when discovery cannot be reached or SAP rejects the request.
+    pub async fn test_connection(&mut self) -> Result<DiscoveryResult, SapClientError> {
         let mut headers = HeaderMap::new();
         headers.insert("X-CSRF-Token", HeaderValue::from_static("Fetch"));
 
@@ -422,7 +434,7 @@ impl SapClient {
         })
     }
 
-    async fn ensure_csrf(&mut self) -> Result<(), SapError> {
+    async fn ensure_csrf(&mut self) -> Result<(), SapClientError> {
         if self.csrf_token.is_some() {
             return Ok(());
         }
@@ -437,7 +449,7 @@ impl SapClient {
         path: &str,
         query: &[(&str, &str)],
         headers: HeaderMap,
-    ) -> Result<(Url, Response), SapError> {
+    ) -> Result<(Url, Response), SapClientError> {
         let url = self.request_url(path, query)?;
         let request = self
             .http
@@ -448,7 +460,7 @@ impl SapClient {
             .apply_session_headers(request, false)
             .send()
             .await
-            .map_err(|error| SapError::Network {
+            .map_err(|error| SapClientError::Network {
                 url: url.to_string(),
                 message: describe_network_error(&error),
             })?;
@@ -465,7 +477,7 @@ impl SapClient {
         path: &str,
         query: &[(&str, &str)],
         headers: HeaderMap,
-    ) -> Result<(Url, Response), SapError> {
+    ) -> Result<(Url, Response), SapClientError> {
         let url = self.request_url(path, query)?;
         let request = self
             .http
@@ -476,7 +488,7 @@ impl SapClient {
             .apply_session_headers(request, false)
             .send()
             .await
-            .map_err(|error| SapError::Network {
+            .map_err(|error| SapClientError::Network {
                 url: url.to_string(),
                 message: describe_network_error(&error),
             })?;
@@ -504,11 +516,11 @@ impl SapClient {
         }
     }
 
-    fn request_url(&self, path: &str, query: &[(&str, &str)]) -> Result<Url, SapError> {
+    fn request_url(&self, path: &str, query: &[(&str, &str)]) -> Result<Url, SapClientError> {
         let mut url = self
             .base_url
             .join(path)
-            .map_err(|source| SapError::InvalidUrl {
+            .map_err(|source| SapClientError::InvalidUrl {
                 url: self.base_url.to_string(),
                 source,
             })?;
@@ -523,17 +535,17 @@ impl SapClient {
     }
 }
 
-fn classify_http_status(status: StatusCode) -> SapErrorKind {
+fn classify_http_status(status: StatusCode) -> SapHttpErrorKind {
     match status {
-        StatusCode::UNAUTHORIZED => SapErrorKind::AuthenticationFailed,
-        StatusCode::FORBIDDEN => SapErrorKind::Forbidden,
-        StatusCode::NOT_FOUND => SapErrorKind::NotFound,
-        status if status.is_server_error() => SapErrorKind::ServerError,
-        _ => SapErrorKind::Other,
+        StatusCode::UNAUTHORIZED => SapHttpErrorKind::AuthenticationFailed,
+        StatusCode::FORBIDDEN => SapHttpErrorKind::Forbidden,
+        StatusCode::NOT_FOUND => SapHttpErrorKind::NotFound,
+        status if status.is_server_error() => SapHttpErrorKind::ServerError,
+        _ => SapHttpErrorKind::Other,
     }
 }
 
-async fn http_error(url: Url, response: Response) -> SapError {
+async fn http_error(url: Url, response: Response) -> SapClientError {
     let status = response.status();
     let message = response
         .text()
@@ -546,7 +558,7 @@ async fn http_error(url: Url, response: Response) -> SapError {
                 .unwrap_or("request failed")
                 .to_owned()
         });
-    SapError::Http {
+    SapClientError::Http {
         kind: classify_http_status(status),
         status,
         url: url.to_string(),
@@ -604,7 +616,7 @@ fn decode_xml_entities(value: &str) -> String {
 mod tests {
     use reqwest::StatusCode;
 
-    use super::{SapErrorKind, classify_http_status, decode_xml_entities, extract_sap_message};
+    use super::{SapHttpErrorKind, classify_http_status, decode_xml_entities, extract_sap_message};
 
     #[test]
     fn extracts_sap_message_from_xml() {
@@ -636,32 +648,32 @@ mod tests {
     fn classifies_http_statuses_for_agents() {
         assert_eq!(
             classify_http_status(StatusCode::UNAUTHORIZED),
-            SapErrorKind::AuthenticationFailed
+            SapHttpErrorKind::AuthenticationFailed
         );
         assert_eq!(
             classify_http_status(StatusCode::FORBIDDEN),
-            SapErrorKind::Forbidden
+            SapHttpErrorKind::Forbidden
         );
         assert_eq!(
             classify_http_status(StatusCode::NOT_FOUND),
-            SapErrorKind::NotFound
+            SapHttpErrorKind::NotFound
         );
         assert_eq!(
             classify_http_status(StatusCode::INTERNAL_SERVER_ERROR),
-            SapErrorKind::ServerError
+            SapHttpErrorKind::ServerError
         );
         assert_eq!(
             classify_http_status(StatusCode::BAD_REQUEST),
-            SapErrorKind::Other
+            SapHttpErrorKind::Other
         );
     }
 
     #[test]
     fn error_kinds_have_stable_codes_and_hints() {
         assert_eq!(
-            SapErrorKind::AuthenticationFailed.code(),
+            SapHttpErrorKind::AuthenticationFailed.code(),
             "authentication_failed"
         );
-        assert!(!SapErrorKind::Forbidden.hint().is_empty());
+        assert!(!SapHttpErrorKind::Forbidden.hint().is_empty());
     }
 }

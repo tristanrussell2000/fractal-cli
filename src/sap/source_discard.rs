@@ -3,7 +3,7 @@ use thiserror::Error;
 use crate::suggested_command;
 
 use super::{
-    client::{SapClient, SapError},
+    client::{SapClient, SapClientError},
     edit_session::{
         AdtEditSessionError, AdtObjectLock, acquire_adt_object_lock,
         read_adt_source_in_stateful_session, release_adt_object_lock, write_adt_source,
@@ -166,7 +166,7 @@ impl AdtInactiveSourceDiscardError {
     }
 
     #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapError> {
+    pub const fn sap_error(&self) -> Option<&SapClientError> {
         match self {
             Self::ActiveSourceRead(error)
             | Self::InactiveSourceRead(error)

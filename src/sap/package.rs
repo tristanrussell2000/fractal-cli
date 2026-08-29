@@ -12,7 +12,7 @@ use super::{
 #[derive(Debug, Error)]
 pub enum PackageError {
     #[error(transparent)]
-    Sap(#[from] super::client::SapError),
+    Sap(#[from] super::client::SapClientError),
     #[error("could not parse package node structure: {0}")]
     Parse(String),
 }

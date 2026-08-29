@@ -2,7 +2,7 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use thiserror::Error;
 
 use super::{
-    client::{SapClient, SapError},
+    client::{SapClient, SapClientError},
     editable_source::{
         AdtSourceReadError, AdtSourceReadResult, AdtSourceVersion, EditableAdtSourceIdentity,
         read_adt_source,
@@ -20,7 +20,7 @@ pub enum AdtEditSessionError {
     LockFailed {
         transport: Option<String>,
         #[source]
-        source: SapError,
+        source: SapClientError,
     },
     #[error("SAP returned an edit lock response without a lock handle: {response_excerpt}")]
     LockHandleMissing { response_excerpt: String },
@@ -28,10 +28,10 @@ pub enum AdtEditSessionError {
     SourceWriteFailed {
         transport: Option<String>,
         #[source]
-        source: SapError,
+        source: SapClientError,
     },
     #[error("the ADT object lock could not be released: {0}")]
-    UnlockFailed(#[source] SapError),
+    UnlockFailed(#[source] SapClientError),
 }
 
 impl AdtEditSessionError {
@@ -70,7 +70,7 @@ impl AdtEditSessionError {
     }
 
     #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapError> {
+    pub const fn sap_error(&self) -> Option<&SapClientError> {
         match self {
             Self::LockFailed { source, .. } | Self::SourceWriteFailed { source, .. } => {
                 Some(source)
@@ -183,7 +183,7 @@ async fn request_adt_object_lock(
     sap: &mut SapClient,
     object_uri: &str,
     transport: Option<&str>,
-) -> Result<String, SapError> {
+) -> Result<String, SapClientError> {
     let mut headers = stateful_session_headers();
     headers.insert("Accept", HeaderValue::from_static(LOCK_RESULT_MEDIA_TYPE));
     let mut query = vec![("_action", "LOCK"), ("accessMode", "MODIFY")];
@@ -202,7 +202,7 @@ fn stateful_session_headers() -> HeaderMap {
     headers
 }
 
-fn is_same_transport_lock_conflict(error: &SapError, transport: &str) -> bool {
+fn is_same_transport_lock_conflict(error: &SapClientError, transport: &str) -> bool {
     let Some(message) = sap_error_message(error) else {
         return false;
     };
@@ -211,7 +211,7 @@ fn is_same_transport_lock_conflict(error: &SapError, transport: &str) -> bool {
             .is_some_and(|existing| existing.eq_ignore_ascii_case(transport))
 }
 
-fn transport_failure_hint(transport: Option<&str>, error: &SapError) -> Option<String> {
+fn transport_failure_hint(transport: Option<&str>, error: &SapClientError) -> Option<String> {
     let existing = transport_request_from_sap_error(error)?;
     match transport {
         None => Some(format!(
@@ -226,7 +226,7 @@ fn transport_failure_hint(transport: Option<&str>, error: &SapError) -> Option<S
     }
 }
 
-fn transport_request_from_sap_error(error: &SapError) -> Option<String> {
+fn transport_request_from_sap_error(error: &SapClientError) -> Option<String> {
     let message = sap_error_message(error)?.to_ascii_uppercase();
     if !message.contains("LOCKED") {
         return None;
@@ -241,9 +241,9 @@ fn transport_request_from_sap_error(error: &SapError) -> Option<String> {
     })
 }
 
-fn sap_error_message(error: &SapError) -> Option<&str> {
+fn sap_error_message(error: &SapClientError) -> Option<&str> {
     match error {
-        SapError::Http { message, .. } => Some(message),
+        SapClientError::Http { message, .. } => Some(message),
         _ => None,
     }
 }

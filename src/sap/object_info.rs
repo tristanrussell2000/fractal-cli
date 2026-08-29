@@ -5,7 +5,7 @@ use thiserror::Error;
 use super::{
     adt_object_uri::{AdtObjectUriError, validate_adt_object_uri},
     adt_response::{AdtResponseParseError, parse_adt_document},
-    client::{SapClient, SapError},
+    client::{SapClient, SapClientError},
 };
 use crate::suggested_command;
 
@@ -13,7 +13,7 @@ use crate::suggested_command;
 #[derive(Debug, Error)]
 pub enum ObjectInfoError {
     #[error(transparent)]
-    Sap(#[from] SapError),
+    Sap(#[from] SapClientError),
     #[error(transparent)]
     Uri(#[from] AdtObjectUriError),
     #[error(transparent)]
@@ -47,7 +47,7 @@ impl ObjectInfoError {
     }
 
     #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapError> {
+    pub const fn sap_error(&self) -> Option<&SapClientError> {
         match self {
             Self::Sap(error) => Some(error),
             _ => None,

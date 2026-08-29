@@ -5,7 +5,7 @@ use crate::suggested_command;
 
 use super::{
     adt_message_severity::AdtMessageSeverity,
-    client::{SapClient, SapError},
+    client::{SapClient, SapClientError},
     editable_source::{
         AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceIdentity,
         EditableAdtSourceTargetError, editable_source_identity,
@@ -45,7 +45,7 @@ pub enum AdtSourceCheckError {
         identity: Box<EditableAdtSourceIdentity>,
         version: AdtSourceVersion,
         #[source]
-        source: SapError,
+        source: SapClientError,
     },
     #[error("SAP returned malformed source-check XML: {source}")]
     Parse {
@@ -59,14 +59,14 @@ pub enum AdtSourceCheckError {
 #[derive(Debug, Error)]
 pub enum AdtInactiveSourceProbeError {
     #[error("SAP inactive-object lookup failed: {0}")]
-    Sap(#[from] SapError),
+    Sap(#[from] SapClientError),
     #[error("SAP returned malformed inactive-object XML: {0}")]
     Parse(#[from] roxmltree::Error),
 }
 
 impl AdtInactiveSourceProbeError {
     #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapError> {
+    pub const fn sap_error(&self) -> Option<&SapClientError> {
         match self {
             Self::Sap(error) => Some(error),
             Self::Parse(_) => None,
@@ -107,7 +107,7 @@ impl AdtSourceCheckError {
     }
 
     #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapError> {
+    pub const fn sap_error(&self) -> Option<&SapClientError> {
         match self {
             Self::Sap { source, .. } => Some(source),
             Self::InvalidObject(_) | Self::Parse { .. } => None,

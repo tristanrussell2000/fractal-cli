@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
 use super::{
-    client::SapError,
+    client::SapClientError,
     editable_source::{AdtSourceReadError, EditableAdtSourceTargetError},
     object_info::ObjectInfoError,
     object_search::ObjectSearchError,
@@ -17,7 +17,7 @@ use super::{
 /// Uniform diagnostic access for ADT source-workflow errors.
 ///
 /// Every implementor already exposes a stable machine-readable code, an
-/// agent-facing hint, and the underlying [`SapError`] when a request reached
+/// agent-facing hint, and the underlying [`SapClientError`] when a request reached
 /// SAP. This trait exists so one caller — the CLI error boundary — can read
 /// those without repeating an arm per workflow. It deliberately does not
 /// unify the errors themselves: each workflow keeps its own variants and
@@ -33,7 +33,7 @@ pub trait AdtErrorDiagnostics: Display {
 
     /// The underlying SAP failure, when the workflow reached SAP.
     #[must_use]
-    fn sap_error(&self) -> Option<&SapError>;
+    fn sap_error(&self) -> Option<&SapClientError>;
 
     /// A command that diagnoses this failure, if one can be derived.
     ///
@@ -51,7 +51,7 @@ pub trait AdtErrorDiagnostics: Display {
     #[must_use]
     fn http_status(&self) -> Option<u16> {
         match self.sap_error() {
-            Some(SapError::Http { status, .. }) => Some(status.as_u16()),
+            Some(SapClientError::Http { status, .. }) => Some(status.as_u16()),
             _ => None,
         }
     }
@@ -67,7 +67,7 @@ impl AdtErrorDiagnostics for EditableAdtSourceTargetError {
     }
 
     // Object type and name are validated before any request is sent.
-    fn sap_error(&self) -> Option<&SapError> {
+    fn sap_error(&self) -> Option<&SapClientError> {
         None
     }
 }
@@ -81,7 +81,7 @@ impl AdtErrorDiagnostics for AdtSourceReadError {
         Self::hint(self)
     }
 
-    fn sap_error(&self) -> Option<&SapError> {
+    fn sap_error(&self) -> Option<&SapClientError> {
         Self::sap_error(self)
     }
 
@@ -99,7 +99,7 @@ impl AdtErrorDiagnostics for AdtSourcePatchError {
         Self::hint(self)
     }
 
-    fn sap_error(&self) -> Option<&SapError> {
+    fn sap_error(&self) -> Option<&SapClientError> {
         Self::sap_error(self)
     }
 
@@ -117,7 +117,7 @@ impl AdtErrorDiagnostics for AdtSourceReplacementError {
         Self::hint(self)
     }
 
-    fn sap_error(&self) -> Option<&SapError> {
+    fn sap_error(&self) -> Option<&SapClientError> {
         Self::sap_error(self)
     }
 
@@ -135,7 +135,7 @@ impl AdtErrorDiagnostics for AdtSourceCheckError {
         Self::hint(self)
     }
 
-    fn sap_error(&self) -> Option<&SapError> {
+    fn sap_error(&self) -> Option<&SapClientError> {
         Self::sap_error(self)
     }
 
@@ -153,7 +153,7 @@ impl AdtErrorDiagnostics for AdtSourceActivationError {
         Self::hint(self)
     }
 
-    fn sap_error(&self) -> Option<&SapError> {
+    fn sap_error(&self) -> Option<&SapClientError> {
         Self::sap_error(self)
     }
 
@@ -175,7 +175,7 @@ impl AdtErrorDiagnostics for AdtInactiveSourceDiscardError {
         Self::hint(self)
     }
 
-    fn sap_error(&self) -> Option<&SapError> {
+    fn sap_error(&self) -> Option<&SapClientError> {
         Self::sap_error(self)
     }
 }
@@ -189,7 +189,7 @@ impl AdtErrorDiagnostics for ObjectSearchError {
         Self::hint(self)
     }
 
-    fn sap_error(&self) -> Option<&SapError> {
+    fn sap_error(&self) -> Option<&SapClientError> {
         Self::sap_error(self)
     }
 
@@ -207,7 +207,7 @@ impl AdtErrorDiagnostics for ObjectSourceError {
         Self::hint(self)
     }
 
-    fn sap_error(&self) -> Option<&SapError> {
+    fn sap_error(&self) -> Option<&SapClientError> {
         Self::sap_error(self)
     }
 
@@ -225,7 +225,7 @@ impl AdtErrorDiagnostics for ObjectInfoError {
         Self::hint(self)
     }
 
-    fn sap_error(&self) -> Option<&SapError> {
+    fn sap_error(&self) -> Option<&SapClientError> {
         Self::sap_error(self)
     }
 
@@ -243,7 +243,7 @@ impl AdtErrorDiagnostics for ObjectUsagesError {
         Self::hint(self)
     }
 
-    fn sap_error(&self) -> Option<&SapError> {
+    fn sap_error(&self) -> Option<&SapClientError> {
         Self::sap_error(self)
     }
 
@@ -259,7 +259,7 @@ mod tests {
     use super::*;
     use crate::{
         sap::{
-            client::SapErrorKind,
+            client::SapHttpErrorKind,
             edit_session::AdtEditSessionError,
             editable_source::{
                 AdtEditTargetValidationError, AdtSourceVersion, EditableAdtObjectType,
@@ -294,8 +294,8 @@ mod tests {
     fn lock_conflict() -> AdtEditSessionError {
         AdtEditSessionError::LockFailed {
             transport: Some("DE3K900575".to_owned()),
-            source: SapError::Http {
-                kind: SapErrorKind::Other,
+            source: SapClientError::Http {
+                kind: SapHttpErrorKind::Other,
                 status: StatusCode::CONFLICT,
                 url: "https://sap.example/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
                 message: "Object is already locked in request DE3K900575".to_owned(),
@@ -328,7 +328,7 @@ mod tests {
                 after_sha256: "b".repeat(64),
             }),
             Box::new(AdtInactiveSourceDiscardError::Session(
-                AdtEditSessionError::UnlockFailed(SapError::Network {
+                AdtEditSessionError::UnlockFailed(SapClientError::Network {
                     url: "https://sap.example".to_owned(),
                     message: "connection reset".to_owned(),
                 }),
@@ -379,8 +379,8 @@ mod tests {
         let http: &dyn AdtErrorDiagnostics = &AdtSourceCheckError::Sap {
             identity: identity(),
             version: AdtSourceVersion::Inactive,
-            source: SapError::Http {
-                kind: SapErrorKind::Forbidden,
+            source: SapClientError::Http {
+                kind: SapHttpErrorKind::Forbidden,
                 status: StatusCode::FORBIDDEN,
                 url: "https://sap.example/sap/bc/adt/checkruns".to_owned(),
                 message: "Check authorization missing".to_owned(),
@@ -391,7 +391,7 @@ mod tests {
         let network: &dyn AdtErrorDiagnostics = &AdtSourceCheckError::Sap {
             identity: identity(),
             version: AdtSourceVersion::Inactive,
-            source: SapError::Network {
+            source: SapClientError::Network {
                 url: "https://sap.example/sap/bc/adt/checkruns".to_owned(),
                 message: "connection refused".to_owned(),
             },

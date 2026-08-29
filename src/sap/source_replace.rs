@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 use super::{
-    client::{SapClient, SapError},
+    client::{SapClient, SapClientError},
     edit_session::AdtEditSessionError,
     editable_source::{
         AdtEditTargetValidationError, AdtSourceReadError, AdtSourceSnapshot, AdtSourceVersion,
@@ -152,7 +152,7 @@ impl AdtSourceReplacementError {
     }
 
     #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapError> {
+    pub const fn sap_error(&self) -> Option<&SapClientError> {
         match self {
             Self::LockedSourceRead(error)
             | Self::PreviewSourceRead(error)

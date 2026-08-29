@@ -5,7 +5,7 @@ use super::{
     metadata::merge_table_metadata, parse_table_data, parse_table_ddl,
 };
 use crate::sap::{
-    client::{SapClient, SapError},
+    client::{SapClient, SapClientError},
     object_source::{ByteRangeOptions, get_source},
 };
 
@@ -247,7 +247,7 @@ async fn post_ddic_preview(
     sap: &SapClient,
     entity: &str,
     row_count: usize,
-) -> Result<String, SapError> {
+) -> Result<String, SapClientError> {
     let row_count = row_count.to_string();
     let query = [
         ("rowNumber", row_count.as_str()),
@@ -261,7 +261,7 @@ async fn post_freestyle_preview(
     sap: &SapClient,
     statement: &str,
     row_count: usize,
-) -> Result<String, SapError> {
+) -> Result<String, SapClientError> {
     let row_count = row_count.to_string();
     let query = [("rowNumber", row_count.as_str()), ("dataAging", "true")];
     let mut headers = HeaderMap::new();

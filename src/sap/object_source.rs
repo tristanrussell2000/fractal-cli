@@ -10,7 +10,7 @@ use super::{
     adt_object_uri::{
         AdtObjectUriError, SOURCE_SUFFIX, validate_adt_object_uri, validate_source_object_uri,
     },
-    client::{SapClient, SapError},
+    client::{SapClient, SapClientError},
 };
 use crate::suggested_command;
 
@@ -18,7 +18,7 @@ use crate::suggested_command;
 #[derive(Debug, Error)]
 pub enum ObjectSourceError {
     #[error(transparent)]
-    Sap(#[from] SapError),
+    Sap(#[from] SapClientError),
     #[error(transparent)]
     Uri(#[from] AdtObjectUriError),
     #[error("{kind} objects do not have an ABAP source view")]
@@ -54,7 +54,7 @@ impl ObjectSourceError {
     }
 
     #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapError> {
+    pub const fn sap_error(&self) -> Option<&SapClientError> {
         match self {
             Self::Sap(error) => Some(error),
             _ => None,
