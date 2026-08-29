@@ -6,8 +6,8 @@ use crate::cli::PackageItemsArgs;
 use crate::commands::connect;
 use crate::{cli::PackageTreeArgs, command_error::CommandError};
 use fractal::sap::{
-    adt::RepositoryKind,
     package::{PackageItemsOptions, get_package_items, get_package_tree},
+    repository_kind::RepositoryKind,
 };
 
 #[derive(Debug, Serialize)]

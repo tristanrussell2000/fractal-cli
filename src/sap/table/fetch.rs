@@ -5,8 +5,8 @@ use super::{
     metadata::merge_table_metadata, parse_table_data, parse_table_ddl,
 };
 use crate::sap::{
-    adt::{ByteRangeOptions, get_source},
     client::{SapClient, SapError},
+    object_source::{ByteRangeOptions, get_source},
 };
 
 const DDIC_PREVIEW_PATH: &str = "/sap/bc/adt/datapreview/ddic";

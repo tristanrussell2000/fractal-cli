@@ -1,10 +1,13 @@
 use fractal::{
     config, credentials,
     sap::{
-        adt::AdtError,
         client::SapError,
         editable_source::{AdtSourceReadError, EditableAdtSourceTargetError},
         error_diagnostics::AdtErrorDiagnostics,
+        object_info::ObjectInfoError,
+        object_search::ObjectSearchError,
+        object_source::ObjectSourceError,
+        object_usages::ObjectUsagesError,
         package::PackageError,
         source_activation::AdtSourceActivationError,
         source_check::AdtSourceCheckError,
@@ -20,7 +23,7 @@ pub enum CommandError {
     Config(config::ConfigError),
     Credential(credentials::CredentialError),
     Sap(SapError),
-    Adt(AdtError),
+    Object(ObjectCommandError),
     Edit(EditCommandError),
     Package(PackageError),
     Table(TableError),
@@ -29,6 +32,29 @@ pub enum CommandError {
         message: String,
         hint: Option<String>,
     },
+}
+
+/// One repository-object operation failure reported through the CLI boundary.
+///
+/// Each operation owns an error whose variants are its real failure positions;
+/// this enum only routes them through the shared diagnostic access.
+#[derive(Debug)]
+pub enum ObjectCommandError {
+    Search(ObjectSearchError),
+    Source(ObjectSourceError),
+    Info(ObjectInfoError),
+    Usages(ObjectUsagesError),
+}
+
+impl ObjectCommandError {
+    fn diagnostics(&self) -> &dyn AdtErrorDiagnostics {
+        match self {
+            Self::Search(error) => error,
+            Self::Source(error) => error,
+            Self::Info(error) => error,
+            Self::Usages(error) => error,
+        }
+    }
 }
 
 /// One ADT source-workflow failure reported through the CLI error boundary.
@@ -99,7 +125,7 @@ impl CommandError {
                 credentials::CredentialError::Missing(_) => "credential_missing",
             },
             Self::Sap(error) => error.code(),
-            Self::Adt(error) => error.code(),
+            Self::Object(error) => error.diagnostics().code(),
             Self::Edit(error) => error.diagnostics().code(),
             Self::Package(error) => match error {
                 PackageError::Sap(error) => error.code(),
@@ -119,6 +145,7 @@ impl CommandError {
                 _ => None,
             },
             Self::Edit(error) => error.diagnostics().http_status(),
+            Self::Object(error) => error.diagnostics().http_status(),
             _ => None,
         }
     }
@@ -128,7 +155,7 @@ impl CommandError {
             Self::Config(error) => error.to_string(),
             Self::Credential(error) => error.to_string(),
             Self::Sap(error) => error.to_string(),
-            Self::Adt(error) => error.to_string(),
+            Self::Object(error) => error.diagnostics().to_string(),
             Self::Edit(error) => error.diagnostics().to_string(),
             Self::Package(error) => error.to_string(),
             Self::Table(error) => error.to_string(),
@@ -145,6 +172,7 @@ impl CommandError {
         match self {
             Self::Sap(error) | Self::Package(PackageError::Sap(error)) => error.suggested_command(),
             Self::Edit(error) => error.diagnostics().suggested_command(),
+            Self::Object(error) => error.diagnostics().suggested_command(),
             Self::Table(error) => error.suggested_command(),
             _ => None,
         }
@@ -163,7 +191,7 @@ impl CommandError {
             Self::Sap(error) | Self::Package(PackageError::Sap(error)) => {
                 Some(error.hint())
             }
-            Self::Adt(error) => error.hint(),
+            Self::Object(error) => Some(error.diagnostics().hint()),
             Self::Edit(error) => Some(error.diagnostics().hint()),
             Self::Package(PackageError::Parse(_)) => Some(
                 "The SAP package response did not match the expected nodestructure format."
@@ -193,9 +221,27 @@ impl From<SapError> for CommandError {
     }
 }
 
-impl From<AdtError> for CommandError {
-    fn from(error: AdtError) -> Self {
-        Self::Adt(error)
+impl From<ObjectSearchError> for CommandError {
+    fn from(error: ObjectSearchError) -> Self {
+        Self::Object(ObjectCommandError::Search(error))
+    }
+}
+
+impl From<ObjectSourceError> for CommandError {
+    fn from(error: ObjectSourceError) -> Self {
+        Self::Object(ObjectCommandError::Source(error))
+    }
+}
+
+impl From<ObjectInfoError> for CommandError {
+    fn from(error: ObjectInfoError) -> Self {
+        Self::Object(ObjectCommandError::Info(error))
+    }
+}
+
+impl From<ObjectUsagesError> for CommandError {
+    fn from(error: ObjectUsagesError) -> Self {
+        Self::Object(ObjectCommandError::Usages(error))
     }
 }
 

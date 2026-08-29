@@ -4,8 +4,8 @@ use regex::Regex;
 use thiserror::Error;
 
 use super::{TableColumn, TableDdlParseError};
-use crate::sap::adt::AdtError;
 use crate::sap::client::SapError;
+use crate::sap::object_source::ObjectSourceError;
 use crate::suggested_command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,7 +73,7 @@ pub enum TableError {
     #[error(transparent)]
     Sap(#[from] SapError),
     #[error("could not fetch table DDL source: {0}")]
-    DdlSource(#[source] AdtError),
+    DdlSource(#[source] ObjectSourceError),
     #[error("could not parse table DDL source: {0}")]
     DdlParse(#[from] TableDdlParseError),
     #[error("{query}")]
@@ -128,7 +128,7 @@ impl TableError {
     pub fn hint(&self) -> Option<String> {
         match self {
             Self::Sap(error) => Some(error.hint()),
-            Self::DdlSource(error) => error.hint(),
+            Self::DdlSource(error) => Some(error.hint()),
             Self::DdlParse(_) => Some(
                 "The SAP table source did not match the expected `define table` DDL format."
                     .to_owned(),
@@ -194,7 +194,7 @@ impl TableError {
     #[must_use]
     pub fn sap_error(&self) -> Option<&SapError> {
         match self {
-            Self::Sap(error) | Self::DdlSource(AdtError::Sap(error)) => Some(error),
+            Self::Sap(error) | Self::DdlSource(ObjectSourceError::Sap(error)) => Some(error),
             Self::Query { source, .. } => Some(source.as_ref()),
             _ => None,
         }

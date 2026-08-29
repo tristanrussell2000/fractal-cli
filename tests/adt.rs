@@ -1,8 +1,9 @@
 use fractal::{
     config::Profile,
     sap::{
-        adt::{ObjectSearchOptions, RepositoryKind, search_objects},
         client::SapClient,
+        object_search::{ObjectSearchOptions, search_objects},
+        repository_kind::RepositoryKind,
     },
 };
 use std::time::{Duration, Instant};

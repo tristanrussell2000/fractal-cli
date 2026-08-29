@@ -1,6 +1,6 @@
 use fractal::{
     config::Profile,
-    sap::{adt::get_object_info, client::SapClient},
+    sap::{client::SapClient, object_info::get_object_info},
 };
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
@@ -59,7 +59,7 @@ async fn returns_a_hinted_error_when_sap_response_has_no_description() {
         .unwrap_err();
 
     assert_eq!(error.code(), "no_description");
-    assert!(error.hint().is_some());
+    assert!(!error.hint().is_empty());
     server.verify().await;
 }
 

@@ -1,6 +1,6 @@
 use fractal::{
     config::Profile,
-    sap::{adt::get_object_usages, client::SapClient},
+    sap::{client::SapClient, object_usages::get_object_usages},
 };
 use wiremock::{
     Mock, MockServer, ResponseTemplate,

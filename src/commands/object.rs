@@ -4,8 +4,11 @@ use crate::cli::{SearchArgs, SourceArgs, UriArgs, UsagesArgs, XmlArgs};
 use crate::command_error::CommandError;
 use crate::commands::connect;
 use crate::output::{OutputFormat, print_result};
-use fractal::sap::adt::{
-    ByteRangeOptions, ObjectSearchOptions, RepositoryKind, get_object_usages, search_objects,
+use fractal::sap::{
+    object_search::{ObjectSearchOptions, search_objects},
+    object_source::ByteRangeOptions,
+    object_usages::get_object_usages,
+    repository_kind::RepositoryKind,
 };
 
 #[derive(Debug, Serialize)]
@@ -145,7 +148,7 @@ fn map_object_search_result(
     query: &str,
     args: &SearchArgs,
     package_patterns: Vec<String>,
-    result: fractal::sap::adt::ObjectSearchResult,
+    result: fractal::sap::object_search::ObjectSearchResult,
 ) -> ObjectSearchResultOutput {
     let returned = result.hits.len();
     let next_offset = (args.offset + returned < result.total).then_some(args.offset + returned);
@@ -187,7 +190,7 @@ pub async fn object_source(
     args: &SourceArgs,
 ) -> Result<ObjectSourceResultOutput, CommandError> {
     let (profile_name, _profile, client) = connect(explicit_profile).await?;
-    let result = fractal::sap::adt::get_source(
+    let result = fractal::sap::object_source::get_source(
         &client,
         &args.uri,
         ByteRangeOptions {
@@ -215,7 +218,7 @@ pub async fn object_xml(
     args: &XmlArgs,
 ) -> Result<ObjectXmlResultOutput, CommandError> {
     let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
-    let result = fractal::sap::adt::get_xml(
+    let result = fractal::sap::object_source::get_xml(
         &mut client,
         &args.uri,
         ByteRangeOptions {
@@ -238,7 +241,7 @@ pub async fn object_info(
     args: &UriArgs,
 ) -> Result<ObjectInfoResultOutput, CommandError> {
     let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
-    let result = fractal::sap::adt::get_object_info(&mut client, &args.uri).await?;
+    let result = fractal::sap::object_info::get_object_info(&mut client, &args.uri).await?;
 
     Ok(ObjectInfoResultOutput {
         ok: true,
@@ -280,7 +283,7 @@ pub async fn object_usages(
 }
 
 fn map_usage_references(
-    references: Vec<fractal::sap::adt::UsageReference>,
+    references: Vec<fractal::sap::object_usages::UsageReference>,
 ) -> Vec<UsageReferenceOutput> {
     references
         .into_iter()
@@ -498,15 +501,17 @@ mod tests {
     #[test]
     fn maps_usage_references_and_computes_direct_result_kind_and_type() {
         let refs = vec![
-            fractal::sap::adt::UsageReference {
+            fractal::sap::object_usages::UsageReference {
                 uri: "/sap/bc/adt/ddic/structures/zdtls_check_in_s".to_owned(),
                 parent_uri: Some("/sap/bc/adt/packages/zdtls".to_owned()),
                 name: Some("ZDTLS_CHECK_IN_S".to_owned()),
-                object_type: Some(fractal::sap::adt::AdtObjectType::parse("TABL/DS")),
+                object_type: Some(fractal::sap::repository_kind::AdtObjectType::parse(
+                    "TABL/DS",
+                )),
                 package: Some("ZDTLS".to_owned()),
                 direct_result: true,
             },
-            fractal::sap::adt::UsageReference {
+            fractal::sap::object_usages::UsageReference {
                 uri: "/sap/bc/adt/packages/zdtls".to_owned(),
                 parent_uri: None,
                 name: Some("ZDTLS".to_owned()),
@@ -551,9 +556,15 @@ mod tests {
     #[test]
     fn source_adt_errors_have_structured_cli_codes() {
         for error in [
-            fractal::sap::adt::AdtError::InvalidUri("bad".to_owned()),
-            fractal::sap::adt::AdtError::DoubledSourceSuffix("/source/main".to_owned()),
-            fractal::sap::adt::AdtError::NoSourceForKind {
+            fractal::sap::object_source::ObjectSourceError::Uri(
+                fractal::sap::adt_object_uri::AdtObjectUriError::NotAnAdtUri("bad".to_owned()),
+            ),
+            fractal::sap::object_source::ObjectSourceError::Uri(
+                fractal::sap::adt_object_uri::AdtObjectUriError::DoubledSourceSuffix(
+                    "/source/main".to_owned(),
+                ),
+            ),
+            fractal::sap::object_source::ObjectSourceError::NoSourceForKind {
                 kind: "DOMA".to_owned(),
                 uri: "/sap/bc/adt/ddic/domains/zdomain".to_owned(),
             },
@@ -573,13 +584,13 @@ mod tests {
             offset: 10,
             limit: 2,
         };
-        let result = fractal::sap::adt::ObjectSearchResult {
+        let result = fractal::sap::object_search::ObjectSearchResult {
             total: 13,
             sap_search_cap: 500,
             possibly_truncated_by_sap_cap: true,
-            hits: vec![fractal::sap::adt::ObjectSearchHit {
+            hits: vec![fractal::sap::object_search::ObjectSearchHit {
                 name: "ZCL_VERSION".to_owned(),
-                object_type: fractal::sap::adt::AdtObjectType::parse("CLAS/OC"),
+                object_type: fractal::sap::repository_kind::AdtObjectType::parse("CLAS/OC"),
                 package: Some("ZAPP".to_owned()),
                 description: Some("Version class".to_owned()),
                 uri: Some("/sap/bc/adt/oo/classes/zcl_version".to_owned()),

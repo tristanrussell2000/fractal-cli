@@ -3,6 +3,10 @@ use std::fmt::Display;
 use super::{
     client::SapError,
     editable_source::{AdtSourceReadError, EditableAdtSourceTargetError},
+    object_info::ObjectInfoError,
+    object_search::ObjectSearchError,
+    object_source::ObjectSourceError,
+    object_usages::ObjectUsagesError,
     source_activation::AdtSourceActivationError,
     source_check::AdtSourceCheckError,
     source_discard::AdtInactiveSourceDiscardError,
@@ -173,6 +177,78 @@ impl AdtErrorDiagnostics for AdtInactiveSourceDiscardError {
 
     fn sap_error(&self) -> Option<&SapError> {
         Self::sap_error(self)
+    }
+}
+
+impl AdtErrorDiagnostics for ObjectSearchError {
+    fn code(&self) -> &'static str {
+        Self::code(self)
+    }
+
+    fn hint(&self) -> String {
+        Self::hint(self)
+    }
+
+    fn sap_error(&self) -> Option<&SapError> {
+        Self::sap_error(self)
+    }
+
+    fn suggested_command(&self) -> Option<String> {
+        Self::suggested_command(self)
+    }
+}
+
+impl AdtErrorDiagnostics for ObjectSourceError {
+    fn code(&self) -> &'static str {
+        Self::code(self)
+    }
+
+    fn hint(&self) -> String {
+        Self::hint(self)
+    }
+
+    fn sap_error(&self) -> Option<&SapError> {
+        Self::sap_error(self)
+    }
+
+    fn suggested_command(&self) -> Option<String> {
+        Self::suggested_command(self)
+    }
+}
+
+impl AdtErrorDiagnostics for ObjectInfoError {
+    fn code(&self) -> &'static str {
+        Self::code(self)
+    }
+
+    fn hint(&self) -> String {
+        Self::hint(self)
+    }
+
+    fn sap_error(&self) -> Option<&SapError> {
+        Self::sap_error(self)
+    }
+
+    fn suggested_command(&self) -> Option<String> {
+        Self::suggested_command(self)
+    }
+}
+
+impl AdtErrorDiagnostics for ObjectUsagesError {
+    fn code(&self) -> &'static str {
+        Self::code(self)
+    }
+
+    fn hint(&self) -> String {
+        Self::hint(self)
+    }
+
+    fn sap_error(&self) -> Option<&SapError> {
+        Self::sap_error(self)
+    }
+
+    fn suggested_command(&self) -> Option<String> {
+        Self::suggested_command(self)
     }
 }
 

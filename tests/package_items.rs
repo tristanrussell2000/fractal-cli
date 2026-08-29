@@ -1,9 +1,9 @@
 use fractal::{
     config::Profile,
     sap::{
-        adt::RepositoryKind,
         client::SapClient,
         package::{PackageItemsOptions, get_package_items},
+        repository_kind::RepositoryKind,
     },
 };
 use wiremock::{

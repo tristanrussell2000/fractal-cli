@@ -4,8 +4,8 @@ use reqwest::header::HeaderMap;
 use thiserror::Error;
 
 use super::{
-    adt::RepositoryKind,
     client::{SapClient, SapError},
+    repository_kind::RepositoryKind,
 };
 use crate::{pattern::glob_matches, source_change::source_sha256, suggested_command};
 

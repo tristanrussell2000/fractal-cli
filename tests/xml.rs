@@ -1,8 +1,8 @@
 use fractal::{
     config::Profile,
     sap::{
-        adt::{ByteRangeOptions, get_xml},
         client::SapClient,
+        object_source::{ByteRangeOptions, get_xml},
     },
 };
 use wiremock::{

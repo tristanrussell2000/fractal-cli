@@ -4,9 +4,9 @@ use roxmltree::{Document, Node};
 use thiserror::Error;
 
 use super::{
-    adt::{AdtObjectType, RepositoryKind},
     client::SapClient,
     non_empty_attribute,
+    repository_kind::{AdtObjectType, RepositoryKind},
 };
 
 #[derive(Debug, Error)]

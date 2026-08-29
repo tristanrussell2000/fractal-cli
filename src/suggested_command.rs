@@ -42,6 +42,12 @@ pub fn object_search(object_type: &str, name: &str) -> String {
     format!("fractal object search {name} --kind {object_type}")
 }
 
+/// Retrieves an object's full metadata XML.
+#[must_use]
+pub fn object_xml(uri: &str) -> String {
+    format!("fractal object xml {uri}")
+}
+
 /// Lists the fields of one DDIC entity.
 #[must_use]
 pub fn table_metadata(entity: &str) -> String {
@@ -70,6 +76,10 @@ mod tests {
         assert_eq!(
             object_search("INTF", "ZIF_MISSING"),
             "fractal object search ZIF_MISSING --kind INTF"
+        );
+        assert_eq!(
+            object_xml("/sap/bc/adt/ddic/domains/zdomain"),
+            "fractal object xml /sap/bc/adt/ddic/domains/zdomain"
         );
         assert_eq!(
             table_metadata("ZDEMO_EVENT_LOG"),

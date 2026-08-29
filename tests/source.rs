@@ -1,8 +1,9 @@
 use fractal::{
     config::Profile,
     sap::{
-        adt::{AdtError, ByteRangeOptions, get_source},
+        adt_object_uri::AdtObjectUriError,
         client::SapClient,
+        object_source::{ByteRangeOptions, ObjectSourceError, get_source},
     },
 };
 use wiremock::{
@@ -74,7 +75,10 @@ async fn rejects_invalid_source_uris_before_http() {
     let error = get_source(&client, "not-an-adt-uri", ByteRangeOptions::default())
         .await
         .unwrap_err();
-    assert!(matches!(error, AdtError::InvalidUri(_)));
+    assert!(matches!(
+        error,
+        ObjectSourceError::Uri(AdtObjectUriError::NotAnAdtUri(_))
+    ));
 }
 
 #[tokio::test]
@@ -89,7 +93,10 @@ async fn rejects_doubled_source_suffix_and_known_no_source_kinds() {
     )
     .await
     .unwrap_err();
-    assert!(matches!(doubled, AdtError::DoubledSourceSuffix(_)));
+    assert!(matches!(
+        doubled,
+        ObjectSourceError::Uri(AdtObjectUriError::DoubledSourceSuffix(_))
+    ));
 
     let domain = get_source(
         &client,
@@ -98,5 +105,5 @@ async fn rejects_doubled_source_suffix_and_known_no_source_kinds() {
     )
     .await
     .unwrap_err();
-    assert!(matches!(domain, AdtError::NoSourceForKind { .. }));
+    assert!(matches!(domain, ObjectSourceError::NoSourceForKind { .. }));
 }

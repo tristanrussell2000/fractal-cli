@@ -1,11 +1,17 @@
-pub mod adt;
 pub mod adt_message_severity;
+pub mod adt_object_uri;
+pub mod adt_response;
 pub mod client;
 pub mod edit_session;
 pub mod editable_source;
 pub mod error_diagnostics;
 mod inactive_source_save;
+pub mod object_info;
+pub mod object_search;
+pub mod object_source;
+pub mod object_usages;
 pub mod package;
+pub mod repository_kind;
 pub mod source_activation;
 pub mod source_check;
 pub mod source_discard;
