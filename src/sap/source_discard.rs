@@ -16,6 +16,7 @@ use super::{
     source_activation::{AdtSourceActivationError, activate_validated_adt_source},
     source_check::{AdtInactiveSourceProbeError, probe_inactive_adt_source},
 };
+use crate::reportable_error::{ReportableError, sap_http_status};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdtInactiveSourceDiscardRequest {
@@ -77,7 +78,24 @@ pub enum AdtInactiveSourceDiscardError {
 
 impl AdtInactiveSourceDiscardError {
     #[must_use]
-    pub const fn code(&self) -> &'static str {
+    pub const fn sap_error(&self) -> Option<&SapClientError> {
+        match self {
+            Self::ActiveSourceRead(error)
+            | Self::InactiveSourceRead(error)
+            | Self::RestoredSourceRead(error) => error.sap_error(),
+            Self::Session(error) => error.sap_error(),
+            Self::InactiveVersionProbe(error) => error.sap_error(),
+            Self::RestoredSourceActivation(error) => error.sap_error(),
+            Self::Validation(_)
+            | Self::NoInactiveVersion { .. }
+            | Self::RestoreVerificationMismatch { .. }
+            | Self::ActiveSourceChanged { .. } => None,
+        }
+    }
+}
+
+impl ReportableError for AdtInactiveSourceDiscardError {
+    fn code(&self) -> &'static str {
         match self {
             Self::Validation(error) => error.code(),
             Self::Session(
@@ -99,23 +117,26 @@ impl AdtInactiveSourceDiscardError {
         }
     }
 
-    #[must_use]
-    pub fn hint(&self) -> String {
-        match self {
+    fn status(&self) -> Option<u16> {
+        sap_http_status(self.sap_error())
+    }
+
+    fn hint(&self) -> Option<String> {
+        Some(match self {
             Self::ActiveSourceRead(error)
             | Self::InactiveSourceRead(error)
-            | Self::RestoredSourceRead(error) => error.hint(),
+            | Self::RestoredSourceRead(error) => error.hint()?,
             Self::Validation(AdtEditTargetValidationError::InvalidTransport(_)) => {
                 "Use a parent transport request containing 1-20 ASCII letters or digits, for example DE3K900575."
                     .to_owned()
             }
-            Self::Validation(error) => error.hint(),
+            Self::Validation(error) => error.hint()?,
             Self::Session(AdtEditSessionError::UnlockFailed(_)) => {
                 "The inactive source now contains the previous active source, but it was not activated. Release the lock, inspect the inactive version, and activate it to finish the discard."
                     .to_owned()
             }
-            Self::Session(error) => error.hint(),
-            Self::InactiveVersionProbe(error) => error.hint(),
+            Self::Session(error) => error.hint()?,
+            Self::InactiveVersionProbe(error) => error.hint()?,
             Self::NoInactiveVersion { .. } => {
                 "There are no visible unactivated changes to discard.".to_owned()
             }
@@ -125,13 +146,13 @@ impl AdtInactiveSourceDiscardError {
             ),
             Self::RestoredSourceActivation(error) => format!(
                 "The inactive source now contains the previous active source, but activation did not complete. {}",
-                error.hint()
+                error.hint().unwrap_or_default()
             ),
             Self::ActiveSourceChanged { identity, .. } => format!(
                 "Do not retry blindly: a discard must preserve active source exactly, so inspect the object history, starting with `{}`.",
                 suggested_command::edit_read(identity.object_type.as_str(), &identity.name, AdtSourceVersion::Active.as_str())
             ),
-        }
+        })
     }
 
     /// A read-only command that diagnoses this failure, if one exists.
@@ -139,8 +160,7 @@ impl AdtInactiveSourceDiscardError {
     /// A failed unlock after the restore write returns `None` even though its
     /// remedy is known: finishing the discard requires `fractal edit activate`,
     /// a mutation, so that instruction stays in prose where a caller decides.
-    #[must_use]
-    pub fn suggested_command(&self) -> Option<String> {
+    fn suggested_command(&self) -> Option<String> {
         match self {
             Self::RestoreVerificationMismatch { identity, .. } => {
                 Some(suggested_command::edit_read(
@@ -162,22 +182,6 @@ impl AdtInactiveSourceDiscardError {
             | Self::Session(_)
             | Self::InactiveVersionProbe(_)
             | Self::NoInactiveVersion { .. } => None,
-        }
-    }
-
-    #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapClientError> {
-        match self {
-            Self::ActiveSourceRead(error)
-            | Self::InactiveSourceRead(error)
-            | Self::RestoredSourceRead(error) => error.sap_error(),
-            Self::Session(error) => error.sap_error(),
-            Self::InactiveVersionProbe(error) => error.sap_error(),
-            Self::RestoredSourceActivation(error) => error.sap_error(),
-            Self::Validation(_)
-            | Self::NoInactiveVersion { .. }
-            | Self::RestoreVerificationMismatch { .. }
-            | Self::ActiveSourceChanged { .. } => None,
         }
     }
 }

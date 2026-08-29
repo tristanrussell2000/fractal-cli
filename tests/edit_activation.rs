@@ -4,6 +4,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+use fractal::reportable_error::ReportableError;
 use fractal::{
     config::Profile,
     sap::{
@@ -343,9 +344,10 @@ async fn refuses_to_activate_when_no_inactive_version_exists() {
     assert!(
         error
             .hint()
+            .unwrap()
             .contains("fractal edit read --type CLAS --name ZCL_SAMPLE --version active"),
         "hint should name the object to inspect: {}",
-        error.hint()
+        error.hint().unwrap_or_default()
     );
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
     server.verify().await;
@@ -383,9 +385,10 @@ async fn syntax_errors_stop_before_transport_or_activation() {
     assert!(
         error
             .hint()
+            .unwrap()
             .contains("fractal edit check --type CLAS --name ZCL_SAMPLE --version inactive"),
         "precheck hint should name a runnable check command: {}",
-        error.hint()
+        error.hint().unwrap_or_default()
     );
     let AdtSourceActivationError::PrecheckRejected {
         errors, messages, ..
@@ -505,7 +508,7 @@ async fn transport_attachment_failure_stops_before_activation() {
         AdtSourceActivationError::TransportAttachment(_)
     ));
     assert_eq!(error.code(), "edit_activation_transport_failed");
-    assert!(error.hint().contains("DE3K900999"));
+    assert!(error.hint().unwrap().contains("DE3K900999"));
     server.verify().await;
 }
 

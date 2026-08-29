@@ -1,3 +1,4 @@
+use fractal::reportable_error::ReportableError;
 use fractal::{
     config::Profile,
     sap::{client::SapClient, object_info::get_object_info},
@@ -59,7 +60,7 @@ async fn returns_a_hinted_error_when_sap_response_has_no_description() {
         .unwrap_err();
 
     assert_eq!(error.code(), "no_description");
-    assert!(!error.hint().is_empty());
+    assert!(error.hint().is_some());
     server.verify().await;
 }
 

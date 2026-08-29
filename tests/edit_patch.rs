@@ -1,6 +1,7 @@
 mod adt_edit_mock;
 
 use adt_edit_mock::{AdtEditSession, SequentialResponses};
+use fractal::reportable_error::ReportableError;
 use fractal::{
     config::Profile,
     sap::{
@@ -308,8 +309,8 @@ async fn does_not_retry_a_lock_held_by_a_different_transport() {
         error,
         AdtSourcePatchError::Session(AdtEditSessionError::LockFailed { .. })
     ));
-    assert!(error.hint().contains("DE3K900999"));
-    assert!(error.hint().contains("DE3K900575"));
+    assert!(error.hint().unwrap().contains("DE3K900999"));
+    assert!(error.hint().unwrap().contains("DE3K900575"));
     assert_eq!(server.received_requests().await.unwrap().len(), 2);
     server.verify().await;
 }
@@ -361,7 +362,7 @@ async fn suggests_the_request_named_by_sap_when_transport_was_omitted() {
         error,
         AdtSourcePatchError::Session(AdtEditSessionError::SourceWriteFailed { .. })
     ));
-    assert!(error.hint().contains("--transport DE3K900575"));
+    assert!(error.hint().unwrap().contains("--transport DE3K900575"));
     server.verify().await;
 }
 
@@ -505,9 +506,10 @@ async fn missing_patch_anchor_is_checked_under_lock_and_then_unlocked() {
     assert!(
         error
             .hint()
+            .unwrap()
             .contains("fractal edit read --type PROG --name ZSAMPLE --version inactive"),
         "anchor hint should name a runnable read command: {}",
-        error.hint()
+        error.hint().unwrap_or_default()
     );
     server.verify().await;
 }
@@ -616,6 +618,6 @@ async fn reports_when_a_completed_write_cannot_be_verified() {
     ));
     assert_eq!(error.code(), "edit_source_verification_failed");
     assert!(error.to_string().contains("Verification unavailable"));
-    assert!(error.hint().contains("write and unlock succeeded"));
+    assert!(error.hint().unwrap().contains("write and unlock succeeded"));
     server.verify().await;
 }

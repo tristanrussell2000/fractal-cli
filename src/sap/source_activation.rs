@@ -18,6 +18,7 @@ use super::{
         AdtSourceCheckResult, check_adt_source_by_identity, probe_inactive_adt_source,
     },
 };
+use crate::reportable_error::{ReportableError, sap_http_status};
 
 const ACTIVATION_PATH: &str = "/sap/bc/adt/activation";
 
@@ -112,7 +113,28 @@ pub enum AdtSourceActivationError {
 
 impl AdtSourceActivationError {
     #[must_use]
-    pub const fn code(&self) -> &'static str {
+    pub const fn sap_error(&self) -> Option<&SapClientError> {
+        match self {
+            Self::InactiveSourceRead(error) | Self::ActiveSourceRead { source: error, .. } => {
+                error.sap_error()
+            }
+            Self::InactiveVersionProbe(error) => error.sap_error(),
+            Self::ActivationRequest { source, .. } => Some(source),
+            Self::PostActivationProbe { source: error, .. } => error.sap_error(),
+            Self::Precheck(error) => error.sap_error(),
+            Self::TransportAttachment(error) => error.sap_error(),
+            Self::Validation(_)
+            | Self::NoInactiveVersion { .. }
+            | Self::PrecheckRejected { .. }
+            | Self::ActivationResponseInvalid(_)
+            | Self::ActivationRefused { .. }
+            | Self::VerificationMismatch { .. } => None,
+        }
+    }
+}
+
+impl ReportableError for AdtSourceActivationError {
+    fn code(&self) -> &'static str {
         match self {
             Self::Validation(error) => error.code(),
             Self::InactiveVersionProbe(_) => "edit_activation_inactive_probe_failed",
@@ -130,21 +152,24 @@ impl AdtSourceActivationError {
         }
     }
 
-    #[must_use]
-    pub fn hint(&self) -> String {
-        match self {
+    fn status(&self) -> Option<u16> {
+        sap_http_status(self.sap_error())
+    }
+
+    fn hint(&self) -> Option<String> {
+        Some(match self {
             Self::Validation(AdtEditTargetValidationError::InvalidTransport(_)) => {
                 "Use a parent transport request containing 1-20 ASCII letters or digits, for example DE3K900575."
                     .to_owned()
             }
-            Self::Validation(error) => error.hint(),
-            Self::InactiveVersionProbe(error) => error.hint(),
+            Self::Validation(error) => error.hint()?,
+            Self::InactiveVersionProbe(error) => error.hint()?,
             Self::NoInactiveVersion { identity } => format!(
                 "Create or save an inactive change first. Run `{}` to inspect what is already live.",
                 suggested_command::edit_read(identity.object_type.as_str(), &identity.name, AdtSourceVersion::Active.as_str())
             ),
-            Self::InactiveSourceRead(error) => error.hint(),
-            Self::Precheck(error) => error.hint(),
+            Self::InactiveSourceRead(error) => error.hint()?,
+            Self::Precheck(error) => error.hint()?,
             Self::PrecheckRejected {
                 identity, messages, ..
             } => first_message_hint(
@@ -154,7 +179,7 @@ impl AdtSourceActivationError {
                     suggested_command::edit_check(identity.object_type.as_str(), &identity.name, AdtSourceVersion::Inactive.as_str())
                 ),
             ),
-            Self::TransportAttachment(error) => error.hint(),
+            Self::TransportAttachment(error) => error.hint()?,
             Self::ActivationRequest { identity, .. } => format!(
                 "The request may have reached SAP. Re-run `{}` before retrying activation.",
                 suggested_command::edit_check(identity.object_type.as_str(), &identity.name, AdtSourceVersion::Inactive.as_str())
@@ -177,15 +202,14 @@ impl AdtSourceActivationError {
                 "Do not retry blindly: SAP activated different source than the version Fractal prechecked. Review the object history, starting with `{}`.",
                 suggested_command::edit_read(identity.object_type.as_str(), &identity.name, AdtSourceVersion::Active.as_str())
             ),
-        }
+        })
     }
 
     /// A read-only command that diagnoses this failure, if one exists.
     ///
     /// Transport attachment failures return `None`: their remedy is to retry
     /// the activation with a different request, which is a mutation.
-    #[must_use]
-    pub fn suggested_command(&self) -> Option<String> {
+    fn suggested_command(&self) -> Option<String> {
         match self {
             Self::NoInactiveVersion { identity }
             | Self::ActiveSourceRead { identity, .. }
@@ -209,26 +233,6 @@ impl AdtSourceActivationError {
             | Self::TransportAttachment(_)
             | Self::ActivationResponseInvalid(_)
             | Self::ActivationRefused { .. } => None,
-        }
-    }
-
-    #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapClientError> {
-        match self {
-            Self::InactiveSourceRead(error) | Self::ActiveSourceRead { source: error, .. } => {
-                error.sap_error()
-            }
-            Self::InactiveVersionProbe(error) => error.sap_error(),
-            Self::ActivationRequest { source, .. } => Some(source),
-            Self::PostActivationProbe { source: error, .. } => error.sap_error(),
-            Self::Precheck(error) => error.sap_error(),
-            Self::TransportAttachment(error) => error.sap_error(),
-            Self::Validation(_)
-            | Self::NoInactiveVersion { .. }
-            | Self::PrecheckRejected { .. }
-            | Self::ActivationResponseInvalid(_)
-            | Self::ActivationRefused { .. }
-            | Self::VerificationMismatch { .. } => None,
         }
     }
 }

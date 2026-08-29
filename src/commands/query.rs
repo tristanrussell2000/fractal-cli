@@ -1,12 +1,15 @@
 use std::{fmt::Write as _, io::Read};
 
 use serde::Serialize;
+use thiserror::Error;
+
+use fractal::reportable_error::ReportableError;
 
 use crate::{
     cli::QueryArgs,
-    command_error::CommandError,
     commands::{connect, tabular},
     output::{OutputFormat, print_result},
+    reported::Reported,
 };
 use fractal::sap::table::{QueryOptions, TableDataResult, run_query};
 
@@ -28,7 +31,7 @@ pub struct QueryResultOutput {
 pub async fn query(
     explicit_profile: Option<&str>,
     args: &QueryArgs,
-) -> Result<QueryResultOutput, CommandError> {
+) -> Result<QueryResultOutput, Reported> {
     let query = {
         let stdin = std::io::stdin();
         let mut stdin = stdin.lock();
@@ -50,13 +53,31 @@ pub async fn query(
     ))
 }
 
-fn resolve_query<R: Read>(value: &str, reader: &mut R) -> Result<String, CommandError> {
+/// A failure reading the statement the caller piped in.
+#[derive(Debug, Error)]
+#[error("could not read the query from stdin: {0}")]
+pub struct QueryInputError(#[source] std::io::Error);
+
+impl ReportableError for QueryInputError {
+    fn code(&self) -> &'static str {
+        "query_stdin_read_error"
+    }
+
+    fn hint(&self) -> Option<String> {
+        Some(
+            "Pipe one complete SELECT statement into the command, or pass it as the argument."
+                .to_owned(),
+        )
+    }
+}
+
+fn resolve_query<R: Read>(value: &str, reader: &mut R) -> Result<String, QueryInputError> {
     if value != "-" {
         return Ok(value.to_owned());
     }
 
     let mut query = String::new();
-    reader.read_to_string(&mut query)?;
+    reader.read_to_string(&mut query).map_err(QueryInputError)?;
     Ok(query)
 }
 

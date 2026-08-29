@@ -1,8 +1,8 @@
 use serde::Serialize;
 
-use crate::command_error::CommandError;
 use crate::commands::connect;
 use crate::output::{OutputFormat, print_result};
+use crate::reported::Reported;
 use fractal::{config, sap::client::DiscoveryResult};
 
 #[derive(Debug, Serialize)]
@@ -64,7 +64,7 @@ pub fn print_system_list(result: &SystemListResult, output: OutputFormat) {
     }
 }
 
-pub fn system_list() -> Result<SystemListResult, CommandError> {
+pub fn system_list() -> Result<SystemListResult, Reported> {
     let loaded = config::load()?;
     let profiles = loaded
         .config
@@ -88,7 +88,7 @@ pub fn system_list() -> Result<SystemListResult, CommandError> {
     })
 }
 
-pub async fn system_test(explicit_profile: Option<&str>) -> Result<SystemTestResult, CommandError> {
+pub async fn system_test(explicit_profile: Option<&str>) -> Result<SystemTestResult, Reported> {
     let (name, profile, mut client) = connect(explicit_profile).await?;
     let discovery = client.test_connection().await?;
 

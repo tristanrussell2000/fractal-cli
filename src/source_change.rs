@@ -1,5 +1,6 @@
 use std::fmt::Write as _;
 
+use crate::reportable_error::ReportableError;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -47,9 +48,8 @@ pub enum SourceChangePlanError {
     SourceReplacementNoChanges,
 }
 
-impl SourceChangePlanError {
-    #[must_use]
-    pub const fn code(&self) -> &'static str {
+impl ReportableError for SourceChangePlanError {
+    fn code(&self) -> &'static str {
         match self {
             Self::InvalidExpectedSha256 => "invalid_expected_sha256",
             Self::SourceHashMismatch { .. } => "source_hash_mismatch",
@@ -62,9 +62,8 @@ impl SourceChangePlanError {
         }
     }
 
-    #[must_use]
-    pub fn hint(&self) -> String {
-        match self {
+    fn hint(&self) -> Option<String> {
+        Some(match self {
             Self::InvalidExpectedSha256 => {
                 "Use the SHA-256 returned by the source-read operation.".to_owned()
             }
@@ -87,7 +86,7 @@ impl SourceChangePlanError {
                 "The supplied complete source already matches SAP's current inactive source."
                     .to_owned()
             }
-        }
+        })
     }
 }
 
@@ -288,7 +287,7 @@ mod tests {
             error,
             SourceChangePlanError::AnchorAmbiguous { occurrences: 2 }
         );
-        assert!(error.hint().contains("exactly once"));
+        assert!(error.hint().unwrap().contains("exactly once"));
     }
 
     #[test]

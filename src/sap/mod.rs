@@ -4,7 +4,6 @@ pub mod adt_response;
 pub mod client;
 pub mod edit_session;
 pub mod editable_source;
-pub mod error_diagnostics;
 mod inactive_source_save;
 pub mod object_info;
 pub mod object_search;

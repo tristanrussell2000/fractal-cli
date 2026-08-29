@@ -1,13 +1,16 @@
 use std::{fmt::Write as _, io::Read};
 
 use serde::Serialize;
+use thiserror::Error;
+
+use fractal::reportable_error::ReportableError;
 
 use super::edit_object_identity::EditObjectIdentityOutput;
 use crate::{
     cli::EditSourceSetArgs,
-    command_error::CommandError,
     commands::connect,
     output::{OutputFormat, print_result},
+    reported::Reported,
 };
 use fractal::sap::{
     editable_source::EditableAdtObjectType,
@@ -43,7 +46,7 @@ pub struct EditSourceSetOutput {
 pub async fn edit_source_set(
     explicit_profile: Option<&str>,
     args: &EditSourceSetArgs,
-) -> Result<EditSourceSetOutput, CommandError> {
+) -> Result<EditSourceSetOutput, Reported> {
     let object_type = EditableAdtObjectType::parse(&args.object_type)?;
     let replacement_source = {
         let stdin = std::io::stdin();
@@ -86,28 +89,57 @@ pub fn print_edit_source_set(result: &EditSourceSetOutput, output: OutputFormat)
     print!("{}", render_edit_source_set_readable(result));
 }
 
+/// A failure reading the replacement source the caller supplied.
+#[derive(Debug, Error)]
+pub enum SourceInputError {
+    #[error("could not read complete replacement source from stdin: {0}")]
+    Stdin(#[source] std::io::Error),
+    #[error("could not read complete replacement source file '{path}': {source}")]
+    File {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+impl ReportableError for SourceInputError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Stdin(_) => "source_stdin_read_error",
+            Self::File { .. } => "source_file_read_error",
+        }
+    }
+
+    fn hint(&self) -> Option<String> {
+        Some(
+            match self {
+                Self::Stdin(_) => {
+                    "Pipe complete UTF-8 source into the command, or pass --source-file <path>."
+                }
+                Self::File { .. } => {
+                    "Pass the path to a readable UTF-8 source file, or use --source-file - for stdin."
+                }
+            }
+            .to_owned(),
+        )
+    }
+}
+
 fn resolve_replacement_source<R: Read>(
     source_file: &str,
     stdin: &mut R,
-) -> Result<String, CommandError> {
+) -> Result<String, SourceInputError> {
     if source_file == "-" {
         let mut source = String::new();
-        stdin.read_to_string(&mut source).map_err(|error| {
-            CommandError::with_hint(
-                "source_stdin_read_error",
-                format!("could not read complete replacement source from stdin: {error}"),
-                "Pipe complete UTF-8 source into the command, or pass --source-file <path>.",
-            )
-        })?;
+        stdin
+            .read_to_string(&mut source)
+            .map_err(SourceInputError::Stdin)?;
         return Ok(source);
     }
 
-    std::fs::read_to_string(source_file).map_err(|error| {
-        CommandError::with_hint(
-            "source_file_read_error",
-            format!("could not read complete replacement source file '{source_file}': {error}"),
-            "Pass the path to a readable UTF-8 source file, or use --source-file - for stdin.",
-        )
+    std::fs::read_to_string(source_file).map_err(|source| SourceInputError::File {
+        path: source_file.to_owned(),
+        source,
     })
 }
 

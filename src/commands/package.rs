@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use crate::cli::PackageItemsArgs;
 use crate::commands::connect;
-use crate::{cli::PackageTreeArgs, command_error::CommandError};
+use crate::{cli::PackageTreeArgs, reported::Reported};
 use fractal::sap::{
     package::{PackageItemsOptions, get_package_items, get_package_tree},
     repository_kind::RepositoryKind,
@@ -65,7 +65,7 @@ struct PackageItemOutput {
 pub async fn package_tree(
     explicit_profile: Option<&str>,
     args: &PackageTreeArgs,
-) -> Result<PackageTreeResultOutput, CommandError> {
+) -> Result<PackageTreeResultOutput, Reported> {
     let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
     let recursive = !args.no_recursive;
     let tree = get_package_tree(&mut client, &args.name, recursive).await?;
@@ -101,19 +101,12 @@ pub async fn package_tree(
 pub async fn package_items(
     explicit_profile: Option<&str>,
     args: &PackageItemsArgs,
-) -> Result<PackageItemsResultOutput, CommandError> {
+) -> Result<PackageItemsResultOutput, Reported> {
     let kind = args
         .kind
         .as_deref()
         .map(RepositoryKind::parse)
-        .transpose()
-        .map_err(|error| {
-            CommandError::with_hint(
-                "invalid_repository_kind",
-                error.to_string(),
-                "Use a kind such as CLAS, INTF, TABL, PROG, DDLS, or OTHER.",
-            )
-        })?;
+        .transpose()?;
     let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
     let result = get_package_items(
         &mut client,

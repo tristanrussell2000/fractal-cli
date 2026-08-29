@@ -1,5 +1,6 @@
 //! The ADT XML parse failure shared by search, object info, and usages.
 
+use crate::reportable_error::ReportableError;
 use roxmltree::Document;
 use thiserror::Error;
 
@@ -8,15 +9,13 @@ use thiserror::Error;
 #[error("could not parse ADT XML response: {0}")]
 pub struct AdtResponseParseError(pub String);
 
-impl AdtResponseParseError {
-    #[must_use]
-    pub const fn code(&self) -> &'static str {
+impl ReportableError for AdtResponseParseError {
+    fn code(&self) -> &'static str {
         "adt_response_parse_error"
     }
 
-    #[must_use]
-    pub fn hint(&self) -> String {
-        "The SAP ADT response did not match the expected search format.".to_owned()
+    fn hint(&self) -> Option<String> {
+        Some("The SAP ADT response did not match the expected search format.".to_owned())
     }
 }
 
@@ -38,6 +37,6 @@ mod tests {
         let error = parse_adt_document("<not-closed>").unwrap_err();
 
         assert_eq!(error.code(), "adt_response_parse_error");
-        assert!(!error.hint().is_empty());
+        assert!(error.hint().is_some());
     }
 }

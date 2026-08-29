@@ -10,6 +10,7 @@ use super::{
     non_empty_attribute,
     repository_kind::{AdtObjectType, RepositoryKind},
 };
+use crate::reportable_error::{ReportableError, sap_http_status};
 use crate::{config::Profile, pattern::glob_matches};
 
 const SEARCH_PATH: &str = "/sap/bc/adt/repository/informationsystem/search";
@@ -30,7 +31,16 @@ pub enum ObjectSearchError {
 
 impl ObjectSearchError {
     #[must_use]
-    pub const fn code(&self) -> &'static str {
+    pub const fn sap_error(&self) -> Option<&SapClientError> {
+        match self {
+            Self::Sap(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl ReportableError for ObjectSearchError {
+    fn code(&self) -> &'static str {
         match self {
             Self::Sap(error) => error.code(),
             Self::InvalidQuery(_) => "invalid_search_query",
@@ -39,30 +49,24 @@ impl ObjectSearchError {
         }
     }
 
-    #[must_use]
-    pub fn hint(&self) -> String {
-        match self {
-            Self::Sap(error) => error.hint(),
+    fn status(&self) -> Option<u16> {
+        sap_http_status(self.sap_error())
+    }
+
+    fn hint(&self) -> Option<String> {
+        Some(match self {
+            Self::Sap(error) => error.hint()?,
             Self::InvalidQuery(_) => "Provide a non-empty object search query.".to_owned(),
-            Self::Parse(error) => error.hint(),
+            Self::Parse(error) => error.hint()?,
             Self::Aggregation(_) => {
                 "Retry the search; if it persists, inspect the underlying SAP request failures."
                     .to_owned()
             }
-        }
-    }
-
-    #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapClientError> {
-        match self {
-            Self::Sap(error) => Some(error),
-            _ => None,
-        }
+        })
     }
 
     /// A read-only command that diagnoses this failure, if one exists.
-    #[must_use]
-    pub fn suggested_command(&self) -> Option<String> {
+    fn suggested_command(&self) -> Option<String> {
         match self {
             Self::Sap(error) => error.suggested_command(),
             _ => None,
@@ -288,7 +292,7 @@ mod tests {
         let aggregation = ObjectSearchError::Aggregation("no underlying error".to_owned());
 
         assert_eq!(aggregation.code(), "search_aggregation_error");
-        assert!(!aggregation.hint().is_empty());
+        assert!(aggregation.hint().is_some());
     }
 
     #[test]

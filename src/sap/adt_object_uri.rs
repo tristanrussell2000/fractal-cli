@@ -4,6 +4,7 @@
 //! the check and its stable codes are defined once and wrapped by each
 //! operation's error rather than restated per module.
 
+use crate::reportable_error::ReportableError;
 use thiserror::Error;
 
 pub(super) const ADT_ROOT: &str = "/sap/bc/adt/";
@@ -18,18 +19,16 @@ pub enum AdtObjectUriError {
     DoubledSourceSuffix(String),
 }
 
-impl AdtObjectUriError {
-    #[must_use]
-    pub const fn code(&self) -> &'static str {
+impl ReportableError for AdtObjectUriError {
+    fn code(&self) -> &'static str {
         match self {
             Self::NotAnAdtUri(_) => "invalid_adt_uri",
             Self::DoubledSourceSuffix(_) => "doubled_source_suffix",
         }
     }
 
-    #[must_use]
-    pub fn hint(&self) -> String {
-        match self {
+    fn hint(&self) -> Option<String> {
+        Some(match self {
             Self::NotAnAdtUri(_) => {
                 "Use an object URI under /sap/bc/adt/. Discover it with `fractal object search`."
                     .to_owned()
@@ -37,7 +36,7 @@ impl AdtObjectUriError {
             Self::DoubledSourceSuffix(_) => {
                 "Pass the object URI without /source/main; Fractal appends it.".to_owned()
             }
-        }
+        })
     }
 }
 
@@ -78,7 +77,7 @@ mod tests {
         let error = validate_adt_object_uri("/sap/bc/rest/thing").unwrap_err();
 
         assert_eq!(error.code(), "invalid_adt_uri");
-        assert!(error.hint().contains("/sap/bc/adt/"));
+        assert!(error.hint().unwrap().contains("/sap/bc/adt/"));
     }
 
     #[test]

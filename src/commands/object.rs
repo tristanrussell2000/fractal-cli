@@ -1,9 +1,9 @@
 use serde::Serialize;
 
 use crate::cli::{SearchArgs, SourceArgs, UriArgs, UsagesArgs, XmlArgs};
-use crate::command_error::CommandError;
 use crate::commands::connect;
 use crate::output::{OutputFormat, print_result};
+use crate::reported::Reported;
 use fractal::sap::{
     object_search::{ObjectSearchOptions, search_objects},
     object_source::ByteRangeOptions,
@@ -104,7 +104,7 @@ struct ObjectKindOutput {
 pub async fn object_search(
     explicit_profile: Option<&str>,
     args: &SearchArgs,
-) -> Result<ObjectSearchResultOutput, CommandError> {
+) -> Result<ObjectSearchResultOutput, Reported> {
     let kind = args.kind.as_deref().map(parse_search_kind).transpose()?;
     let (profile_name, profile, mut client) = connect(explicit_profile).await?;
     let explicit_patterns =
@@ -133,14 +133,8 @@ pub async fn object_search(
     ))
 }
 
-fn parse_search_kind(value: &str) -> Result<RepositoryKind, CommandError> {
-    RepositoryKind::parse(value).map_err(|error| {
-        CommandError::with_hint(
-            "invalid_repository_kind",
-            error.to_string(),
-            "Use a kind such as CLAS, INTF, TABL, PROG, DDLS, or OTHER.",
-        )
-    })
+fn parse_search_kind(value: &str) -> Result<RepositoryKind, Reported> {
+    Ok(RepositoryKind::parse(value)?)
 }
 
 fn map_object_search_result(
@@ -188,7 +182,7 @@ fn map_object_search_result(
 pub async fn object_source(
     explicit_profile: Option<&str>,
     args: &SourceArgs,
-) -> Result<ObjectSourceResultOutput, CommandError> {
+) -> Result<ObjectSourceResultOutput, Reported> {
     let (profile_name, _profile, client) = connect(explicit_profile).await?;
     let result = fractal::sap::object_source::get_source(
         &client,
@@ -216,7 +210,7 @@ pub async fn object_source(
 pub async fn object_xml(
     explicit_profile: Option<&str>,
     args: &XmlArgs,
-) -> Result<ObjectXmlResultOutput, CommandError> {
+) -> Result<ObjectXmlResultOutput, Reported> {
     let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
     let result = fractal::sap::object_source::get_xml(
         &mut client,
@@ -239,7 +233,7 @@ pub async fn object_xml(
 pub async fn object_info(
     explicit_profile: Option<&str>,
     args: &UriArgs,
-) -> Result<ObjectInfoResultOutput, CommandError> {
+) -> Result<ObjectInfoResultOutput, Reported> {
     let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
     let result = fractal::sap::object_info::get_object_info(&mut client, &args.uri).await?;
 
@@ -254,7 +248,7 @@ pub async fn object_info(
 pub async fn object_usages(
     explicit_profile: Option<&str>,
     args: &UsagesArgs,
-) -> Result<ObjectUsagesResultOutput, CommandError> {
+) -> Result<ObjectUsagesResultOutput, Reported> {
     let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
     let references = get_object_usages(&mut client, &args.uri).await?;
     let total = references.len();
@@ -304,10 +298,10 @@ fn map_usage_references(
         .collect()
 }
 
-// `run_and_print_with` requires an operation returning `Result<T, CommandError>`;
+// `run_and_print_with` requires an operation returning `Result<T, Reported>`;
 // this handler can never fail, but must match that shape to share the runner.
 #[allow(clippy::unnecessary_wraps)]
-pub fn object_kinds() -> Result<ObjectKindsResultOutput, CommandError> {
+pub fn object_kinds() -> Result<ObjectKindsResultOutput, Reported> {
     Ok(ObjectKindsResultOutput {
         ok: true,
         kinds: RepositoryKind::ALL
@@ -569,7 +563,7 @@ mod tests {
                 uri: "/sap/bc/adt/ddic/domains/zdomain".to_owned(),
             },
         ] {
-            let command_error = CommandError::from(error);
+            let command_error = Reported::from(error);
             assert!(!command_error.code().is_empty());
             assert!(command_error.hint().is_some());
         }

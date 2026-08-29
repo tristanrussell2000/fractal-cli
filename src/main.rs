@@ -1,7 +1,7 @@
 mod cli;
-mod command_error;
 mod commands;
 mod output;
+mod reported;
 
 use clap::Parser;
 use cli::{

@@ -608,6 +608,7 @@ fn trim_token_space(out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reportable_error::ReportableError;
 
     #[test]
     fn builds_a_star_query_with_no_fields_or_where() {

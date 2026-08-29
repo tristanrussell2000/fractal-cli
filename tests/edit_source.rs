@@ -1,3 +1,4 @@
+use fractal::reportable_error::ReportableError;
 use fractal::{
     config::Profile,
     sap::{

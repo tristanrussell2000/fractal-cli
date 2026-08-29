@@ -87,6 +87,7 @@ fn normalize_whitespace(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reportable_error::ReportableError;
 
     #[test]
     fn parses_the_cheap_path_response_with_full_column_metadata() {

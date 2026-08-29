@@ -7,6 +7,7 @@ use super::{
     adt_response::{AdtResponseParseError, parse_adt_document},
     client::{SapClient, SapClientError},
 };
+use crate::reportable_error::{ReportableError, sap_http_status};
 use crate::suggested_command;
 
 /// A failure while reading an object's description.
@@ -24,7 +25,16 @@ pub enum ObjectInfoError {
 
 impl ObjectInfoError {
     #[must_use]
-    pub const fn code(&self) -> &'static str {
+    pub const fn sap_error(&self) -> Option<&SapClientError> {
+        match self {
+            Self::Sap(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl ReportableError for ObjectInfoError {
+    fn code(&self) -> &'static str {
         match self {
             Self::Sap(error) => error.code(),
             Self::Uri(error) => error.code(),
@@ -33,30 +43,24 @@ impl ObjectInfoError {
         }
     }
 
-    #[must_use]
-    pub fn hint(&self) -> String {
-        match self {
-            Self::Sap(error) => error.hint(),
-            Self::Uri(error) => error.hint(),
-            Self::Parse(error) => error.hint(),
+    fn status(&self) -> Option<u16> {
+        sap_http_status(self.sap_error())
+    }
+
+    fn hint(&self) -> Option<String> {
+        Some(match self {
+            Self::Sap(error) => error.hint()?,
+            Self::Uri(error) => error.hint()?,
+            Self::Parse(error) => error.hint()?,
             Self::NoDescription(_) => {
                 "This URI doesn't expose a description (shadow or fragment URIs are common causes). Try `fractal object xml` for full metadata, or strip any #fragment from the URI and retry against the primary object."
                     .to_owned()
             }
-        }
-    }
-
-    #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapClientError> {
-        match self {
-            Self::Sap(error) => Some(error),
-            _ => None,
-        }
+        })
     }
 
     /// A read-only command that diagnoses this failure, if one exists.
-    #[must_use]
-    pub fn suggested_command(&self) -> Option<String> {
+    fn suggested_command(&self) -> Option<String> {
         match self {
             // The object exists; only this view of it lacks a description.
             Self::NoDescription(uri) => Some(suggested_command::object_xml(uri)),
@@ -151,7 +155,7 @@ mod tests {
         let xml = r#"<class:abapClass xmlns:class="urn:test"><class:include/></class:abapClass>"#;
         let error = parse_object_info(xml, "/uri").unwrap_err();
         assert_eq!(error.code(), "no_description");
-        assert!(!error.hint().is_empty());
+        assert!(error.hint().is_some());
     }
 
     #[test]

@@ -5,9 +5,25 @@
 
 use thiserror::Error;
 
+use crate::{reportable_error::ReportableError, suggested_command};
+
 #[derive(Debug, Error)]
 #[error("unknown repository kind '{0}'")]
 pub struct RepositoryKindParseError(pub String);
+
+impl ReportableError for RepositoryKindParseError {
+    fn code(&self) -> &'static str {
+        "invalid_repository_kind"
+    }
+
+    fn hint(&self) -> Option<String> {
+        Some("Use a kind such as CLAS, INTF, TABL, PROG, DDLS, or OTHER.".to_owned())
+    }
+
+    fn suggested_command(&self) -> Option<String> {
+        Some(suggested_command::object_kinds())
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdtObjectType {

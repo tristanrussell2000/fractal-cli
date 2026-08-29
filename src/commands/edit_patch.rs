@@ -5,9 +5,9 @@ use serde::Serialize;
 use super::edit_object_identity::EditObjectIdentityOutput;
 use crate::{
     cli::EditSourcePatchArgs,
-    command_error::CommandError,
     commands::connect,
     output::{OutputFormat, print_result},
+    reported::Reported,
 };
 use fractal::sap::{
     editable_source::EditableAdtObjectType,
@@ -45,7 +45,7 @@ pub struct EditSourcePatchOutput {
 pub async fn edit_source_patch(
     explicit_profile: Option<&str>,
     args: &EditSourcePatchArgs,
-) -> Result<EditSourcePatchOutput, CommandError> {
+) -> Result<EditSourcePatchOutput, Reported> {
     let object_type = EditableAdtObjectType::parse(&args.object_type)?;
     let request = AdtSourcePatchRequest {
         object_type,

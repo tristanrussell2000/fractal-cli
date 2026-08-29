@@ -4,9 +4,9 @@ use serde::Serialize;
 
 use crate::{
     cli::{TableDataArgs, TableMetadataArgs},
-    command_error::CommandError,
     commands::{connect, tabular},
     output::{OutputFormat, print_result},
+    reported::Reported,
 };
 use fractal::sap::table::{
     TableDataOptions, TableDataResult, TableFieldMetadata, TableMetadata, TableMetadataOptions,
@@ -53,7 +53,7 @@ struct TableFieldMetadataOutput {
 pub async fn table_data(
     explicit_profile: Option<&str>,
     args: &TableDataArgs,
-) -> Result<TableDataResultOutput, CommandError> {
+) -> Result<TableDataResultOutput, Reported> {
     let options = table_options_from_args(args);
     let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
     let result = get_table_data(&mut client, &args.name, &options).await?;
@@ -70,7 +70,7 @@ pub async fn table_data(
 pub async fn table_metadata(
     explicit_profile: Option<&str>,
     args: &TableMetadataArgs,
-) -> Result<TableMetadataResultOutput, CommandError> {
+) -> Result<TableMetadataResultOutput, Reported> {
     let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
     let result = get_table_metadata(
         &mut client,

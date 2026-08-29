@@ -8,6 +8,7 @@ use super::{
     non_empty_attribute,
     repository_kind::{AdtObjectType, RepositoryKind},
 };
+use crate::reportable_error::ReportableError;
 
 #[derive(Debug, Error)]
 pub enum PackageError {
@@ -15,6 +16,39 @@ pub enum PackageError {
     Sap(#[from] super::client::SapClientError),
     #[error("could not parse package node structure: {0}")]
     Parse(String),
+}
+
+impl ReportableError for PackageError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Sap(error) => error.code(),
+            Self::Parse(_) => "package_response_parse_error",
+        }
+    }
+
+    fn status(&self) -> Option<u16> {
+        match self {
+            Self::Sap(error) => error.status(),
+            Self::Parse(_) => None,
+        }
+    }
+
+    fn hint(&self) -> Option<String> {
+        match self {
+            Self::Sap(error) => error.hint(),
+            Self::Parse(_) => Some(
+                "The SAP package response did not match the expected nodestructure format."
+                    .to_owned(),
+            ),
+        }
+    }
+
+    fn suggested_command(&self) -> Option<String> {
+        match self {
+            Self::Sap(error) => error.suggested_command(),
+            Self::Parse(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

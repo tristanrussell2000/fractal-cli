@@ -12,6 +12,7 @@ use super::{
         InactiveSourceSaveError, PlannedInactiveSourceChange, save_inactive_source_atomically,
     },
 };
+use crate::reportable_error::{ReportableError, sap_http_status};
 use crate::source_change::{SourceChangePlanError, SourceReplacementPlan, plan_source_replacement};
 use crate::suggested_command;
 
@@ -73,7 +74,19 @@ pub enum AdtSourceReplacementError {
 
 impl AdtSourceReplacementError {
     #[must_use]
-    pub const fn code(&self) -> &'static str {
+    pub const fn sap_error(&self) -> Option<&SapClientError> {
+        match self {
+            Self::LockedSourceRead(error)
+            | Self::PreviewSourceRead(error)
+            | Self::StoredSourceRead { source: error, .. } => error.sap_error(),
+            Self::Session(error) => error.sap_error(),
+            Self::Validation(_) | Self::Replacement { .. } => None,
+        }
+    }
+}
+
+impl ReportableError for AdtSourceReplacementError {
+    fn code(&self) -> &'static str {
         match self {
             Self::Validation(error) => error.code(),
             Self::Replacement { source, .. } => source.code(),
@@ -93,11 +106,14 @@ impl AdtSourceReplacementError {
         }
     }
 
-    #[must_use]
-    pub fn hint(&self) -> String {
-        match self {
-            Self::LockedSourceRead(error) | Self::PreviewSourceRead(error) => error.hint(),
-            Self::Validation(error) => error.hint(),
+    fn status(&self) -> Option<u16> {
+        sap_http_status(self.sap_error())
+    }
+
+    fn hint(&self) -> Option<String> {
+        Some(match self {
+            Self::LockedSourceRead(error) | Self::PreviewSourceRead(error) => error.hint()?,
+            Self::Validation(error) => error.hint()?,
             // The pure planner cannot name the object; this layer validated it.
             Self::Replacement {
                 identity,
@@ -106,15 +122,15 @@ impl AdtSourceReplacementError {
                     | SourceChangePlanError::SourceReplacementNoChanges),
             } => format!(
                 "{} Run `{}` to read the current source.",
-                source.hint(),
+                source.hint().unwrap_or_default(),
                 suggested_command::edit_read(
                     identity.object_type.as_str(),
                     &identity.name,
                     AdtSourceVersion::Inactive.as_str()
                 )
             ),
-            Self::Replacement { source, .. } => source.hint(),
-            Self::Session(error) => error.hint(),
+            Self::Replacement { source, .. } => source.hint()?,
+            Self::Session(error) => error.hint()?,
             Self::StoredSourceRead { identity, .. } => format!(
                 "The write and unlock succeeded, but its stored result could not be verified; re-read the inactive source before making another change. Run `{}`.",
                 suggested_command::edit_read(
@@ -123,15 +139,14 @@ impl AdtSourceReplacementError {
                     AdtSourceVersion::Inactive.as_str()
                 )
             ),
-        }
+        })
     }
 
     /// A read-only command that diagnoses this failure, if one exists.
     ///
     /// Lock and write failures return `None`: their remedy is to retry the
     /// write, which must never appear in a field a caller may execute.
-    #[must_use]
-    pub fn suggested_command(&self) -> Option<String> {
+    fn suggested_command(&self) -> Option<String> {
         match self {
             Self::Replacement {
                 identity,
@@ -148,17 +163,6 @@ impl AdtSourceReplacementError {
                 error.suggested_command()
             }
             Self::Replacement { .. } | Self::Validation(_) | Self::Session(_) => None,
-        }
-    }
-
-    #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapClientError> {
-        match self {
-            Self::LockedSourceRead(error)
-            | Self::PreviewSourceRead(error)
-            | Self::StoredSourceRead { source: error, .. } => error.sap_error(),
-            Self::Session(error) => error.sap_error(),
-            Self::Validation(_) | Self::Replacement { .. } => None,
         }
     }
 }

@@ -8,6 +8,7 @@ use super::{
         read_adt_source,
     },
 };
+use crate::reportable_error::{ReportableError, sap_http_status};
 
 const STATEFUL_SESSION_HEADER: &str = "X-sap-adt-sessiontype";
 const LOCK_RESULT_MEDIA_TYPE: &str =
@@ -36,7 +37,19 @@ pub enum AdtEditSessionError {
 
 impl AdtEditSessionError {
     #[must_use]
-    pub const fn code(&self) -> &'static str {
+    pub const fn sap_error(&self) -> Option<&SapClientError> {
+        match self {
+            Self::LockFailed { source, .. } | Self::SourceWriteFailed { source, .. } => {
+                Some(source)
+            }
+            Self::UnlockFailed(source) => Some(source),
+            Self::LockHandleMissing { .. } => None,
+        }
+    }
+}
+
+impl ReportableError for AdtEditSessionError {
+    fn code(&self) -> &'static str {
         match self {
             Self::LockFailed { .. } => "edit_lock_failed",
             Self::LockHandleMissing { .. } => "edit_lock_response_invalid",
@@ -45,9 +58,12 @@ impl AdtEditSessionError {
         }
     }
 
-    #[must_use]
-    pub fn hint(&self) -> String {
-        match self {
+    fn status(&self) -> Option<u16> {
+        sap_http_status(self.sap_error())
+    }
+
+    fn hint(&self) -> Option<String> {
+        Some(match self {
             Self::LockFailed { transport, source } => {
                 transport_failure_hint(transport.as_deref(), source).unwrap_or_else(|| {
                     "Close any editor or process holding the object lock, then retry the source operation."
@@ -60,24 +76,13 @@ impl AdtEditSessionError {
             }
             Self::SourceWriteFailed { transport, source } => {
                 transport_failure_hint(transport.as_deref(), source)
-                    .unwrap_or_else(|| source.hint())
+                    .or_else(|| source.hint())?
             }
             Self::UnlockFailed(_) => {
                 "The source operation may have succeeded, but the SAP lock may remain; close or unlock the object before retrying."
                     .to_owned()
             }
-        }
-    }
-
-    #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapClientError> {
-        match self {
-            Self::LockFailed { source, .. } | Self::SourceWriteFailed { source, .. } => {
-                Some(source)
-            }
-            Self::UnlockFailed(source) => Some(source),
-            Self::LockHandleMissing { .. } => None,
-        }
+        })
     }
 }
 

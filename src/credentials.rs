@@ -1,3 +1,4 @@
+use crate::reportable_error::ReportableError;
 use keyring::Entry;
 use thiserror::Error;
 
@@ -11,6 +12,25 @@ pub enum CredentialError {
     Store(#[source] keyring::Error),
     #[error("no credential is stored for profile '{0}'")]
     Missing(String),
+}
+
+impl ReportableError for CredentialError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidProfileName(_) => "invalid_profile_name",
+            Self::Store(_) => "credential_store_error",
+            Self::Missing(_) => "credential_missing",
+        }
+    }
+
+    fn hint(&self) -> Option<String> {
+        match self {
+            Self::Missing(profile) => Some(format!(
+                "Run `fractal auth login {profile}` to store the missing credential."
+            )),
+            _ => None,
+        }
+    }
 }
 
 /// Stores or replaces a profile password in the operating-system credential store.

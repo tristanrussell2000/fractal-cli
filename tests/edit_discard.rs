@@ -1,6 +1,7 @@
 mod adt_edit_mock;
 
 use adt_edit_mock::{AdtEditSession, SequentialResponses};
+use fractal::reportable_error::ReportableError;
 use fractal::{
     config::Profile,
     sap::{
@@ -424,7 +425,7 @@ async fn activation_failure_is_reported_as_an_incomplete_restored_discard() {
             AdtSourceActivationError::ActivationRequest { .. }
         )
     ));
-    assert!(error.hint().contains("now contains"));
+    assert!(error.hint().unwrap().contains("now contains"));
     server.verify().await;
 }
 

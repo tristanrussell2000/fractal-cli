@@ -4,6 +4,7 @@ use regex::Regex;
 use thiserror::Error;
 
 use super::{TableColumn, TableDdlParseError};
+use crate::reportable_error::{ReportableError, sap_http_status};
 use crate::sap::client::SapClientError;
 use crate::sap::object_source::ObjectSourceError;
 use crate::suggested_command;
@@ -106,7 +107,17 @@ pub enum TableError {
 
 impl TableError {
     #[must_use]
-    pub const fn code(&self) -> &'static str {
+    pub fn sap_error(&self) -> Option<&SapClientError> {
+        match self {
+            Self::Sap(error) | Self::DdlSource(ObjectSourceError::Sap(error)) => Some(error),
+            Self::Query { source, .. } => Some(source.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+impl ReportableError for TableError {
+    fn code(&self) -> &'static str {
         match self {
             Self::Sap(error) => error.code(),
             Self::DdlSource(error) => error.code(),
@@ -124,11 +135,14 @@ impl TableError {
         }
     }
 
-    #[must_use]
-    pub fn hint(&self) -> Option<String> {
+    fn status(&self) -> Option<u16> {
+        sap_http_status(self.sap_error())
+    }
+
+    fn hint(&self) -> Option<String> {
         match self {
-            Self::Sap(error) => Some(error.hint()),
-            Self::DdlSource(error) => Some(error.hint()),
+            Self::Sap(error) => error.hint(),
+            Self::DdlSource(error) => error.hint(),
             Self::DdlParse(_) => Some(
                 "The SAP table source did not match the expected `define table` DDL format."
                     .to_owned(),
@@ -168,8 +182,7 @@ impl TableError {
     }
 
     /// A read-only command that diagnoses this failure, if one exists.
-    #[must_use]
-    pub fn suggested_command(&self) -> Option<String> {
+    fn suggested_command(&self) -> Option<String> {
         match self {
             // The Levenshtein suggestions name likely columns; this names the
             // command that lists every valid one.
@@ -187,15 +200,6 @@ impl TableError {
             }
             Self::Sap(error) => error.suggested_command(),
             Self::Query { source, .. } => source.suggested_command(),
-            _ => None,
-        }
-    }
-
-    #[must_use]
-    pub fn sap_error(&self) -> Option<&SapClientError> {
-        match self {
-            Self::Sap(error) | Self::DdlSource(ObjectSourceError::Sap(error)) => Some(error),
-            Self::Query { source, .. } => Some(source.as_ref()),
             _ => None,
         }
     }

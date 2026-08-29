@@ -7,6 +7,7 @@ use super::{
     client::{SapClient, SapClientError},
     repository_kind::RepositoryKind,
 };
+use crate::reportable_error::{ReportableError, sap_http_status};
 use crate::{pattern::glob_matches, source_change::source_sha256, suggested_command};
 
 const SOURCE_SUFFIX: &str = "/source/main";
@@ -150,18 +151,16 @@ pub enum EditableAdtSourceTargetError {
     InvalidObjectName(String),
 }
 
-impl EditableAdtSourceTargetError {
-    #[must_use]
-    pub const fn code(&self) -> &'static str {
+impl ReportableError for EditableAdtSourceTargetError {
+    fn code(&self) -> &'static str {
         match self {
             Self::UnsupportedObjectType(_) => "unsupported_edit_object_type",
             Self::InvalidObjectName(_) => "invalid_edit_object_name",
         }
     }
 
-    #[must_use]
-    pub fn hint(&self) -> String {
-        match self {
+    fn hint(&self) -> Option<String> {
+        Some(match self {
             Self::UnsupportedObjectType(_) => {
                 "Use one of the initially supported source types: CLAS, INTF, PROG, DDLS, or TABL."
                     .to_owned()
@@ -170,7 +169,7 @@ impl EditableAdtSourceTargetError {
                 "Use an ABAP object name containing letters, digits, or underscores, optionally in the form /NAMESPACE/NAME."
                     .to_owned()
             }
-        }
+        })
     }
 }
 
@@ -182,23 +181,23 @@ pub struct CustomerNamespaceError {
     pub namespaces: Vec<String>,
 }
 
-impl CustomerNamespaceError {
-    #[must_use]
-    pub const fn code(&self) -> &'static str {
+impl ReportableError for CustomerNamespaceError {
+    fn code(&self) -> &'static str {
         "object_outside_customer_namespaces"
     }
 
-    #[must_use]
-    pub fn hint(&self) -> String {
+    fn hint(&self) -> Option<String> {
         if self.namespaces.is_empty() {
-            return "Configure at least one customer namespace on the selected profile before editing."
-                .to_owned();
+            return Some(
+                "Configure at least one customer namespace on the selected profile before editing."
+                    .to_owned(),
+            );
         }
 
-        format!(
+        Some(format!(
             "Only objects matching these configured patterns may be edited: {}.",
             self.namespaces.join(", ")
-        )
+        ))
     }
 }
 
@@ -209,16 +208,14 @@ pub struct TransportRequestError {
     pub value: String,
 }
 
-impl TransportRequestError {
-    #[must_use]
-    pub const fn code(&self) -> &'static str {
+impl ReportableError for TransportRequestError {
+    fn code(&self) -> &'static str {
         "invalid_transport_request"
     }
 
-    #[must_use]
-    pub fn hint(&self) -> String {
-        "Use a transport request identifier containing 1-20 ASCII letters or digits, for example DE3K900575."
-            .to_owned()
+    fn hint(&self) -> Option<String> {
+        Some("Use a transport request identifier containing 1-20 ASCII letters or digits, for example DE3K900575."
+            .to_owned())
     }
 }
 
@@ -233,9 +230,8 @@ pub enum AdtEditTargetValidationError {
     InvalidTransport(#[from] TransportRequestError),
 }
 
-impl AdtEditTargetValidationError {
-    #[must_use]
-    pub const fn code(&self) -> &'static str {
+impl ReportableError for AdtEditTargetValidationError {
+    fn code(&self) -> &'static str {
         match self {
             Self::InvalidObject(error) => error.code(),
             Self::Namespace(error) => error.code(),
@@ -243,13 +239,12 @@ impl AdtEditTargetValidationError {
         }
     }
 
-    #[must_use]
-    pub fn hint(&self) -> String {
-        match self {
-            Self::InvalidObject(error) => error.hint(),
-            Self::Namespace(error) => error.hint(),
-            Self::InvalidTransport(error) => error.hint(),
-        }
+    fn hint(&self) -> Option<String> {
+        Some(match self {
+            Self::InvalidObject(error) => error.hint()?,
+            Self::Namespace(error) => error.hint()?,
+            Self::InvalidTransport(error) => error.hint()?,
+        })
     }
 }
 
@@ -283,7 +278,16 @@ pub enum AdtSourceReadError {
 
 impl AdtSourceReadError {
     #[must_use]
-    pub const fn code(&self) -> &'static str {
+    pub const fn sap_error(&self) -> Option<&SapClientError> {
+        match self {
+            Self::Sap { source, .. } => Some(source),
+            Self::InvalidTarget(_) | Self::InvalidSourceEncoding { .. } => None,
+        }
+    }
+}
+
+impl ReportableError for AdtSourceReadError {
+    fn code(&self) -> &'static str {
         match self {
             Self::InvalidTarget(error) => error.code(),
             Self::Sap { source, .. } => source.code(),
@@ -291,29 +295,19 @@ impl AdtSourceReadError {
         }
     }
 
-    #[must_use]
-    pub fn hint(&self) -> String {
-        match self {
-            Self::InvalidTarget(error) => error.hint(),
-            Self::Sap { source, .. } => source.hint(),
+    fn hint(&self) -> Option<String> {
+        Some(match self {
+            Self::InvalidTarget(error) => error.hint()?,
+            Self::Sap { source, .. } => source.hint()?,
             Self::InvalidSourceEncoding { .. } => {
                 "The native ADT source response must be valid UTF-8 before it can be patched safely."
                     .to_owned()
             }
-        }
-    }
-
-    #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapClientError> {
-        match self {
-            Self::Sap { source, .. } => Some(source),
-            Self::InvalidTarget(_) | Self::InvalidSourceEncoding { .. } => None,
-        }
+        })
     }
 
     /// A read-only command that diagnoses this failure, if one exists.
-    #[must_use]
-    pub fn suggested_command(&self) -> Option<String> {
+    fn suggested_command(&self) -> Option<String> {
         match self {
             Self::Sap {
                 object_type,
@@ -323,6 +317,10 @@ impl AdtSourceReadError {
             Self::Sap { source, .. } => source.suggested_command(),
             Self::InvalidTarget(_) | Self::InvalidSourceEncoding { .. } => None,
         }
+    }
+
+    fn status(&self) -> Option<u16> {
+        sap_http_status(self.sap_error())
     }
 }
 
@@ -540,7 +538,7 @@ mod tests {
         let error = EditableAdtObjectType::parse("DOMA").unwrap_err();
 
         assert_eq!(error.code(), "unsupported_edit_object_type");
-        assert!(error.hint().contains("CLAS"));
+        assert!(error.hint().unwrap().contains("CLAS"));
 
         assert!(matches!(
             EditableAdtObjectType::parse("NOT_A_KIND"),
@@ -620,13 +618,13 @@ mod tests {
 
         assert_eq!(error.name, "SAP_STANDARD");
         assert_eq!(error.code(), "object_outside_customer_namespaces");
-        assert!(error.hint().contains("Z*"));
+        assert!(error.hint().unwrap().contains("Z*"));
     }
 
     #[test]
     fn empty_namespace_configuration_fails_closed() {
         let error = validate_customer_namespace("Z_SAMPLE", &[]).unwrap_err();
 
-        assert!(error.hint().contains("Configure at least one"));
+        assert!(error.hint().unwrap().contains("Configure at least one"));
     }
 }

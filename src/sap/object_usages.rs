@@ -10,6 +10,7 @@ use super::{
     find_child, non_empty_attribute,
     repository_kind::AdtObjectType,
 };
+use crate::reportable_error::{ReportableError, sap_http_status};
 
 const USAGES_PATH: &str = "/sap/bc/adt/repository/informationsystem/usageReferences";
 const USAGES_CONTENT_TYPE: &str =
@@ -28,7 +29,16 @@ pub enum ObjectUsagesError {
 
 impl ObjectUsagesError {
     #[must_use]
-    pub const fn code(&self) -> &'static str {
+    pub const fn sap_error(&self) -> Option<&SapClientError> {
+        match self {
+            Self::Sap(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl ReportableError for ObjectUsagesError {
+    fn code(&self) -> &'static str {
         match self {
             Self::Sap(error) => error.code(),
             Self::Uri(error) => error.code(),
@@ -36,26 +46,20 @@ impl ObjectUsagesError {
         }
     }
 
-    #[must_use]
-    pub fn hint(&self) -> String {
-        match self {
-            Self::Sap(error) => error.hint(),
-            Self::Uri(error) => error.hint(),
-            Self::Parse(error) => error.hint(),
-        }
+    fn status(&self) -> Option<u16> {
+        sap_http_status(self.sap_error())
     }
 
-    #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapClientError> {
-        match self {
-            Self::Sap(error) => Some(error),
-            _ => None,
-        }
+    fn hint(&self) -> Option<String> {
+        Some(match self {
+            Self::Sap(error) => error.hint()?,
+            Self::Uri(error) => error.hint()?,
+            Self::Parse(error) => error.hint()?,
+        })
     }
 
     /// A read-only command that diagnoses this failure, if one exists.
-    #[must_use]
-    pub fn suggested_command(&self) -> Option<String> {
+    fn suggested_command(&self) -> Option<String> {
         match self {
             Self::Sap(error) => error.suggested_command(),
             Self::Uri(_) | Self::Parse(_) => None,

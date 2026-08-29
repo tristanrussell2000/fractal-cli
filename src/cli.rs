@@ -416,6 +416,7 @@ mod tests {
             suggested_command::edit_read("CLAS", "ZCL_SAMPLE", "inactive"),
             suggested_command::edit_read("CLAS", "/ACME/EXAMPLE", "active"),
             suggested_command::edit_check("PROG", "ZSAMPLE", "inactive"),
+            suggested_command::object_kinds(),
             suggested_command::object_search("INTF", "ZIF_SAMPLE"),
             suggested_command::object_xml("/sap/bc/adt/ddic/domains/zdomain"),
             suggested_command::table_metadata("ZDEMO_EVENT_LOG"),

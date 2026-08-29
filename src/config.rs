@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
+use crate::reportable_error::ReportableError;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -35,6 +36,32 @@ pub enum ConfigError {
         "no default SAP profile is configured; pass --profile <name> for this command, or set one with `fractal auth login <name> --default`"
     )]
     NoProfileSelected,
+}
+
+impl ReportableError for ConfigError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::NoConfigDirectory => "config_directory_unavailable",
+            Self::Read { .. } => "config_read_error",
+            Self::Parse { .. } => "config_invalid",
+            Self::Write { .. } => "config_write_error",
+            Self::Serialize(_) => "config_serialize_error",
+            Self::ProfileNotFound(_) => "profile_not_found",
+            Self::NoProfileSelected => "no_default_profile",
+        }
+    }
+
+    fn hint(&self) -> Option<String> {
+        match self {
+            // `auth login` writes config and prompts for a password, so it is
+            // named in prose and never as an executable suggested_command.
+            Self::NoProfileSelected => Some(
+                "Pass --profile <name> for this command, or set one with `fractal auth login <name> --default`."
+                    .to_owned(),
+            ),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

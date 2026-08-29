@@ -8,6 +8,7 @@ use reqwest::{
 use serde::Serialize;
 use thiserror::Error;
 
+use crate::reportable_error::{ReportableError, sap_http_status};
 use crate::{config::Profile, suggested_command};
 
 const DISCOVERY_PATH: &str = "/sap/bc/adt/core/discovery";
@@ -104,26 +105,10 @@ impl SapClientError {
             _ => false,
         }
     }
+}
 
-    /// A read-only command that diagnoses this failure, if one exists.
-    ///
-    /// Only connectivity and authentication failures have a general remedy.
-    /// A 404 or 403 depends on what the caller was doing, so the operation
-    /// that wrapped this error supplies the command instead.
-    #[must_use]
-    pub fn suggested_command(&self) -> Option<String> {
-        match self {
-            Self::Network { .. }
-            | Self::Http {
-                kind: SapHttpErrorKind::AuthenticationFailed,
-                ..
-            } => Some(suggested_command::system_test()),
-            _ => None,
-        }
-    }
-
-    #[must_use]
-    pub const fn code(&self) -> &'static str {
+impl ReportableError for SapClientError {
+    fn code(&self) -> &'static str {
         match self {
             Self::Build(_) => "client_error",
             Self::InvalidUrl { .. } => "invalid_url",
@@ -132,11 +117,14 @@ impl SapClientError {
         }
     }
 
+    fn status(&self) -> Option<u16> {
+        sap_http_status(Some(self))
+    }
+
     /// Advice for this failure, with the diagnostic command appended when one
     /// applies. The command is built by `suggested_command` rather than spelled
     /// here, so a renamed subcommand cannot leave stale text behind.
-    #[must_use]
-    pub fn hint(&self) -> String {
+    fn hint(&self) -> Option<String> {
         let advice = match self {
             Self::Build(_) => "The local HTTP client could not be initialized.",
             Self::InvalidUrl { .. } => "Use a complete SAP URL including http:// or https://.",
@@ -145,10 +133,26 @@ impl SapClientError {
             }
             Self::Http { kind, .. } => kind.hint(),
         };
-        self.suggested_command().map_or_else(
+        Some(self.suggested_command().map_or_else(
             || advice.to_owned(),
             |command| format!("{advice} Run `{command}` to verify the connection."),
-        )
+        ))
+    }
+
+    /// A read-only command that diagnoses this failure, if one exists.
+    ///
+    /// Only connectivity and authentication failures have a general remedy.
+    /// A 404 or 403 depends on what the caller was doing, so the operation
+    /// that wrapped this error supplies the command instead.
+    fn suggested_command(&self) -> Option<String> {
+        match self {
+            Self::Network { .. }
+            | Self::Http {
+                kind: SapHttpErrorKind::AuthenticationFailed,
+                ..
+            } => Some(suggested_command::system_test()),
+            _ => None,
+        }
     }
 }
 

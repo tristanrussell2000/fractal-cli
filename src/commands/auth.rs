@@ -1,10 +1,85 @@
 use std::io::Read;
 
 use serde::Serialize;
+use thiserror::Error;
+
+use fractal::reportable_error::ReportableError;
 
 use crate::cli::{LoginArgs, ProfileArgs};
-use crate::command_error::CommandError;
+use crate::reported::Reported;
 use fractal::{config, credentials};
+
+/// A failure in the local profile and credential workflow.
+///
+/// These are CLI-level failures with no SAP request behind them, and several
+/// describe a half-completed change — a credential removed but the config not
+/// saved — so each variant owns the recovery advice for that exact state.
+#[derive(Debug, Error)]
+pub enum AuthCommandError {
+    #[error("profile '{0}' was not found")]
+    ProfileNotFound(String),
+    #[error("credential removed, but profile config could not be saved: {0}")]
+    ConfigWriteAfterCredentialRemoval(#[source] config::ConfigError),
+    #[error("could not read password from stdin: {0}")]
+    PasswordStdin(#[source] std::io::Error),
+    #[error("{0}")]
+    PasswordPrompt(#[source] std::io::Error),
+    #[error("password cannot be empty")]
+    EmptyPassword,
+    #[error("could not save profile config: {0}")]
+    ConfigWrite(#[source] config::ConfigError),
+    #[error("profile config saved, but the credential could not be stored: {source}")]
+    CredentialStoreAfterConfigSave {
+        profile: String,
+        #[source]
+        source: credentials::CredentialError,
+    },
+}
+
+impl ReportableError for AuthCommandError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::ProfileNotFound(_) => "profile_not_found",
+            Self::ConfigWriteAfterCredentialRemoval(_) => {
+                "config_write_error_after_credential_removal"
+            }
+            Self::PasswordStdin(_) => "password_stdin_error",
+            Self::PasswordPrompt(_) => "password_prompt_error",
+            Self::EmptyPassword => "empty_password",
+            Self::ConfigWrite(_) => "config_write_error",
+            Self::CredentialStoreAfterConfigSave { .. } => {
+                "credential_store_error_after_config_save"
+            }
+        }
+    }
+
+    fn hint(&self) -> Option<String> {
+        match self {
+            Self::ProfileNotFound(_) => {
+                Some("Run `fractal auth list` to see configured profiles.".to_owned())
+            }
+            Self::ConfigWriteAfterCredentialRemoval(_) => Some(
+                "Retry `fractal auth remove` for this profile; credential deletion is idempotent."
+                    .to_owned(),
+            ),
+            Self::PasswordStdin(_) => Some(
+                "Provide the password through stdin or omit --password-stdin to use the secure prompt."
+                    .to_owned(),
+            ),
+            Self::PasswordPrompt(_) => None,
+            Self::EmptyPassword => Some(
+                "Provide a non-empty password through the secure prompt or --password-stdin."
+                    .to_owned(),
+            ),
+            Self::ConfigWrite(_) => {
+                Some("Check that Fractal's application config directory is writable.".to_owned())
+            }
+            Self::CredentialStoreAfterConfigSave { profile, .. } => Some(format!(
+                "Run `fractal auth list` and retry `fractal auth login {profile}`."
+            )),
+        }
+    }
+}
 
 #[derive(Debug, Serialize)]
 pub struct AuthLoginResult {
@@ -45,7 +120,7 @@ pub struct AuthRemoveResult {
     message: String,
 }
 
-pub fn auth_list() -> Result<AuthListResult, CommandError> {
+pub fn auth_list() -> Result<AuthListResult, Reported> {
     let loaded = config::load()?;
     let profiles = loaded
         .config
@@ -81,26 +156,17 @@ pub fn auth_list() -> Result<AuthListResult, CommandError> {
     })
 }
 
-pub fn auth_remove(args: &ProfileArgs) -> Result<AuthRemoveResult, CommandError> {
+pub fn auth_remove(args: &ProfileArgs) -> Result<AuthRemoveResult, Reported> {
     let mut loaded = config::load()?;
     if !loaded.config.profiles.contains_key(&args.name) {
-        return Err(CommandError::with_hint(
-            "profile_not_found",
-            format!("profile '{}' was not found", args.name),
-            "Run `fractal auth list` to see configured profiles.",
-        ));
+        return Err(AuthCommandError::ProfileNotFound(args.name.clone()).into());
     }
 
     let removed_default = loaded.config.default_profile.as_deref() == Some(args.name.as_str());
     credentials::delete_password(&args.name)?;
     config::remove_profile(&mut loaded.config, &args.name);
-    let config_path = config::save(&loaded.config).map_err(|error| {
-        CommandError::with_hint(
-            "config_write_error_after_credential_removal",
-            format!("credential removed, but profile config could not be saved: {error}"),
-            "Retry `fractal auth remove` for this profile; credential deletion is idempotent.",
-        )
-    })?;
+    let config_path = config::save(&loaded.config)
+        .map_err(AuthCommandError::ConfigWriteAfterCredentialRemoval)?;
 
     let message = if removed_default {
         "Profile removed. No default profile is set; pass --profile <name> for commands or set a new default with `fractal auth login <name> --default`.".to_owned()
@@ -117,29 +183,19 @@ pub fn auth_remove(args: &ProfileArgs) -> Result<AuthRemoveResult, CommandError>
     })
 }
 
-pub fn auth_login(args: &LoginArgs) -> Result<AuthLoginResult, CommandError> {
+pub fn auth_login(args: &LoginArgs) -> Result<AuthLoginResult, Reported> {
     let password = if args.password_stdin {
         let mut password = String::new();
         std::io::stdin()
             .read_to_string(&mut password)
-            .map_err(|error| CommandError::with_hint(
-                "password_stdin_error",
-                format!("could not read password from stdin: {error}"),
-                "Provide the password through stdin or omit --password-stdin to use the secure prompt.",
-            ))?;
+            .map_err(AuthCommandError::PasswordStdin)?;
         password.trim_end_matches(['\r', '\n']).to_owned()
     } else {
-        rpassword::prompt_password("Password: ").map_err(|error| {
-            CommandError::from_message("password_prompt_error", error.to_string())
-        })?
+        rpassword::prompt_password("Password: ").map_err(AuthCommandError::PasswordPrompt)?
     };
 
     if password.is_empty() {
-        return Err(CommandError::with_hint(
-            "empty_password",
-            "password cannot be empty",
-            "Provide a non-empty password through the secure prompt or --password-stdin.",
-        ));
+        return Err(AuthCommandError::EmptyPassword.into());
     }
 
     let mut loaded = config::load()?;
@@ -157,22 +213,12 @@ pub fn auth_login(args: &LoginArgs) -> Result<AuthLoginResult, CommandError> {
     let became_default =
         config::update_profile(&mut loaded.config, args.name.clone(), profile, args.default);
 
-    let config_path = config::save(&loaded.config).map_err(|error| {
-        CommandError::with_hint(
-            "config_write_error",
-            format!("could not save profile config: {error}"),
-            "Check that Fractal's application config directory is writable.",
-        )
-    })?;
-    credentials::save_password(&args.name, &password).map_err(|error| {
-        CommandError::with_hint(
-            "credential_store_error_after_config_save",
-            format!("profile config saved, but the credential could not be stored: {error}"),
-            format!(
-                "Run `fractal auth list` and retry `fractal auth login {}`.",
-                args.name
-            ),
-        )
+    let config_path = config::save(&loaded.config).map_err(AuthCommandError::ConfigWrite)?;
+    credentials::save_password(&args.name, &password).map_err(|source| {
+        AuthCommandError::CredentialStoreAfterConfigSave {
+            profile: args.name.clone(),
+            source,
+        }
     })?;
 
     Ok(AuthLoginResult {

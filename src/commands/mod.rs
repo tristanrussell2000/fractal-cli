@@ -14,7 +14,7 @@ pub mod table;
 
 mod tabular;
 
-use crate::command_error::CommandError;
+use crate::reported::Reported;
 use fractal::{config, credentials, sap::client::SapClient};
 
 /// Resolves the selected profile, loads its keychain password, and opens a
@@ -24,7 +24,7 @@ use fractal::{config, credentials, sap::client::SapClient};
 /// `customer_namespaces` or pass it into a request — don't fight lifetimes.
 pub async fn connect(
     explicit_profile: Option<&str>,
-) -> Result<(String, config::Profile, SapClient), CommandError> {
+) -> Result<(String, config::Profile, SapClient), Reported> {
     let loaded = config::load()?;
     let (profile_name, profile) = config::resolve_profile(&loaded.config, explicit_profile)?;
     let password = credentials::get_password(profile_name)?;

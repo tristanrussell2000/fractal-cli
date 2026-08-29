@@ -5,8 +5,8 @@ use serde::Serialize;
 use super::{connect, edit_object_identity::EditObjectIdentityOutput};
 use crate::{
     cli::EditSourceDiscardArgs,
-    command_error::CommandError,
     output::{OutputFormat, print_result},
+    reported::Reported,
 };
 use fractal::sap::{
     editable_source::EditableAdtObjectType,
@@ -44,7 +44,7 @@ pub struct EditSourceDiscardOutput {
 pub async fn edit_source_discard(
     explicit_profile: Option<&str>,
     args: &EditSourceDiscardArgs,
-) -> Result<EditSourceDiscardOutput, CommandError> {
+) -> Result<EditSourceDiscardOutput, Reported> {
     let object_type = EditableAdtObjectType::parse(&args.object_type)?;
     let request = AdtInactiveSourceDiscardRequest {
         object_type,

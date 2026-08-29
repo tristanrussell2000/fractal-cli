@@ -7,8 +7,8 @@ use super::{
 };
 use crate::{
     cli::EditSourceCheckArgs,
-    command_error::CommandError,
     output::{OutputFormat, print_result},
+    reported::Reported,
 };
 use fractal::sap::{
     editable_source::EditableAdtObjectType,
@@ -42,7 +42,7 @@ pub struct EditSourceCheckOutput {
 pub async fn edit_source_check(
     explicit_profile: Option<&str>,
     args: &EditSourceCheckArgs,
-) -> Result<EditSourceCheckOutput, CommandError> {
+) -> Result<EditSourceCheckOutput, Reported> {
     let object_type = EditableAdtObjectType::parse(&args.object_type)?;
     let version = map_source_version(args.version);
     let (profile_name, _profile, mut client) = connect(explicit_profile).await?;

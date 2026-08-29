@@ -12,6 +12,7 @@ use super::{
     },
     client::{SapClient, SapClientError},
 };
+use crate::reportable_error::{ReportableError, sap_http_status};
 use crate::suggested_command;
 
 /// A failure while retrieving object source or metadata XML.
@@ -29,7 +30,16 @@ pub enum ObjectSourceError {
 
 impl ObjectSourceError {
     #[must_use]
-    pub const fn code(&self) -> &'static str {
+    pub const fn sap_error(&self) -> Option<&SapClientError> {
+        match self {
+            Self::Sap(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl ReportableError for ObjectSourceError {
+    fn code(&self) -> &'static str {
         match self {
             Self::Sap(error) => error.code(),
             Self::Uri(error) => error.code(),
@@ -38,11 +48,14 @@ impl ObjectSourceError {
         }
     }
 
-    #[must_use]
-    pub fn hint(&self) -> String {
-        match self {
-            Self::Sap(error) => error.hint(),
-            Self::Uri(error) => error.hint(),
+    fn status(&self) -> Option<u16> {
+        sap_http_status(self.sap_error())
+    }
+
+    fn hint(&self) -> Option<String> {
+        Some(match self {
+            Self::Sap(error) => error.hint()?,
+            Self::Uri(error) => error.hint()?,
             Self::NoSourceForKind { .. } => {
                 "Use `fractal object xml` to retrieve metadata for this object.".to_owned()
             }
@@ -50,20 +63,11 @@ impl ObjectSourceError {
                 "The source response could not be converted into a safe UTF-8 page; retry without paging or report the object URI."
                     .to_owned()
             }
-        }
-    }
-
-    #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapClientError> {
-        match self {
-            Self::Sap(error) => Some(error),
-            _ => None,
-        }
+        })
     }
 
     /// A read-only command that diagnoses this failure, if one exists.
-    #[must_use]
-    pub fn suggested_command(&self) -> Option<String> {
+    fn suggested_command(&self) -> Option<String> {
         match self {
             // The object exists but has no source view; its metadata does.
             Self::NoSourceForKind { uri, .. } => Some(suggested_command::object_xml(uri)),
@@ -201,7 +205,7 @@ mod tests {
         let encoding = ObjectSourceError::Encoding("invalid boundary".to_owned());
 
         assert_eq!(encoding.code(), "source_encoding_error");
-        assert!(!encoding.hint().is_empty());
+        assert!(encoding.hint().is_some());
         assert_eq!(encoding.suggested_command(), None);
     }
 

@@ -12,6 +12,7 @@ use super::{
     },
     find_attribute_value,
 };
+use crate::reportable_error::{ReportableError, sap_http_status};
 
 const CHECKRUNS_PATH: &str = "/sap/bc/adt/checkruns";
 const INACTIVE_OBJECTS_PATH: &str = "/sap/bc/adt/activation/inactiveobjects";
@@ -74,11 +75,11 @@ impl AdtInactiveSourceProbeError {
     }
 
     #[must_use]
-    pub fn hint(&self) -> String {
+    pub fn hint(&self) -> Option<String> {
         match self {
             Self::Sap(error) => error.hint(),
             Self::Parse(_) => {
-                "The SAP inactive-object response did not contain valid ADT XML.".to_owned()
+                Some("The SAP inactive-object response did not contain valid ADT XML.".to_owned())
             }
         }
     }
@@ -86,7 +87,16 @@ impl AdtInactiveSourceProbeError {
 
 impl AdtSourceCheckError {
     #[must_use]
-    pub const fn code(&self) -> &'static str {
+    pub const fn sap_error(&self) -> Option<&SapClientError> {
+        match self {
+            Self::Sap { source, .. } => Some(source),
+            Self::InvalidObject(_) | Self::Parse { .. } => None,
+        }
+    }
+}
+
+impl ReportableError for AdtSourceCheckError {
+    fn code(&self) -> &'static str {
         match self {
             Self::InvalidObject(error) => error.code(),
             Self::Sap { .. } => "edit_source_check_failed",
@@ -94,32 +104,26 @@ impl AdtSourceCheckError {
         }
     }
 
-    #[must_use]
-    pub fn hint(&self) -> String {
-        match self {
-            Self::InvalidObject(error) => error.hint(),
-            Self::Sap { source, .. } => source.hint(),
+    fn status(&self) -> Option<u16> {
+        sap_http_status(self.sap_error())
+    }
+
+    fn hint(&self) -> Option<String> {
+        Some(match self {
+            Self::InvalidObject(error) => error.hint()?,
+            Self::Sap { source, .. } => source.hint()?,
             Self::Parse { .. } => {
                 "The SAP checkrun response did not match the expected ADT check-message XML."
                     .to_owned()
             }
-        }
-    }
-
-    #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapClientError> {
-        match self {
-            Self::Sap { source, .. } => Some(source),
-            Self::InvalidObject(_) | Self::Parse { .. } => None,
-        }
+        })
     }
 
     /// A read-only command that diagnoses this failure, if one exists.
     ///
     /// When the check itself cannot run, reading the version that was being
     /// checked is the remaining way to inspect the source.
-    #[must_use]
-    pub fn suggested_command(&self) -> Option<String> {
+    fn suggested_command(&self) -> Option<String> {
         match self {
             Self::Sap {
                 identity, version, ..

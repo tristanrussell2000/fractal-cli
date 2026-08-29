@@ -5,9 +5,9 @@ use serde::Serialize;
 use super::edit_object_identity::EditObjectIdentityOutput;
 use crate::{
     cli::{EditSourceReadArgs, EditSourceVersionArg},
-    command_error::CommandError,
     commands::connect,
     output::{OutputFormat, print_result},
+    reported::Reported,
 };
 use fractal::sap::editable_source::{
     AdtSourceReadResult, AdtSourceVersion, EditableAdtObjectType, read_adt_source_for_edit,
@@ -28,7 +28,7 @@ pub struct EditSourceReadOutput {
 pub async fn edit_source_read(
     explicit_profile: Option<&str>,
     args: &EditSourceReadArgs,
-) -> Result<EditSourceReadOutput, CommandError> {
+) -> Result<EditSourceReadOutput, Reported> {
     let object_type = EditableAdtObjectType::parse(&args.object_type)?;
     let version = map_source_version(args.version);
     let (profile_name, _profile, client) = connect(explicit_profile).await?;

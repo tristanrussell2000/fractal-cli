@@ -42,6 +42,12 @@ pub fn object_search(object_type: &str, name: &str) -> String {
     format!("fractal object search {name} --kind {object_type}")
 }
 
+/// Lists every repository kind the CLI accepts.
+#[must_use]
+pub fn object_kinds() -> String {
+    "fractal object kinds".to_owned()
+}
+
 /// Retrieves an object's full metadata XML.
 #[must_use]
 pub fn object_xml(uri: &str) -> String {
@@ -77,6 +83,7 @@ mod tests {
             object_search("INTF", "ZIF_MISSING"),
             "fractal object search ZIF_MISSING --kind INTF"
         );
+        assert_eq!(object_kinds(), "fractal object kinds");
         assert_eq!(
             object_xml("/sap/bc/adt/ddic/domains/zdomain"),
             "fractal object xml /sap/bc/adt/ddic/domains/zdomain"
