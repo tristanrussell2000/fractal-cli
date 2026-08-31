@@ -51,6 +51,13 @@ impl EditableAdtObjectType {
         self.repository_kind().as_str()
     }
 
+    /// The ADT collection this object family lives under. Reading appends the
+    /// object name; creation POSTs to the collection itself.
+    #[must_use]
+    pub const fn collection_path(self) -> &'static str {
+        self.base_path()
+    }
+
     const fn base_path(self) -> &'static str {
         match self {
             Self::Class => "/sap/bc/adt/oo/classes",

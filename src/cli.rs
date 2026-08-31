@@ -142,6 +142,8 @@ pub enum TableCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum EditCommand {
+    /// Create an empty object shell. Fill it with `edit set`; does not activate.
+    Create(EditObjectCreateArgs),
     /// Read complete source and revision metadata for a future edit.
     Read(EditSourceReadArgs),
     /// Replace one exact fragment and save inactive source. Does not activate.
@@ -154,6 +156,25 @@ pub enum EditCommand {
     Activate(EditSourceActivateArgs),
     /// Discard inactive changes while preserving the current active source.
     Discard(EditSourceDiscardArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct EditObjectCreateArgs {
+    /// Object type to create. Currently PROG or CLAS.
+    #[arg(long = "type")]
+    pub(crate) object_type: String,
+    /// Object name, which must be inside a configured customer namespace.
+    #[arg(long)]
+    pub(crate) name: String,
+    /// Package the object is created in. Use $TMP for a local object.
+    #[arg(long)]
+    pub(crate) package: String,
+    /// Short description SAP stores as the object's text.
+    #[arg(long)]
+    pub(crate) description: String,
+    /// Parent transport request, required for a transportable package.
+    #[arg(long)]
+    pub(crate) transport: Option<String>,
 }
 
 #[derive(Debug, Args)]
