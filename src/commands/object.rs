@@ -458,7 +458,7 @@ mod tests {
             "fractal",
             "object",
             "usages",
-            "/sap/bc/adt/ddic/tables/zdtls_check_in",
+            "/sap/bc/adt/ddic/tables/zexample_table",
             "--direct-results",
         ])
         .unwrap();
@@ -469,7 +469,7 @@ mod tests {
         else {
             panic!("expected object usages command");
         };
-        assert_eq!(args.uri, "/sap/bc/adt/ddic/tables/zdtls_check_in");
+        assert_eq!(args.uri, "/sap/bc/adt/ddic/tables/zexample_table");
         assert!(args.direct_results);
     }
 
@@ -479,7 +479,7 @@ mod tests {
             "fractal",
             "object",
             "usages",
-            "/sap/bc/adt/ddic/tables/zdtls_check_in",
+            "/sap/bc/adt/ddic/tables/zexample_table",
         ])
         .unwrap();
 
@@ -496,21 +496,21 @@ mod tests {
     fn maps_usage_references_and_computes_direct_result_kind_and_type() {
         let refs = vec![
             fractal::sap::object_usages::UsageReference {
-                uri: "/sap/bc/adt/ddic/structures/zdtls_check_in_s".to_owned(),
-                parent_uri: Some("/sap/bc/adt/packages/zdtls".to_owned()),
-                name: Some("ZDTLS_CHECK_IN_S".to_owned()),
+                uri: "/sap/bc/adt/ddic/structures/zexample_table_s".to_owned(),
+                parent_uri: Some("/sap/bc/adt/packages/zexample".to_owned()),
+                name: Some("ZEXAMPLE_TABLE_S".to_owned()),
                 object_type: Some(fractal::sap::repository_kind::AdtObjectType::parse(
                     "TABL/DS",
                 )),
-                package: Some("ZDTLS".to_owned()),
+                package: Some("ZEXAMPLE".to_owned()),
                 direct_result: true,
             },
             fractal::sap::object_usages::UsageReference {
-                uri: "/sap/bc/adt/packages/zdtls".to_owned(),
+                uri: "/sap/bc/adt/packages/zexample".to_owned(),
                 parent_uri: None,
-                name: Some("ZDTLS".to_owned()),
+                name: Some("ZEXAMPLE".to_owned()),
                 object_type: None,
-                package: Some("ZDTLS".to_owned()),
+                package: Some("ZEXAMPLE".to_owned()),
                 direct_result: false,
             },
         ];

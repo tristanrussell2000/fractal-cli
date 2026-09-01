@@ -180,7 +180,7 @@ async fn previews_complete_source_with_one_read_and_no_mutating_requests() {
     let profile = profile(server.uri());
     let client = SapClient::new(&profile, "password".to_owned()).unwrap();
     let mut request = replacement_request();
-    request.transport = Some(" de3k900575 ".to_owned());
+    request.transport = Some(" ab1k900575 ".to_owned());
 
     let preview = preview_adt_source_replacement(&client, &profile.customer_namespaces, &request)
         .await
@@ -191,7 +191,7 @@ async fn previews_complete_source_with_one_read_and_no_mutating_requests() {
         preview.replacement.sha256,
         source_sha256(REPLACEMENT_SOURCE)
     );
-    assert_eq!(preview.transport.as_deref(), Some("DE3K900575"));
+    assert_eq!(preview.transport.as_deref(), Some("AB1K900575"));
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].method.as_str(), "GET");
@@ -200,7 +200,7 @@ async fn previews_complete_source_with_one_read_and_no_mutating_requests() {
 
 #[tokio::test]
 async fn sends_transport_on_the_lock_and_complete_source_write() {
-    const TRANSPORT: &str = "DE3K900575";
+    const TRANSPORT: &str = "AB1K900575";
     let server = MockServer::start().await;
     mount_csrf_session(&server).await;
     mount_lock(&server, Some(TRANSPORT)).await;
@@ -208,7 +208,7 @@ async fn sends_transport_on_the_lock_and_complete_source_write() {
     mount_write(&server, Some(TRANSPORT), ResponseTemplate::new(200)).await;
     mount_unlock(&server, 200).await;
     let mut request = replacement_request();
-    request.transport = Some("de3k900575".to_owned());
+    request.transport = Some("ab1k900575".to_owned());
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
@@ -519,7 +519,7 @@ async fn validates_blank_source_namespace_and_transport_before_http() {
     ));
 
     let mut invalid_transport = replacement_request();
-    invalid_transport.transport = Some("DE3 K900575".to_owned());
+    invalid_transport.transport = Some("AB1 K900575".to_owned());
     let error = replace_adt_source_atomically(
         &mut client,
         &profile.customer_namespaces,

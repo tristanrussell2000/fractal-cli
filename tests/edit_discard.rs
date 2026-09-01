@@ -285,7 +285,7 @@ async fn no_inactive_version_is_detected_after_lock_and_still_unlocks() {
 
 #[tokio::test]
 async fn uses_transport_for_restore_without_relocking_during_activation() {
-    const TRANSPORT: &str = "DE3K900575";
+    const TRANSPORT: &str = "AB1K900575";
     let server = MockServer::start().await;
     mount_csrf_session(&server).await;
     mount_lock_with_transport(&server, Some(TRANSPORT)).await;

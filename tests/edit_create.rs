@@ -114,7 +114,7 @@ async fn sends_the_transport_as_corr_nr_on_the_create_request() {
     mount_csrf_session(&server).await;
     Mock::given(method("POST"))
         .and(path(COLLECTION_PATH))
-        .and(query_param("corrNr", "DE3K900575"))
+        .and(query_param("corrNr", "AB1K900575"))
         .and(body_string(expected_body()))
         .respond_with(ResponseTemplate::new(201))
         .expect(1)
@@ -130,12 +130,12 @@ async fn sends_the_transport_as_corr_nr_on_the_create_request() {
     let result = create_adt_object(
         &mut client,
         &["Z*".to_owned()],
-        &creation_request(Some("de3k900575")),
+        &creation_request(Some("ab1k900575")),
     )
     .await
     .unwrap();
 
-    assert_eq!(result.transport.as_deref(), Some("DE3K900575"));
+    assert_eq!(result.transport.as_deref(), Some("AB1K900575"));
     server.verify().await;
 }
 

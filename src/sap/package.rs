@@ -475,7 +475,7 @@ mod tests {
     use super::*;
 
     // Field shapes below mirror a real captured `nodestructure` response (a live
-    // ZDTLS package on a DE3 system): every field is a child element's text,
+    // customer package on a live system): every field is a child element's text,
     // never an XML attribute, and the response is wrapped in the standard ABAP
     // asx:abap/asx:values/DATA envelope. The parser previously assumed XML
     // attributes, which matched no real SAP response and silently produced
@@ -533,9 +533,9 @@ mod tests {
     #[test]
     fn skips_self_closed_empty_fields_instead_of_treating_them_as_present() {
         let xml = r#"<response>
-            <SEU_ADT_REPOSITORY_OBJ_NODE><OBJECT_TYPE>DEVC/K</OBJECT_TYPE><OBJECT_NAME/><TECH_NAME>ZDTLS</TECH_NAME><DESCRIPTION/></SEU_ADT_REPOSITORY_OBJ_NODE>
+            <SEU_ADT_REPOSITORY_OBJ_NODE><OBJECT_TYPE>DEVC/K</OBJECT_TYPE><OBJECT_NAME/><TECH_NAME>ZEXAMPLE</TECH_NAME><DESCRIPTION/></SEU_ADT_REPOSITORY_OBJ_NODE>
         </response>"#;
-        let result = parse_package_contents(xml, "ZDTLS").unwrap();
+        let result = parse_package_contents(xml, "ZEXAMPLE").unwrap();
         assert!(result.subpackages.is_empty());
     }
 

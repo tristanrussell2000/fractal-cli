@@ -190,7 +190,7 @@ async fn previews_a_patch_without_csrf_lock_write_or_unlock_requests() {
     let profile = profile(server.uri());
     let client = SapClient::new(&profile, "password".to_owned()).unwrap();
     let mut request = patch_request();
-    request.transport = Some(" de3k900575 ".to_owned());
+    request.transport = Some(" ab1k900575 ".to_owned());
 
     let preview = preview_adt_source_patch(&client, &profile.customer_namespaces, &request)
         .await
@@ -203,7 +203,7 @@ async fn previews_a_patch_without_csrf_lock_write_or_unlock_requests() {
     assert_eq!(preview.proposed.bytes, PROPOSED_SOURCE.len());
     assert_eq!(preview.replacements, 1);
     assert_eq!(preview.proposed.source, PROPOSED_SOURCE);
-    assert_eq!(preview.transport.as_deref(), Some("DE3K900575"));
+    assert_eq!(preview.transport.as_deref(), Some("AB1K900575"));
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].method.as_str(), "GET");
@@ -216,7 +216,7 @@ async fn previews_a_patch_without_csrf_lock_write_or_unlock_requests() {
 async fn sends_the_transport_on_both_a_successful_lock_and_source_write() {
     let server = MockServer::start().await;
     mount_csrf_session(&server).await;
-    mount_successful_transport_lock(&server, "DE3K900575").await;
+    mount_successful_transport_lock(&server, "AB1K900575").await;
     Mock::given(method("GET"))
         .and(path(SOURCE_PATH))
         .and(query_param("version", "inactive"))
@@ -227,10 +227,10 @@ async fn sends_the_transport_on_both_a_successful_lock_and_source_write() {
         .expect(2)
         .mount(&server)
         .await;
-    mount_successful_transport_put(&server, "DE3K900575").await;
+    mount_successful_transport_put(&server, "AB1K900575").await;
     mount_unlock(&server, 200).await;
     let mut request = patch_request();
-    request.transport = Some("de3k900575".to_owned());
+    request.transport = Some("ab1k900575".to_owned());
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
@@ -238,7 +238,7 @@ async fn sends_the_transport_on_both_a_successful_lock_and_source_write() {
         .await
         .unwrap();
 
-    assert_eq!(result.transport.as_deref(), Some("DE3K900575"));
+    assert_eq!(result.transport.as_deref(), Some("AB1K900575"));
     server.verify().await;
 }
 
@@ -249,9 +249,9 @@ async fn retries_an_own_request_lock_without_corrnr_but_keeps_corrnr_on_put() {
     Mock::given(method("POST"))
         .and(path(OBJECT_PATH))
         .and(query_param("_action", "LOCK"))
-        .and(query_param("corrNr", "DE3K900575"))
+        .and(query_param("corrNr", "AB1K900575"))
         .respond_with(ResponseTemplate::new(409).set_body_string(
-            "<error><message>Object is already locked in request DE3K900575 of user DEVELOPER</message></error>",
+            "<error><message>Object is already locked in request AB1K900575 of user DEVELOPER</message></error>",
         ))
         .expect(1)
         .mount(&server)
@@ -267,10 +267,10 @@ async fn retries_an_own_request_lock_without_corrnr_but_keeps_corrnr_on_put() {
         .expect(2)
         .mount(&server)
         .await;
-    mount_successful_transport_put(&server, "DE3K900575").await;
+    mount_successful_transport_put(&server, "AB1K900575").await;
     mount_unlock(&server, 200).await;
     let mut request = patch_request();
-    request.transport = Some("DE3K900575".to_owned());
+    request.transport = Some("AB1K900575".to_owned());
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
@@ -278,7 +278,7 @@ async fn retries_an_own_request_lock_without_corrnr_but_keeps_corrnr_on_put() {
         .await
         .unwrap();
 
-    assert_eq!(result.transport.as_deref(), Some("DE3K900575"));
+    assert_eq!(result.transport.as_deref(), Some("AB1K900575"));
     server.verify().await;
 }
 
@@ -289,15 +289,15 @@ async fn does_not_retry_a_lock_held_by_a_different_transport() {
     Mock::given(method("POST"))
         .and(path(OBJECT_PATH))
         .and(query_param("_action", "LOCK"))
-        .and(query_param("corrNr", "DE3K900575"))
+        .and(query_param("corrNr", "AB1K900575"))
         .respond_with(ResponseTemplate::new(409).set_body_string(
-            "<error><message>Object is already locked in request DE3K900999 of user OTHER</message></error>",
+            "<error><message>Object is already locked in request AB1K900999 of user OTHER</message></error>",
         ))
         .expect(1)
         .mount(&server)
         .await;
     let mut request = patch_request();
-    request.transport = Some("DE3K900575".to_owned());
+    request.transport = Some("AB1K900575".to_owned());
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
@@ -309,8 +309,8 @@ async fn does_not_retry_a_lock_held_by_a_different_transport() {
         error,
         AdtSourcePatchError::Session(AdtEditSessionError::LockFailed { .. })
     ));
-    assert!(error.hint().unwrap().contains("DE3K900999"));
-    assert!(error.hint().unwrap().contains("DE3K900575"));
+    assert!(error.hint().unwrap().contains("AB1K900999"));
+    assert!(error.hint().unwrap().contains("AB1K900575"));
     assert_eq!(server.received_requests().await.unwrap().len(), 2);
     server.verify().await;
 }
@@ -320,7 +320,7 @@ async fn rejects_an_invalid_transport_before_any_http_request() {
     let profile = profile("http://127.0.0.1:1".to_owned());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
     let mut request = patch_request();
-    request.transport = Some("DE3 K900575".to_owned());
+    request.transport = Some("AB1 K900575".to_owned());
 
     let error = patch_adt_source_atomically(&mut client, &profile.customer_namespaces, &request)
         .await
@@ -344,7 +344,7 @@ async fn suggests_the_request_named_by_sap_when_transport_was_omitted() {
         .and(query_param("lockHandle", LOCK_HANDLE))
         .and(query_param_is_missing("corrNr"))
         .respond_with(ResponseTemplate::new(409).set_body_string(
-            "<error><message>Object LIMU METH ZSAMPLE is already locked in request DE3K900575 of user DEVELOPER</message></error>",
+            "<error><message>Object LIMU METH ZSAMPLE is already locked in request AB1K900575 of user DEVELOPER</message></error>",
         ))
         .expect(1)
         .mount(&server)
@@ -364,7 +364,7 @@ async fn suggests_the_request_named_by_sap_when_transport_was_omitted() {
     ));
     // The unlock succeeded here, so no lock was abandoned.
     assert!(!error.hint().unwrap().contains("still locked"));
-    assert!(error.hint().unwrap().contains("--transport DE3K900575"));
+    assert!(error.hint().unwrap().contains("--transport AB1K900575"));
     server.verify().await;
 }
 

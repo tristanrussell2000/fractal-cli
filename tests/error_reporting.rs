@@ -325,14 +325,14 @@ fn transport_retry_advice_stays_in_prose() {
     // The one remedy that is genuinely "re-run your write, differently". It
     // must reach the caller as a hint and never as an executable field.
     let error = AdtSourcePatchError::Session(AdtEditSessionError::LockFailed {
-        transport: Some("DE3K900575".to_owned()),
+        transport: Some("AB1K900575".to_owned()),
         source: http(
             SapHttpErrorKind::Other,
             StatusCode::CONFLICT,
-            "Object is already locked in request DE3K900575",
+            "Object is already locked in request AB1K900575",
         ),
     });
 
-    assert!(error.hint().unwrap().contains("DE3K900575"));
+    assert!(error.hint().unwrap().contains("AB1K900575"));
     assert_eq!(error.suggested_command(), None);
 }

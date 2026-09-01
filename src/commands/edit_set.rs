@@ -293,7 +293,7 @@ mod tests {
                 "--expected-sha256",
                 &"a".repeat(64),
                 "--transport",
-                "de3k900575",
+                "ab1k900575",
                 "--dry-run",
             ])
             .unwrap(),
@@ -303,7 +303,7 @@ mod tests {
         assert_eq!(args.name, "ZSAMPLE");
         assert_eq!(args.source_file, "replacement.abap");
         assert_eq!(args.expected_sha256, Some("a".repeat(64)));
-        assert_eq!(args.transport.as_deref(), Some("de3k900575"));
+        assert_eq!(args.transport.as_deref(), Some("ab1k900575"));
         assert!(args.dry_run);
     }
 
@@ -373,7 +373,7 @@ mod tests {
                     object_uri: "/sap/bc/adt/programs/programs/zsample".to_owned(),
                     source_uri: "/sap/bc/adt/programs/programs/zsample/source/main".to_owned(),
                 },
-                transport: Some("DE3K900575".to_owned()),
+                transport: Some("AB1K900575".to_owned()),
                 original: AdtSourceSnapshot::from_parts(
                     original.to_owned(),
                     source_sha256(original),
@@ -403,7 +403,7 @@ mod tests {
                     object_uri: "/sap/bc/adt/programs/programs/zsample".to_owned(),
                     source_uri: "/sap/bc/adt/programs/programs/zsample/source/main".to_owned(),
                 },
-                transport: Some("DE3K900575".to_owned()),
+                transport: Some("AB1K900575".to_owned()),
                 original: AdtSourceSnapshot::from_parts(
                     original.to_owned(),
                     source_sha256(original),

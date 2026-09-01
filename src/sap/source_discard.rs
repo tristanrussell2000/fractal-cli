@@ -137,7 +137,7 @@ impl ReportableError for AdtInactiveSourceDiscardError {
             | Self::InactiveSourceRead(error)
             | Self::RestoredSourceRead(error) => error.hint()?,
             Self::Validation(AdtEditTargetValidationError::InvalidTransport(_)) => {
-                "Use a parent transport request containing 1-20 ASCII letters or digits, for example DE3K900575."
+                "Use a parent transport request containing 1-20 ASCII letters or digits, for example AB1K900575."
                     .to_owned()
             }
             Self::Validation(error) => error.hint()?,

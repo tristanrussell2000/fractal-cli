@@ -377,7 +377,7 @@ async fn syntax_errors_stop_before_transport_or_activation() {
     let error = activate_adt_source(
         &mut client,
         &["Z*".to_owned()],
-        &activation_request(Some("DE3K900575")),
+        &activation_request(Some("AB1K900575")),
     )
     .await
     .unwrap_err();
@@ -486,9 +486,9 @@ async fn transport_attachment_failure_stops_before_activation() {
     Mock::given(method("POST"))
         .and(path(OBJECT_URI))
         .and(query_param("_action", "LOCK"))
-        .and(query_param("corrNr", "DE3K900575"))
+        .and(query_param("corrNr", "AB1K900575"))
         .respond_with(ResponseTemplate::new(409).set_body_string(
-            "<error><message>Object is already locked in request DE3K900999</message></error>",
+            "<error><message>Object is already locked in request AB1K900999</message></error>",
         ))
         .expect(1)
         .mount(&server)
@@ -498,7 +498,7 @@ async fn transport_attachment_failure_stops_before_activation() {
     let error = activate_adt_source(
         &mut client,
         &["Z*".to_owned()],
-        &activation_request(Some("DE3K900575")),
+        &activation_request(Some("AB1K900575")),
     )
     .await
     .unwrap_err();
@@ -508,7 +508,7 @@ async fn transport_attachment_failure_stops_before_activation() {
         AdtSourceActivationError::TransportAttachment(_)
     ));
     assert_eq!(error.code(), "edit_activation_transport_failed");
-    assert!(error.hint().unwrap().contains("DE3K900999"));
+    assert!(error.hint().unwrap().contains("AB1K900999"));
     server.verify().await;
 }
 
@@ -551,7 +551,7 @@ async fn attaches_the_parent_transport_before_activation() {
         .and(path(OBJECT_URI))
         .and(query_param("_action", "LOCK"))
         .and(query_param("accessMode", "MODIFY"))
-        .and(query_param("corrNr", "DE3K900575"))
+        .and(query_param("corrNr", "AB1K900575"))
         .and(header("x-sap-adt-sessiontype", "stateful"))
         .respond_with(ResponseTemplate::new(200).set_body_string(format!(
             "<lockResult><LOCK_HANDLE>{LOCK_HANDLE}</LOCK_HANDLE></lockResult>"
@@ -581,12 +581,12 @@ async fn attaches_the_parent_transport_before_activation() {
     let result = activate_adt_source(
         &mut client,
         &["Z*".to_owned()],
-        &activation_request(Some(" de3k900575 ")),
+        &activation_request(Some(" ab1k900575 ")),
     )
     .await
     .unwrap();
 
-    assert_eq!(result.transport.as_deref(), Some("DE3K900575"));
+    assert_eq!(result.transport.as_deref(), Some("AB1K900575"));
     let paths = server
         .received_requests()
         .await

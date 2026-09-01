@@ -163,7 +163,7 @@ mod tests {
             "--name",
             "zcl_sample",
             "--transport",
-            "DE3K900575",
+            "AB1K900575",
         ])
         .unwrap();
         let Command::Edit {
@@ -175,13 +175,13 @@ mod tests {
 
         assert_eq!(args.object_type, "clas");
         assert_eq!(args.name, "zcl_sample");
-        assert_eq!(args.transport.as_deref(), Some("DE3K900575"));
+        assert_eq!(args.transport.as_deref(), Some("AB1K900575"));
     }
 
     #[test]
     fn maps_and_renders_a_verified_discard() {
         let result = map_source_discard_result(
-            "DE3".to_owned(),
+            "development".to_owned(),
             AdtInactiveSourceDiscardResult {
                 identity: EditableAdtSourceIdentity {
                     object_type: EditableAdtObjectType::Class,
@@ -189,7 +189,7 @@ mod tests {
                     object_uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
                     source_uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
                 },
-                transport: Some("DE3K900575".to_owned()),
+                transport: Some("AB1K900575".to_owned()),
                 discarded: AdtSourceSnapshot::from_parts(
                     "edited source".to_owned(),
                     "inactive-hash".to_owned(),

@@ -246,7 +246,7 @@ mod tests {
                 "--expected-sha256",
                 &"a".repeat(64),
                 "--transport",
-                "de3k900575",
+                "ab1k900575",
                 "--dry-run",
             ])
             .unwrap(),
@@ -257,7 +257,7 @@ mod tests {
         assert_eq!(args.find, "WRITE 'before'.");
         assert_eq!(args.replace, "WRITE 'after'.");
         assert_eq!(args.expected_sha256, Some("a".repeat(64)));
-        assert_eq!(args.transport.as_deref(), Some("de3k900575"));
+        assert_eq!(args.transport.as_deref(), Some("ab1k900575"));
         assert!(args.dry_run);
     }
 
@@ -314,7 +314,7 @@ mod tests {
                     object_uri: "/sap/bc/adt/programs/programs/zsample".to_owned(),
                     source_uri: "/sap/bc/adt/programs/programs/zsample/source/main".to_owned(),
                 },
-                transport: Some("DE3K900575".to_owned()),
+                transport: Some("AB1K900575".to_owned()),
                 original: AdtSourceSnapshot::from_parts(
                     original.to_owned(),
                     source_sha256(original),
@@ -333,7 +333,7 @@ mod tests {
         assert_eq!(json["status"], "dry_run");
         assert_eq!(json["wrote_source"], false);
         assert_eq!(json["activated"], false);
-        assert_eq!(json["transport"], "DE3K900575");
+        assert_eq!(json["transport"], "AB1K900575");
         assert_eq!(json["stored_sha256"], serde_json::Value::Null);
         assert_eq!(
             json["sap_changed_submitted_source"],
@@ -359,7 +359,7 @@ mod tests {
                     object_uri: "/sap/bc/adt/programs/programs/zsample".to_owned(),
                     source_uri: "/sap/bc/adt/programs/programs/zsample/source/main".to_owned(),
                 },
-                transport: Some("DE3K900575".to_owned()),
+                transport: Some("AB1K900575".to_owned()),
                 original: AdtSourceSnapshot::from_parts(
                     original.to_owned(),
                     source_sha256(original),
@@ -383,7 +383,7 @@ mod tests {
         assert_eq!(json["status"], "stored_inactive");
         assert_eq!(json["wrote_source"], true);
         assert_eq!(json["activated"], false);
-        assert_eq!(json["transport"], "DE3K900575");
+        assert_eq!(json["transport"], "AB1K900575");
         assert_eq!(json["sap_changed_submitted_source"], true);
         assert_eq!(json["stored_source"], stored);
         let readable = render_edit_source_patch_readable(&output);

@@ -187,55 +187,55 @@ mod tests {
     use super::*;
 
     // Fixtures below are trimmed from real `usageReferences` responses captured
-    // against a live DE3 system (empty-result and multi-row cases), not invented.
+    // against a live system (empty-result and multi-row cases), not invented.
 
     #[test]
     fn parses_a_response_with_no_referenced_objects() {
-        let xml = r#"<?xml version="1.0" encoding="utf-8"?><usageReferences:usageReferenceResult numberOfResults="0" resultDescription="[DE3] Where-Used List: ZDLTS_PB_IS_REPLY (Data Element)" referencedObjectIdentifier="" xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences"><usageReferences:referencedObjects/></usageReferences:usageReferenceResult>"#;
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?><usageReferences:usageReferenceResult numberOfResults="0" resultDescription="[AB1] Where-Used List: ZEXAMPLE_ELEMENT (Data Element)" referencedObjectIdentifier="" xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences"><usageReferences:referencedObjects/></usageReferences:usageReferenceResult>"#;
         let refs =
-            parse_usage_references(xml, "/sap/bc/adt/ddic/dataelements/zdlts_pb_is_reply").unwrap();
+            parse_usage_references(xml, "/sap/bc/adt/ddic/dataelements/zexample_element").unwrap();
         assert!(refs.is_empty());
     }
 
     #[test]
     fn parses_referenced_objects_and_flags_direct_results() {
-        let xml = r#"<usageReferences:usageReferenceResult xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences" numberOfResults="1" resultDescription="[DE3] Where-Used List: ZDTLS_CHECK_IN (Database Table)" referencedObjectIdentifier="">
+        let xml = r#"<usageReferences:usageReferenceResult xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences" numberOfResults="1" resultDescription="[AB1] Where-Used List: ZEXAMPLE_TABLE (Database Table)" referencedObjectIdentifier="">
             <usageReferences:referencedObjects>
-                <usageReferences:referencedObject uri="/sap/bc/adt/ddic/structures/zdtls_check_in_s" parentUri="/sap/bc/adt/packages/zdtls" isResult="true" canHaveChildren="false">
-                    <usageReferences:adtObject xmlns:adtcore="http://www.sap.com/adt/core" adtcore:responsible="TKIRKLAND" adtcore:name="ZDTLS_CHECK_IN_S" adtcore:type="TABL/DS">
-                        <adtcore:packageRef adtcore:uri="/sap/bc/adt/packages/zdtls" adtcore:type="DEVC/K" adtcore:name="ZDTLS"/>
+                <usageReferences:referencedObject uri="/sap/bc/adt/ddic/structures/zexample_table_s" parentUri="/sap/bc/adt/packages/zexample" isResult="true" canHaveChildren="false">
+                    <usageReferences:adtObject xmlns:adtcore="http://www.sap.com/adt/core" adtcore:responsible="DEVELOPER" adtcore:name="ZEXAMPLE_TABLE_S" adtcore:type="TABL/DS">
+                        <adtcore:packageRef adtcore:uri="/sap/bc/adt/packages/zexample" adtcore:type="DEVC/K" adtcore:name="ZEXAMPLE"/>
                     </usageReferences:adtObject>
                 </usageReferences:referencedObject>
-                <usageReferences:referencedObject uri="/sap/bc/adt/oo/classes/zcl_zdtls_pb_gw_dpc_ext/source/main#type=CLAS%2FOM;name=CHECKINSET_CREATE_ENTITY;start=1" parentUri="/sap/bc/adt/oo/classes/zcl_zdtls_pb_gw_dpc_ext" isResult="false" canHaveChildren="true">
+                <usageReferences:referencedObject uri="/sap/bc/adt/oo/classes/zcl_zexample_pb_gw_dpc_ext/source/main#type=CLAS%2FOM;name=CHECKINSET_CREATE_ENTITY;start=1" parentUri="/sap/bc/adt/oo/classes/zcl_zexample_pb_gw_dpc_ext" isResult="false" canHaveChildren="true">
                     <usageReferences:adtObject xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="CHECKINSET_CREATE_ENTITY">
-                        <adtcore:packageRef adtcore:uri="/sap/bc/adt/packages/zdtls_pb" adtcore:type="DEVC/K" adtcore:name="ZDTLS_PB"/>
+                        <adtcore:packageRef adtcore:uri="/sap/bc/adt/packages/zexample_pb" adtcore:type="DEVC/K" adtcore:name="ZEXAMPLE_PB"/>
                     </usageReferences:adtObject>
                 </usageReferences:referencedObject>
-                <usageReferences:referencedObject uri="/sap/bc/adt/packages/zdtls" isResult="false" canHaveChildren="true">
-                    <usageReferences:adtObject xmlns:adtcore="http://www.sap.com/adt/core" adtcore:responsible="TKIRKLAND" adtcore:name="ZDTLS" adtcore:type="DEVC/K">
-                        <adtcore:packageRef adtcore:uri="/sap/bc/adt/packages/zdtls" adtcore:type="DEVC/K" adtcore:name="ZDTLS"/>
+                <usageReferences:referencedObject uri="/sap/bc/adt/packages/zexample" isResult="false" canHaveChildren="true">
+                    <usageReferences:adtObject xmlns:adtcore="http://www.sap.com/adt/core" adtcore:responsible="DEVELOPER" adtcore:name="ZEXAMPLE" adtcore:type="DEVC/K">
+                        <adtcore:packageRef adtcore:uri="/sap/bc/adt/packages/zexample" adtcore:type="DEVC/K" adtcore:name="ZEXAMPLE"/>
                     </usageReferences:adtObject>
                 </usageReferences:referencedObject>
-                <usageReferences:referencedObject uri="/sap/bc/adt/ddic/tables/zdtls_check_in" isResult="false" canHaveChildren="false"/>
+                <usageReferences:referencedObject uri="/sap/bc/adt/ddic/tables/zexample_table" isResult="false" canHaveChildren="false"/>
             </usageReferences:referencedObjects>
         </usageReferences:usageReferenceResult>"#;
 
-        let refs = parse_usage_references(xml, "/sap/bc/adt/ddic/tables/zdtls_check_in").unwrap();
+        let refs = parse_usage_references(xml, "/sap/bc/adt/ddic/tables/zexample_table").unwrap();
 
         // The fourth row is a self-reference and must be stripped.
         assert_eq!(refs.len(), 3);
 
         let direct: Vec<_> = refs.iter().filter(|r| r.direct_result).collect();
         assert_eq!(direct.len(), 1);
-        assert_eq!(direct[0].name.as_deref(), Some("ZDTLS_CHECK_IN_S"));
+        assert_eq!(direct[0].name.as_deref(), Some("ZEXAMPLE_TABLE_S"));
         assert_eq!(
             direct[0].object_type.as_ref().map(AdtObjectType::as_str),
             Some("TABL/DS")
         );
-        assert_eq!(direct[0].package.as_deref(), Some("ZDTLS"));
+        assert_eq!(direct[0].package.as_deref(), Some("ZEXAMPLE"));
         assert_eq!(
             direct[0].parent_uri.as_deref(),
-            Some("/sap/bc/adt/packages/zdtls")
+            Some("/sap/bc/adt/packages/zexample")
         );
 
         let method_row = refs
@@ -248,7 +248,7 @@ mod tests {
 
         let package_row = refs
             .iter()
-            .find(|r| r.uri == "/sap/bc/adt/packages/zdtls")
+            .find(|r| r.uri == "/sap/bc/adt/packages/zexample")
             .unwrap();
         assert!(package_row.parent_uri.is_none());
     }

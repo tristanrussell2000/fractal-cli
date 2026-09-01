@@ -140,7 +140,7 @@ mod tests {
                 "--description",
                 "Sample report",
                 "--transport",
-                "DE3K900575",
+                "AB1K900575",
             ])
             .unwrap(),
         );
@@ -149,7 +149,7 @@ mod tests {
         assert_eq!(args.name, "ZSAMPLE");
         assert_eq!(args.package, "ZPKG");
         assert_eq!(args.description, "Sample report");
-        assert_eq!(args.transport.as_deref(), Some("DE3K900575"));
+        assert_eq!(args.transport.as_deref(), Some("AB1K900575"));
     }
 
     #[test]
@@ -218,7 +218,7 @@ mod tests {
                 },
                 package: "ZPKG".to_owned(),
                 description: "Sample report".to_owned(),
-                transport: Some("DE3K900575".to_owned()),
+                transport: Some("AB1K900575".to_owned()),
             },
         );
 

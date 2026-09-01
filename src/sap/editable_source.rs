@@ -221,7 +221,7 @@ impl ReportableError for TransportRequestError {
     }
 
     fn hint(&self) -> Option<String> {
-        Some("Use a transport request identifier containing 1-20 ASCII letters or digits, for example DE3K900575."
+        Some("Use a transport request identifier containing 1-20 ASCII letters or digits, for example AB1K900575."
             .to_owned())
     }
 }
@@ -581,12 +581,12 @@ mod tests {
             EditableAdtObjectType::Class,
             " zcl_example ",
             &["Z*".to_owned()],
-            Some(" de3k900575 "),
+            Some(" ab1k900575 "),
         )
         .unwrap();
 
         assert_eq!(target.identity.name, "ZCL_EXAMPLE");
-        assert_eq!(target.transport.as_deref(), Some("DE3K900575"));
+        assert_eq!(target.transport.as_deref(), Some("AB1K900575"));
     }
 
     #[test]

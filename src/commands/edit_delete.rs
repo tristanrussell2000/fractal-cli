@@ -198,14 +198,14 @@ mod tests {
                 "--force",
                 "--dry-run",
                 "--transport",
-                "DE3K900575",
+                "AB1K900575",
             ])
             .unwrap(),
         );
 
         assert!(args.force);
         assert!(args.dry_run);
-        assert_eq!(args.transport.as_deref(), Some("DE3K900575"));
+        assert_eq!(args.transport.as_deref(), Some("AB1K900575"));
     }
 
     #[test]
@@ -237,7 +237,7 @@ mod tests {
             "development".to_owned(),
             AdtObjectDeletionResult {
                 identity: identity(),
-                transport: Some("DE3K900575".to_owned()),
+                transport: Some("AB1K900575".to_owned()),
                 direct_usages: vec!["ZCL_CALLER".to_owned()],
                 forced: true,
             },

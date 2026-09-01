@@ -234,7 +234,7 @@ mod tests {
             "--name",
             "ZCL_SAMPLE",
             "--transport",
-            "DE3K900575",
+            "AB1K900575",
         ])
         .unwrap();
         let Command::Edit {
@@ -246,7 +246,7 @@ mod tests {
 
         assert_eq!(args.object_type, "CLAS");
         assert_eq!(args.name, "ZCL_SAMPLE");
-        assert_eq!(args.transport.as_deref(), Some("DE3K900575"));
+        assert_eq!(args.transport.as_deref(), Some("AB1K900575"));
     }
 
     #[test]
@@ -260,7 +260,7 @@ mod tests {
                     object_uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
                     source_uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
                 },
-                transport: Some("DE3K900575".to_owned()),
+                transport: Some("AB1K900575".to_owned()),
                 precheck: AdtSourceCheckResult {
                     identity: EditableAdtSourceIdentity {
                         object_type: EditableAdtObjectType::Class,

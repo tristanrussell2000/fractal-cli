@@ -37,7 +37,7 @@ async fn fetches_usages_and_strips_the_self_reference() {
         .and(path(
             "/sap/bc/adt/repository/informationsystem/usageReferences",
         ))
-        .and(query_param("uri", "/sap/bc/adt/ddic/tables/zdtls_check_in"))
+        .and(query_param("uri", "/sap/bc/adt/ddic/tables/zexample_table"))
         .and(query_param("sap-client", "903"))
         .and(header(
             "content-type",
@@ -46,17 +46,17 @@ async fn fetches_usages_and_strips_the_self_reference() {
         .and(header("x-csrf-token", "usages-csrf"))
         .and(header("cookie", "SAP_SESSIONID=usages-test"))
         .and(body_string_contains(
-            r#"adtcore:uri="/sap/bc/adt/ddic/tables/zdtls_check_in""#,
+            r#"adtcore:uri="/sap/bc/adt/ddic/tables/zexample_table""#,
         ))
         .respond_with(ResponseTemplate::new(200).set_body_string(
-            r#"<usageReferences:usageReferenceResult xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences" numberOfResults="1" resultDescription="[DE3] Where-Used List: ZDTLS_CHECK_IN (Database Table)" referencedObjectIdentifier="">
+            r#"<usageReferences:usageReferenceResult xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences" numberOfResults="1" resultDescription="[AB1] Where-Used List: ZEXAMPLE_TABLE (Database Table)" referencedObjectIdentifier="">
                 <usageReferences:referencedObjects>
-                    <usageReferences:referencedObject uri="/sap/bc/adt/ddic/structures/zdtls_check_in_s" parentUri="/sap/bc/adt/packages/zdtls" isResult="true" canHaveChildren="false">
-                        <usageReferences:adtObject xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="ZDTLS_CHECK_IN_S" adtcore:type="TABL/DS">
-                            <adtcore:packageRef adtcore:uri="/sap/bc/adt/packages/zdtls" adtcore:type="DEVC/K" adtcore:name="ZDTLS"/>
+                    <usageReferences:referencedObject uri="/sap/bc/adt/ddic/structures/zexample_table_s" parentUri="/sap/bc/adt/packages/zexample" isResult="true" canHaveChildren="false">
+                        <usageReferences:adtObject xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="ZEXAMPLE_TABLE_S" adtcore:type="TABL/DS">
+                            <adtcore:packageRef adtcore:uri="/sap/bc/adt/packages/zexample" adtcore:type="DEVC/K" adtcore:name="ZEXAMPLE"/>
                         </usageReferences:adtObject>
                     </usageReferences:referencedObject>
-                    <usageReferences:referencedObject uri="/sap/bc/adt/ddic/tables/zdtls_check_in" isResult="false" canHaveChildren="false"/>
+                    <usageReferences:referencedObject uri="/sap/bc/adt/ddic/tables/zexample_table" isResult="false" canHaveChildren="false"/>
                 </usageReferences:referencedObjects>
             </usageReferences:usageReferenceResult>"#,
         ))
@@ -66,15 +66,15 @@ async fn fetches_usages_and_strips_the_self_reference() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let refs = get_object_usages(&mut client, "/sap/bc/adt/ddic/tables/zdtls_check_in")
+    let refs = get_object_usages(&mut client, "/sap/bc/adt/ddic/tables/zexample_table")
         .await
         .unwrap();
 
     // The self-reference row is stripped, leaving only the genuine hit.
     assert_eq!(refs.len(), 1);
     assert!(refs[0].direct_result);
-    assert_eq!(refs[0].name.as_deref(), Some("ZDTLS_CHECK_IN_S"));
-    assert_eq!(refs[0].package.as_deref(), Some("ZDTLS"));
+    assert_eq!(refs[0].name.as_deref(), Some("ZEXAMPLE_TABLE_S"));
+    assert_eq!(refs[0].package.as_deref(), Some("ZEXAMPLE"));
     server.verify().await;
 }
 

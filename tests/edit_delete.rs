@@ -108,7 +108,7 @@ async fn deletes_an_unreferenced_object_and_proves_it_is_gone() {
     Mock::given(method("DELETE"))
         .and(path(OBJECT_PATH))
         .and(query_param("lockHandle", LOCK_HANDLE))
-        .and(query_param("corrNr", "DE3K900575"))
+        .and(query_param("corrNr", "AB1K900575"))
         .and(header("x-sap-adt-sessiontype", "stateful"))
         .respond_with(ResponseTemplate::new(200))
         .expect(1)
@@ -128,7 +128,7 @@ async fn deletes_an_unreferenced_object_and_proves_it_is_gone() {
     let result = delete_adt_object(
         &mut client,
         &["Z*".to_owned()],
-        &deletion_request(false, Some("DE3K900575")),
+        &deletion_request(false, Some("AB1K900575")),
     )
     .await
     .unwrap();
