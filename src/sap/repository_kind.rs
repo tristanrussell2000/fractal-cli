@@ -32,6 +32,7 @@ pub enum AdtObjectType {
     TablDt,
     TablDs,
     TtypTt,
+    TtypDa,
     ViewDv,
     DtelDe,
     DomaDd,
@@ -40,9 +41,13 @@ pub enum AdtObjectType {
     SrvdSrv,
     SrvbSvb,
     MsagN,
+    DclsDl,
+    DdlxEx,
     FugrF,
+    FugrFf,
     ProgP,
     EnhoXhh,
+    EnhoXhb,
     EnhsXsb,
     EnhsXsd,
     EnhsXb,
@@ -58,6 +63,7 @@ impl AdtObjectType {
             "TABL/DT" => Self::TablDt,
             "TABL/DS" => Self::TablDs,
             "TTYP/TT" => Self::TtypTt,
+            "TTYP/DA" => Self::TtypDa,
             "VIEW/DV" => Self::ViewDv,
             "DTEL/DE" => Self::DtelDe,
             "DOMA/DD" => Self::DomaDd,
@@ -66,9 +72,13 @@ impl AdtObjectType {
             "SRVD/SRV" => Self::SrvdSrv,
             "SRVB/SVB" => Self::SrvbSvb,
             "MSAG/N" => Self::MsagN,
+            "DCLS/DL" => Self::DclsDl,
+            "DDLX/EX" => Self::DdlxEx,
             "FUGR/F" => Self::FugrF,
+            "FUGR/FF" => Self::FugrFf,
             "PROG/P" => Self::ProgP,
             "ENHO/XHH" => Self::EnhoXhh,
+            "ENHO/XHB" => Self::EnhoXhb,
             "ENHS/XSB" => Self::EnhsXsb,
             "ENHS/XSD" => Self::EnhsXsd,
             "ENHS/XB" => Self::EnhsXb,
@@ -84,6 +94,7 @@ impl AdtObjectType {
             Self::TablDt => "TABL/DT",
             Self::TablDs => "TABL/DS",
             Self::TtypTt => "TTYP/TT",
+            Self::TtypDa => "TTYP/DA",
             Self::ViewDv => "VIEW/DV",
             Self::DtelDe => "DTEL/DE",
             Self::DomaDd => "DOMA/DD",
@@ -92,9 +103,13 @@ impl AdtObjectType {
             Self::SrvdSrv => "SRVD/SRV",
             Self::SrvbSvb => "SRVB/SVB",
             Self::MsagN => "MSAG/N",
+            Self::DclsDl => "DCLS/DL",
+            Self::DdlxEx => "DDLX/EX",
             Self::FugrF => "FUGR/F",
+            Self::FugrFf => "FUGR/FF",
             Self::ProgP => "PROG/P",
             Self::EnhoXhh => "ENHO/XHH",
+            Self::EnhoXhb => "ENHO/XHB",
             Self::EnhsXsb => "ENHS/XSB",
             Self::EnhsXsd => "ENHS/XSD",
             Self::EnhsXb => "ENHS/XB",
@@ -109,7 +124,7 @@ impl AdtObjectType {
             Self::IntfOi => RepositoryKind::Intf,
             Self::TablDt => RepositoryKind::Tabl,
             Self::TablDs => RepositoryKind::Stru,
-            Self::TtypTt => RepositoryKind::Ttyp,
+            Self::TtypTt | Self::TtypDa => RepositoryKind::Ttyp,
             Self::ViewDv => RepositoryKind::View,
             Self::DtelDe => RepositoryKind::Dtel,
             Self::DomaDd => RepositoryKind::Doma,
@@ -118,9 +133,11 @@ impl AdtObjectType {
             Self::SrvdSrv => RepositoryKind::Srvd,
             Self::SrvbSvb => RepositoryKind::Srvb,
             Self::MsagN => RepositoryKind::Msag,
-            Self::FugrF => RepositoryKind::Fugr,
+            Self::DclsDl => RepositoryKind::Dcls,
+            Self::DdlxEx => RepositoryKind::Ddlx,
+            Self::FugrF | Self::FugrFf => RepositoryKind::Fugr,
             Self::ProgP => RepositoryKind::Prog,
-            Self::EnhoXhh => RepositoryKind::Enho,
+            Self::EnhoXhh | Self::EnhoXhb => RepositoryKind::Enho,
             Self::EnhsXsb | Self::EnhsXsd | Self::EnhsXb => RepositoryKind::Enhs,
             Self::Unknown(_) => RepositoryKind::Other,
         }
@@ -138,6 +155,8 @@ pub enum RepositoryKind {
     Dtel,
     Doma,
     Ddls,
+    Dcls,
+    Ddlx,
     Bdef,
     Srvd,
     Srvb,
@@ -166,6 +185,8 @@ impl RepositoryKind {
             "DTEL" => Ok(Self::Dtel),
             "DOMA" => Ok(Self::Doma),
             "DDLS" => Ok(Self::Ddls),
+            "DCLS" => Ok(Self::Dcls),
+            "DDLX" => Ok(Self::Ddlx),
             "BDEF" => Ok(Self::Bdef),
             "SRVD" => Ok(Self::Srvd),
             "SRVB" => Ok(Self::Srvb),
@@ -191,6 +212,8 @@ impl RepositoryKind {
             Self::Dtel => "DTEL",
             Self::Doma => "DOMA",
             Self::Ddls => "DDLS",
+            Self::Dcls => "DCLS",
+            Self::Ddlx => "DDLX",
             Self::Bdef => "BDEF",
             Self::Srvd => "SRVD",
             Self::Srvb => "SRVB",
@@ -204,7 +227,7 @@ impl RepositoryKind {
     }
 
     /// Every known kind, in the same order as [`Self::as_str`].
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 20] = [
         Self::Clas,
         Self::Intf,
         Self::Tabl,
@@ -214,6 +237,8 @@ impl RepositoryKind {
         Self::Dtel,
         Self::Doma,
         Self::Ddls,
+        Self::Dcls,
+        Self::Ddlx,
         Self::Bdef,
         Self::Srvd,
         Self::Srvb,
@@ -238,6 +263,10 @@ impl RepositoryKind {
             Self::Dtel => "Data element — a DDIC field type carrying semantic meaning and labels",
             Self::Doma => "Domain — a DDIC value range and technical type for data elements",
             Self::Ddls => "CDS view — a Core Data Services view definition (DDL source)",
+            Self::Dcls => "Access control — a CDS DCL source restricting who may read a view",
+            Self::Ddlx => {
+                "Metadata extension — UI and semantic annotations layered onto a CDS view"
+            }
             Self::Bdef => {
                 "Behavior definition — a RAP (RESTful ABAP Programming) behavior definition"
             }
@@ -278,11 +307,59 @@ mod tests {
     #[test]
     fn parses_known_and_unknown_object_types() {
         assert_eq!(AdtObjectType::parse("CLAS/OC").as_str(), "CLAS/OC");
-        assert_eq!(AdtObjectType::parse("TTYP/DA").as_str(), "TTYP/DA");
+        // A code no system has been seen to send still round-trips as itself.
+        assert_eq!(AdtObjectType::parse("ZZZZ/QQ").as_str(), "ZZZZ/QQ");
         assert_eq!(
-            AdtObjectType::parse("TTYP/DA").kind(),
+            AdtObjectType::parse("ZZZZ/QQ").kind(),
             RepositoryKind::Other
         );
+    }
+
+    /// Codes taken from a live system, each of which used to fall through to
+    /// `Other`.
+    ///
+    /// The symptom was silent: `object search --kind TTYP` answered
+    /// successfully with an empty list, which is indistinguishable from a
+    /// system that genuinely has no table types. An earlier test asserted
+    /// `TTYP/DA` *was* unknown, pinning a guessed code (`TTYP/TT`) as the only
+    /// real one.
+    #[test]
+    fn maps_the_subtype_codes_a_live_system_actually_sends() {
+        for (code, expected) in [
+            ("TTYP/DA", RepositoryKind::Ttyp),
+            ("FUGR/FF", RepositoryKind::Fugr),
+            ("ENHO/XHB", RepositoryKind::Enho),
+            ("DCLS/DL", RepositoryKind::Dcls),
+            ("DDLX/EX", RepositoryKind::Ddlx),
+        ] {
+            assert_eq!(
+                AdtObjectType::parse(code).kind(),
+                expected,
+                "{code} is sent by a live system and must not classify as Other"
+            );
+            assert_eq!(AdtObjectType::parse(code).as_str(), code);
+        }
+    }
+
+    #[test]
+    fn keeps_the_variant_codes_that_were_already_correct() {
+        // Both function-group codes occur: replacing rather than adding would
+        // have broken the one that already worked.
+        assert_eq!(AdtObjectType::parse("FUGR/F").kind(), RepositoryKind::Fugr);
+        assert_eq!(AdtObjectType::parse("TTYP/TT").kind(), RepositoryKind::Ttyp);
+        assert_eq!(
+            AdtObjectType::parse("ENHO/XHH").kind(),
+            RepositoryKind::Enho
+        );
+    }
+
+    #[test]
+    fn the_new_kinds_are_selectable_by_name() {
+        assert_eq!(RepositoryKind::parse("DCLS").unwrap(), RepositoryKind::Dcls);
+        assert_eq!(RepositoryKind::parse("DDLX").unwrap(), RepositoryKind::Ddlx);
+        // Listed too, or `object kinds` would not mention them.
+        assert!(RepositoryKind::ALL.contains(&RepositoryKind::Dcls));
+        assert!(RepositoryKind::ALL.contains(&RepositoryKind::Ddlx));
     }
 
     #[test]
