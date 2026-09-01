@@ -4,6 +4,14 @@ version = "0.1.0"
 edition = "2024"
 description = "A CLI for exploring and editing SAP S/4HANA development systems"
 license = "MIT"
+authors = ["Tristan Russell <tristan.russell@iss-i.ca>"]
+repository = "https://github.com/tristanrussell2000/fractal-cli"
+
+[package.metadata.wix]
+upgrade-guid = "C542D074-61DD-43FB-A1B9-B0C297DCBADF"
+path-guid = "3ACAF9F9-AA1C-4647-B8DB-25445FBF5E2F"
+license = false
+eula = false
 
 [dependencies]
 clap = { version = "4.5", features = ["derive", "env"] }
@@ -25,3 +33,12 @@ sha2 = "0.10"
 [dev-dependencies]
 keyring-core = "1"
 wiremock = "0.6.5"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
