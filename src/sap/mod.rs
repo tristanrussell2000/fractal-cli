@@ -19,6 +19,7 @@ pub mod source_discard;
 pub mod source_patch;
 pub mod source_replace;
 pub mod table;
+pub mod transport;
 
 /// Trims an XML attribute value and turns blank into `None`. Shared by every
 /// `sap` submodule's parser — SAP consistently uses empty-but-present
@@ -38,6 +39,18 @@ pub(crate) fn find_attribute_value<'a>(
     node.attributes()
         .find(|attribute| attribute.name() == name)
         .map(|attribute| attribute.value())
+}
+
+/// Returns an attribute by local name, treating blank as absent.
+///
+/// The pairing of [`find_attribute_value`] and [`non_empty_attribute`] that
+/// most SAP parsing wants: namespace-independent lookup, and SAP's habit of
+/// sending `attr=""` instead of omitting the attribute.
+pub(crate) fn find_non_empty_attribute(
+    node: roxmltree::Node<'_, '_>,
+    name: &str,
+) -> Option<String> {
+    non_empty_attribute(find_attribute_value(node, name))
 }
 
 /// Finds the first child element with the given local (namespace-stripped)

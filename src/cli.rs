@@ -50,6 +50,11 @@ pub enum Command {
     },
     /// Run a complete `OpenSQL` SELECT statement.
     Query(QueryArgs),
+    /// Inspect and manage change requests in the transport system.
+    Transport {
+        #[command(subcommand)]
+        command: TransportCommand,
+    },
     /// Read and safely edit supported source-based repository objects.
     Edit {
         #[command(subcommand)]
@@ -138,6 +143,22 @@ pub enum TableCommand {
     Data(TableDataArgs),
     /// Show fields, keys, declared types, and DDIC column metadata for one table.
     Metadata(TableMetadataArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TransportCommand {
+    /// List change requests owned by a user.
+    List(TransportListArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct TransportListArgs {
+    /// Owner to list requests for. Defaults to the profile's user.
+    #[arg(long)]
+    pub(crate) user: Option<String>,
+    /// List released requests instead of modifiable ones.
+    #[arg(long, default_value_t = false)]
+    pub(crate) released: bool,
 }
 
 #[derive(Debug, Subcommand)]

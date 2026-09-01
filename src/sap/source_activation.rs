@@ -12,7 +12,7 @@ use super::{
         AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
         read_adt_source_for_edit, validate_adt_edit_target,
     },
-    find_attribute_value,
+    find_attribute_value, find_non_empty_attribute,
     source_check::{
         AdtInactiveSourceProbeError, AdtSourceCheckError, AdtSourceCheckMessage,
         AdtSourceCheckResult, check_adt_source_by_identity, probe_inactive_adt_source,
@@ -501,10 +501,7 @@ fn parse_activation_message(node: roxmltree::Node<'_, '_>) -> Option<AdtSourceAc
         severity,
         text: text.to_owned(),
         line: find_attribute_value(node, "line").and_then(|line| line.parse().ok()),
-        object_description: find_attribute_value(node, "objDescr")
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned),
+        object_description: find_non_empty_attribute(node, "objDescr"),
     })
 }
 
