@@ -78,7 +78,14 @@ fn render_edit_source_readable(result: &EditSourceReadOutput) -> String {
     );
     let _ = writeln!(output, "requested version: {}", result.requested_version);
     let _ = writeln!(output, "object uri: {}", result.object.object_uri);
-    let _ = writeln!(output, "source uri: {}", result.object.source_uri);
+    // `edit read` only ever handles source-based objects, so this is always
+    // present here; the field is optional for the sake of the ones that have
+    // no source at all.
+    let _ = writeln!(
+        output,
+        "source uri: {}",
+        result.object.source_uri.as_deref().unwrap_or_default()
+    );
     let _ = writeln!(output, "bytes: {}", result.bytes);
     let _ = writeln!(output, "sha256: {}", result.sha256);
     output.push_str("\nsource:\n");

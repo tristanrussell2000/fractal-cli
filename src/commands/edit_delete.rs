@@ -149,7 +149,9 @@ mod tests {
 
     use super::*;
     use crate::cli::{Cli, Command, EditCommand};
-    use fractal::sap::editable_source::EditableAdtSourceIdentity;
+    use fractal::sap::{
+        editable_source::EditableAdtSourceIdentity, object_deletion::DeletableAdtObject,
+    };
 
     fn delete_args(cli: Cli) -> EditObjectDeleteArgs {
         let Command::Edit {
@@ -161,13 +163,14 @@ mod tests {
         args
     }
 
-    fn identity() -> EditableAdtSourceIdentity {
+    fn identity() -> DeletableAdtObject {
         EditableAdtSourceIdentity {
             object_type: EditableAdtObjectType::Program,
             name: "ZSAMPLE".to_owned(),
             object_uri: "/sap/bc/adt/programs/programs/zsample".to_owned(),
             source_uri: "/sap/bc/adt/programs/programs/zsample/source/main".to_owned(),
         }
+        .into()
     }
 
     #[test]

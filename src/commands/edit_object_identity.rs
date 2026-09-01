@@ -1,18 +1,25 @@
 use serde::Serialize;
 
-use fractal::sap::editable_source::EditableAdtSourceIdentity;
+use fractal::sap::{
+    editable_source::EditableAdtSourceIdentity, object_deletion::DeletableAdtObject,
+};
 
 /// The object identity every `edit` command reports.
 ///
 /// Each command output holds this with `#[serde(flatten)]`, so the emitted JSON
 /// keeps the same top-level `object_type`, `name`, `object_uri`, and
 /// `source_uri` fields callers have always received.
+///
+/// `source_uri` is optional only because not every deletable object has one —
+/// a data element has no source. For every source-based object it is always
+/// present, so the emitted JSON is unchanged.
 #[derive(Debug, Serialize)]
 pub struct EditObjectIdentityOutput {
     pub object_type: String,
     pub name: String,
     pub object_uri: String,
-    pub source_uri: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_uri: Option<String>,
 }
 
 impl From<EditableAdtSourceIdentity> for EditObjectIdentityOutput {
@@ -21,7 +28,18 @@ impl From<EditableAdtSourceIdentity> for EditObjectIdentityOutput {
             object_type: identity.object_type.as_str().to_owned(),
             name: identity.name,
             object_uri: identity.object_uri,
-            source_uri: identity.source_uri,
+            source_uri: Some(identity.source_uri),
+        }
+    }
+}
+
+impl From<DeletableAdtObject> for EditObjectIdentityOutput {
+    fn from(object: DeletableAdtObject) -> Self {
+        Self {
+            object_type: object.object_type,
+            name: object.name,
+            object_uri: object.object_uri,
+            source_uri: object.source_uri,
         }
     }
 }
