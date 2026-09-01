@@ -42,6 +42,12 @@ pub fn object_search(object_type: &str, name: &str) -> String {
     format!("fractal object search {name} --kind {object_type}")
 }
 
+/// Lists the caller's own modifiable change requests.
+#[must_use]
+pub fn transport_list() -> String {
+    "fractal transport list".to_owned()
+}
+
 /// Lists every repository kind the CLI accepts.
 #[must_use]
 pub fn object_kinds() -> String {

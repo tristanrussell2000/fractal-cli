@@ -11,7 +11,7 @@ use fractal::{
     reportable_error::ReportableError,
     sap::{
         client::SapClient,
-        transport::{TransportError, TransportStatusFilter, list_transport_requests},
+        transport::{TransportListError, TransportStatusFilter, list_transport_requests},
     },
 };
 use wiremock::{
@@ -36,13 +36,13 @@ fn organizer_tree() -> &'static str {
     r#"<?xml version="1.0" encoding="utf-8"?>
 <tm:root xmlns:tm="http://www.sap.com/cts/adt/tm" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="DEVELOPER">
   <tm:workbench tm:category="Workbench">
-    <tm:target tm:name="XE1" tm:desc="Virtual System">
+    <tm:target tm:name="QA1" tm:desc="Virtual System">
       <tm:modifiable tm:status="Modifiable">
-        <tm:request tm:number="DE3K900001" tm:owner="DEVELOPER" tm:desc="First request" tm:type="K" tm:status="D" tm:target="XE1">
-          <tm:task tm:number="DE3K900002" tm:parent="DE3K900001" tm:owner="DEVELOPER" tm:desc="First task" tm:status="D"/>
+        <tm:request tm:number="AB1K900001" tm:owner="DEVELOPER" tm:desc="First request" tm:type="K" tm:status="D" tm:target="">
+          <tm:task tm:number="AB1K900002" tm:parent="AB1K900001" tm:owner="DEVELOPER" tm:desc="First task" tm:status="D"/>
         </tm:request>
-        <tm:request tm:number="DE3K900003" tm:owner="DEVELOPER" tm:desc="Second request" tm:type="K" tm:status="D" tm:target="XE1">
-          <tm:task tm:number="DE3K900004" tm:parent="DE3K900003" tm:owner="DEVELOPER" tm:desc="Second task" tm:status="D"/>
+        <tm:request tm:number="AB1K900003" tm:owner="DEVELOPER" tm:desc="Second request" tm:type="K" tm:status="D" tm:target="">
+          <tm:task tm:number="AB1K900004" tm:parent="AB1K900003" tm:owner="DEVELOPER" tm:desc="Second task" tm:status="D"/>
         </tm:request>
       </tm:modifiable>
     </tm:target>
@@ -83,16 +83,19 @@ async fn requests_the_organizer_tree_and_reads_requests_with_their_tasks() {
         .unwrap();
 
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].number, "DE3K900001");
+    assert_eq!(requests[0].number, "AB1K900001");
     assert_eq!(requests[0].description.as_deref(), Some("First request"));
-    assert_eq!(requests[0].target.as_deref(), Some("XE1"));
+    // SAP sends tm:target="" on the request and names the target only on the
+    // group it sits under, so reading the request's own attribute reports every
+    // request as local.
+    assert_eq!(requests[0].target.as_deref(), Some("QA1"));
 
     // Tasks must attach to their own request. Reading them as descendants of
     // the whole tree would give both requests both tasks.
     assert_eq!(requests[0].tasks.len(), 1);
-    assert_eq!(requests[0].tasks[0].number, "DE3K900002");
+    assert_eq!(requests[0].tasks[0].number, "AB1K900002");
     assert_eq!(requests[1].tasks.len(), 1);
-    assert_eq!(requests[1].tasks[0].number, "DE3K900004");
+    assert_eq!(requests[1].tasks[0].number, "AB1K900004");
     server.verify().await;
 }
 
@@ -154,7 +157,7 @@ async fn a_refused_media_type_surfaces_saps_own_message() {
         .await
         .unwrap_err();
 
-    assert!(matches!(error, TransportError::Request(_)));
+    assert!(matches!(error, TransportListError::Request(_)));
     assert_eq!(error.code(), "transport_request_failed");
     assert_eq!(error.status(), Some(406));
     assert!(error.message().contains("transportorganizertree"));

@@ -149,6 +149,19 @@ pub enum TableCommand {
 pub enum TransportCommand {
     /// List change requests owned by a user.
     List(TransportListArgs),
+    /// Create a workbench change request.
+    Create(TransportCreateArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct TransportCreateArgs {
+    /// Short description SAP stores as the request text.
+    #[arg(long)]
+    pub(crate) description: String,
+    /// Package whose transport layer decides the target system. Required:
+    /// SAP refuses to create a request without one.
+    #[arg(long)]
+    pub(crate) package: String,
 }
 
 #[derive(Debug, Args)]
@@ -259,7 +272,7 @@ pub struct EditSourceActivateArgs {
     /// ABAP repository object name.
     #[arg(long)]
     pub(crate) name: String,
-    /// Parent CTS change request to attach before activation, for example DE3K900575.
+    /// Parent CTS change request to attach before activation, for example AB1K900575.
     #[arg(long)]
     pub(crate) transport: Option<String>,
 }
@@ -294,7 +307,7 @@ pub struct EditSourcePatchArgs {
     /// Only patch source matching this SHA-256 from a previous read or preview.
     #[arg(long)]
     pub(crate) expected_sha256: Option<String>,
-    /// Parent CTS change request to associate with the write, for example DE3K900575.
+    /// Parent CTS change request to associate with the write, for example AB1K900575.
     #[arg(long)]
     pub(crate) transport: Option<String>,
     /// Validate and preview the change without locking or writing the object.
@@ -316,7 +329,7 @@ pub struct EditSourceSetArgs {
     /// Only replace source matching this SHA-256 from a previous read or preview.
     #[arg(long)]
     pub(crate) expected_sha256: Option<String>,
-    /// Parent CTS change request to associate with the write, for example DE3K900575.
+    /// Parent CTS change request to associate with the write, for example AB1K900575.
     #[arg(long)]
     pub(crate) transport: Option<String>,
     /// Validate and preview the complete replacement without locking or writing.

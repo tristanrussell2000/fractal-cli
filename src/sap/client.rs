@@ -350,6 +350,28 @@ impl SapClient {
         body: Option<&str>,
         headers: HeaderMap,
     ) -> Result<String, SapClientError> {
+        let (body, _) = self
+            .post_text_with_location(path, query, body, headers)
+            .await?;
+        Ok(body)
+    }
+
+    /// Sends a text POST and also reports the `Location` of what it created.
+    ///
+    /// Some ADT creations answer with an empty body and name the new object
+    /// only in this header, so a caller that reads the body alone cannot tell
+    /// what it just made.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SapClientError`] when the CSRF handshake, request, or response fails.
+    pub async fn post_text_with_location(
+        &mut self,
+        path: &str,
+        query: &[(&str, &str)],
+        body: Option<&str>,
+        headers: HeaderMap,
+    ) -> Result<(String, Option<String>), SapClientError> {
         self.ensure_csrf().await?;
         let url = self.request_url(path, query)?;
         let mut request = self
@@ -372,13 +394,19 @@ impl SapClient {
             return Err(http_error(url, response).await);
         }
         self.capture_csrf_token(&response);
-        response
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let body = response
             .text()
             .await
             .map_err(|error| SapClientError::Network {
                 url: self.base_url.to_string(),
                 message: format!("could not read SAP response body: {error}"),
-            })
+            })?;
+        Ok((body, location))
     }
 
     /// Ensures that a CSRF token and session are available for read-only POSTs.
