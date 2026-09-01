@@ -62,6 +62,14 @@ pub enum AdtObjectCreationError {
         #[source]
         source: SapClientError,
     },
+    /// The name is taken. Separated from a general failure because retrying
+    /// cannot help and the remedy is a different command.
+    #[error("{} {} already exists", identity.object_type.as_str(), identity.name)]
+    AlreadyExists {
+        identity: Box<EditableAdtSourceIdentity>,
+        #[source]
+        source: SapClientError,
+    },
     #[error(
         "SAP accepted the creation request, but the new object could not be read back: {source}"
     )]
@@ -79,13 +87,16 @@ impl ReportableError for AdtObjectCreationError {
             Self::InvalidPackage(_) => "invalid_package_name",
             Self::BlankDescription => "blank_object_description",
             Self::CreateRequest { .. } => "edit_create_request_failed",
+            Self::AlreadyExists { .. } => "edit_create_object_exists",
             Self::Verification { .. } => "edit_create_verification_failed",
         }
     }
 
     fn status(&self) -> Option<u16> {
         sap_http_status(match self {
-            Self::CreateRequest { source, .. } | Self::Verification { source, .. } => Some(source),
+            Self::CreateRequest { source, .. }
+            | Self::AlreadyExists { source, .. }
+            | Self::Verification { source, .. } => Some(source),
             _ => None,
         })
     }
@@ -105,6 +116,12 @@ impl ReportableError for AdtObjectCreationError {
                 "The object was not created. If it already exists, use `fractal edit set` instead. {}",
                 source.hint().unwrap_or_default()
             ),
+            // Deliberately no "retry" advice: the name is taken, and it will
+            // still be taken next time.
+            Self::AlreadyExists { .. } => {
+                "The name is already in use, so creating it again cannot succeed. Use `fractal edit set` to change the existing object, or `fractal edit delete` to remove it first."
+                    .to_owned()
+            }
             Self::Verification { identity, .. } => format!(
                 "SAP reported success but the object could not be read back; inspect it before retrying, because a second create would fail if the first one landed. Run `{}`.",
                 suggested_command::object_xml(&identity.object_uri)
@@ -119,12 +136,42 @@ impl ReportableError for AdtObjectCreationError {
                 identity.object_type.as_str(),
                 &identity.name,
             )),
+            // It definitely exists, so point at the object itself rather than
+            // at a search for it.
+            Self::AlreadyExists { identity, .. } => Some(suggested_command::edit_read(
+                identity.object_type.as_str(),
+                &identity.name,
+                "active",
+            )),
             Self::Verification { identity, .. } => {
                 Some(suggested_command::object_xml(&identity.object_uri))
             }
             _ => None,
         }
     }
+}
+
+/// Whether SAP's refusal says the name is already taken.
+///
+/// There is no machine-readable marker for this, so the message is matched.
+/// Neither the status nor any single phrase is usable — each object family's
+/// handler answers differently. Observed on a live system:
+///
+/// | type | status | message |
+/// |---|---|---|
+/// | program | 500 | `A program or include already exists with the name X` |
+/// | class | 400 | `Resource CLASS X does already exist.` |
+/// | data definition | 400 | `Resource Data Definition X does already exist.` |
+///
+/// "already exist" is the substring common to all three, which also covers
+/// both "already exists" and "does already exist". Matching more narrowly
+/// would classify only the family it was written against.
+fn reports_an_existing_object(error: &SapClientError) -> bool {
+    matches!(
+        error,
+        SapClientError::Http { message, .. }
+            if message.to_ascii_lowercase().contains("already exist")
+    )
 }
 
 /// Creates an empty editable object and confirms that it exists.
@@ -173,9 +220,13 @@ pub async fn create_adt_object(
         headers,
     )
     .await
-    .map_err(|source| AdtObjectCreationError::CreateRequest {
-        identity: Box::new(identity.clone()),
-        source,
+    .map_err(|source| {
+        let identity = Box::new(identity.clone());
+        if reports_an_existing_object(&source) {
+            AdtObjectCreationError::AlreadyExists { identity, source }
+        } else {
+            AdtObjectCreationError::CreateRequest { identity, source }
+        }
     })?;
 
     // HTTP success is not proof. Read the object's metadata back before
@@ -302,6 +353,50 @@ mod tests {
         assert!(body.contains("adtcore:type=\"PROG/P\""));
         assert!(body.contains("adtcore:description=\"Sample report\""));
         assert!(body.contains("<adtcore:packageRef adtcore:name=\"ZPKG\"/>"));
+    }
+
+    fn http_failure(status: u16, message: &str) -> SapClientError {
+        SapClientError::Http {
+            kind: crate::sap::client::SapHttpErrorKind::Other,
+            status: reqwest::StatusCode::from_u16(status).unwrap(),
+            url: "https://example.test/sap/bc/adt/programs/programs".to_owned(),
+            message: message.to_owned(),
+        }
+    }
+
+    #[test]
+    fn recognises_every_wording_a_live_system_uses_for_a_taken_name() {
+        assert!(reports_an_existing_object(&http_failure(
+            500,
+            "A program or include already exists with the name ZSAMPLE"
+        )));
+        assert!(reports_an_existing_object(&http_failure(
+            400,
+            "Resource CLASS ZCL_SAMPLE does already exist."
+        )));
+        assert!(reports_an_existing_object(&http_failure(
+            400,
+            "Resource Data Definition ZSAMPLE_V does already exist."
+        )));
+    }
+
+    #[test]
+    fn does_not_claim_an_unrelated_refusal_means_the_name_is_taken() {
+        // Misclassifying here tells the caller to stop and edit an object that
+        // may not exist, and suppresses the retry advice that would have
+        // helped.
+        assert!(!reports_an_existing_object(&http_failure(
+            403,
+            "Not authorized to create objects in package ZPKG"
+        )));
+        assert!(!reports_an_existing_object(&http_failure(
+            422,
+            "Select a shorter name"
+        )));
+        assert!(!reports_an_existing_object(&SapClientError::Network {
+            url: "https://example.test".to_owned(),
+            message: "connection refused".to_owned(),
+        }));
     }
 
     #[test]

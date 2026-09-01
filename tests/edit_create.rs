@@ -184,6 +184,60 @@ async fn creation_never_writes_source_or_activates() {
     );
 }
 
+/// The refusals a live system sends when the name is taken.
+///
+/// Each object family's handler answers differently, and the status is not a
+/// signal: a program is a 500 while a class and a data definition are 400s.
+/// Both wordings are pinned so that classifying on either one alone shows up
+/// as a failure here.
+#[tokio::test]
+async fn an_existing_name_is_classified_rather_than_reported_as_a_generic_failure() {
+    for (status, message) in [
+        (
+            500,
+            "A program or include already exists with the name ZSAMPLE",
+        ),
+        (400, "Resource CLASS ZSAMPLE does already exist."),
+        (400, "Resource Data Definition ZSAMPLE does already exist."),
+    ] {
+        let server = MockServer::start().await;
+        mount_csrf_session(&server).await;
+        Mock::given(method("POST"))
+            .and(path(COLLECTION_PATH))
+            .respond_with(
+                ResponseTemplate::new(status)
+                    .set_body_string(format!("<error><message>{message}</message></error>")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+        let error = create_adt_object(&mut client, &["Z*".to_owned()], &creation_request(None))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, AdtObjectCreationError::AlreadyExists { .. }),
+            "{message} was not recognised as an existing object"
+        );
+        assert_eq!(error.code(), "edit_create_object_exists");
+        assert_eq!(error.status(), Some(status));
+        let hint = error.hint().unwrap();
+        // Retrying cannot help, so the hint must not invite it.
+        assert!(!hint.contains("retry"));
+        assert!(hint.contains("fractal edit set"));
+        assert!(hint.contains("fractal edit delete"));
+        // The object is known to exist, so this points at it rather than at a
+        // search for it — and stays read-only.
+        assert_eq!(
+            error.suggested_command().as_deref(),
+            Some("fractal edit read --type PROG --name ZSAMPLE --version active")
+        );
+        server.verify().await;
+    }
+}
+
 #[tokio::test]
 async fn a_rejected_creation_is_reported_without_a_read_back() {
     let server = MockServer::start().await;
