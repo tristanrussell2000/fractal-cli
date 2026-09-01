@@ -74,12 +74,17 @@ pub enum AdtInactiveSourceDiscardError {
         before_sha256: String,
         after_sha256: String,
     },
+    /// The operation failed and its lock could not be released. Wraps the
+    /// cause, so the reported code, status, and message are unchanged.
+    #[error(transparent)]
+    AbandonedLock(Box<Self>),
 }
 
 impl AdtInactiveSourceDiscardError {
     #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapClientError> {
+    pub fn sap_error(&self) -> Option<&SapClientError> {
         match self {
+            Self::AbandonedLock(primary) => primary.sap_error(),
             Self::ActiveSourceRead(error)
             | Self::InactiveSourceRead(error)
             | Self::RestoredSourceRead(error) => error.sap_error(),
@@ -97,6 +102,7 @@ impl AdtInactiveSourceDiscardError {
 impl ReportableError for AdtInactiveSourceDiscardError {
     fn code(&self) -> &'static str {
         match self {
+            Self::AbandonedLock(primary) => primary.code(),
             Self::Validation(error) => error.code(),
             Self::Session(
                 AdtEditSessionError::LockFailed { .. }
@@ -123,6 +129,10 @@ impl ReportableError for AdtInactiveSourceDiscardError {
 
     fn hint(&self) -> Option<String> {
         Some(match self {
+            Self::AbandonedLock(primary) => format!(
+                "{} Releasing its lock also failed, so the object is still locked: clear the lock before retrying, or the next attempt will fail on the lock rather than the original cause.",
+                primary.hint().unwrap_or_default()
+            ),
             Self::ActiveSourceRead(error)
             | Self::InactiveSourceRead(error)
             | Self::RestoredSourceRead(error) => error.hint()?,
@@ -162,6 +172,7 @@ impl ReportableError for AdtInactiveSourceDiscardError {
     /// a mutation, so that instruction stays in prose where a caller decides.
     fn suggested_command(&self) -> Option<String> {
         match self {
+            Self::AbandonedLock(primary) => primary.suggested_command(),
             Self::RestoreVerificationMismatch { identity, .. } => {
                 Some(suggested_command::edit_read(
                     identity.object_type.as_str(),
@@ -229,9 +240,13 @@ pub async fn discard_inactive_adt_source(
 
     let prepared = match preparation {
         Err(primary) => {
-            // Preserve the operation failure while still attempting lock cleanup.
-            let _ = unlock;
-            return Err(primary);
+            // The failure that stopped the discard stays the reported cause,
+            // but a lock that outlived it is state the caller has to act on.
+            return Err(if unlock.is_err() {
+                AdtInactiveSourceDiscardError::AbandonedLock(Box::new(primary))
+            } else {
+                primary
+            });
         }
         Ok(prepared) => {
             unlock.map_err(AdtInactiveSourceDiscardError::Session)?;

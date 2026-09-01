@@ -350,12 +350,20 @@ async fn restore_write_failure_wins_but_unlock_is_still_attempted() {
             .await
             .unwrap_err();
 
+    // Both the write and the unlock failed here. The write failure stays the
+    // reported cause — same code, same message — and the abandoned lock is
+    // carried alongside it rather than being dropped.
     assert!(matches!(
-        error,
-        AdtInactiveSourceDiscardError::Session(AdtEditSessionError::SourceWriteFailed { .. })
+        &error,
+        AdtInactiveSourceDiscardError::AbandonedLock(primary)
+            if matches!(
+                **primary,
+                AdtInactiveSourceDiscardError::Session(AdtEditSessionError::SourceWriteFailed { .. })
+            )
     ));
     assert_eq!(error.code(), "edit_discard_restore_write_failed");
     assert!(error.to_string().contains("Source is busy"));
+    assert!(error.hint().unwrap().contains("still locked"));
     server.verify().await;
 }
 

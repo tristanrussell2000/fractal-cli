@@ -76,10 +76,6 @@ pub enum AdtObjectDeletionError {
     #[error("the ADT delete request failed: {source}")]
     DeleteRequest {
         identity: Box<EditableAdtSourceIdentity>,
-        /// The delete failed *and* the lock could not be released, so the
-        /// object is still locked. The delete failure stays the reported cause,
-        /// but the caller has to clear the lock before anything else will work.
-        still_locked: bool,
         #[source]
         source: SapClientError,
     },
@@ -93,11 +89,16 @@ pub enum AdtObjectDeletionError {
         #[source]
         source: SapClientError,
     },
+    /// The operation failed and its lock could not be released. Wraps the
+    /// cause, so the reported code, status, and message are unchanged.
+    #[error(transparent)]
+    AbandonedLock(Box<Self>),
 }
 
 impl ReportableError for AdtObjectDeletionError {
     fn code(&self) -> &'static str {
         match self {
+            Self::AbandonedLock(primary) => primary.code(),
             Self::Validation(error) => error.code(),
             Self::UsageCheck(_) => "edit_delete_usage_check_failed",
             Self::ObjectInUse { .. } => "edit_delete_object_in_use",
@@ -110,6 +111,7 @@ impl ReportableError for AdtObjectDeletionError {
 
     fn status(&self) -> Option<u16> {
         match self {
+            Self::AbandonedLock(primary) => primary.status(),
             Self::UsageCheck(error) => error.status(),
             Self::Session(error) => error.status(),
             Self::DeleteRequest { source, .. } | Self::Verification { source, .. } => {
@@ -128,22 +130,14 @@ impl ReportableError for AdtObjectDeletionError {
                 summarize(usages)
             ),
             Self::Session(error) => return error.hint(),
-            Self::DeleteRequest {
-                source,
-                still_locked,
-                ..
-            } => {
-                let mut hint = format!(
-                    "The object was not deleted. {}",
-                    source.hint().unwrap_or_default()
-                );
-                if *still_locked {
-                    hint.push_str(
-                        " Releasing its lock also failed, so the object is still locked: clear the lock before retrying, or the next attempt will fail on the lock rather than the original cause.",
-                    );
-                }
-                hint
-            }
+            Self::AbandonedLock(primary) => format!(
+                "{} Releasing its lock also failed, so the object is still locked: clear the lock before retrying, or the next attempt will fail on the lock rather than the original cause.",
+                primary.hint().unwrap_or_default()
+            ),
+            Self::DeleteRequest { source, .. } => format!(
+                "The object was not deleted. {}",
+                source.hint().unwrap_or_default()
+            ),
             Self::NotDeleted { .. } => {
                 "SAP reported success but the object is still readable. Do not retry blindly; inspect it in ADT, because a partial delete may have left it in an inconsistent state."
                     .to_owned()
@@ -157,6 +151,7 @@ impl ReportableError for AdtObjectDeletionError {
 
     fn suggested_command(&self) -> Option<String> {
         match self {
+            Self::AbandonedLock(primary) => primary.suggested_command(),
             // Show the caller exactly what is holding the object.
             Self::ObjectInUse { identity, .. } => Some(format!(
                 "fractal object usages {} --direct-results",
@@ -248,13 +243,17 @@ pub async fn delete_adt_object(
         // delete failure stays the reported cause — a cleanup failure must not
         // mask it — but whether the lock survived is state the caller needs,
         // so it is carried rather than discarded.
-        let still_locked = release_adt_object_lock(sap, &identity.object_uri, &lock)
+        let abandoned_lock = release_adt_object_lock(sap, &identity.object_uri, &lock)
             .await
             .is_err();
-        return Err(AdtObjectDeletionError::DeleteRequest {
+        let failure = AdtObjectDeletionError::DeleteRequest {
             identity: Box::new(identity),
-            still_locked,
             source,
+        };
+        return Err(if abandoned_lock {
+            AdtObjectDeletionError::AbandonedLock(Box::new(failure))
+        } else {
+            failure
         });
     }
 

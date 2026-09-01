@@ -420,10 +420,17 @@ async fn write_failure_wins_even_when_unlock_also_fails() {
     .await
     .unwrap_err();
 
+    // Both the write and the unlock failed. The write failure stays the
+    // reported cause; the abandoned lock is carried, not dropped.
     assert!(matches!(
-        error,
-        AdtSourceReplacementError::Session(AdtEditSessionError::SourceWriteFailed { .. })
+        &error,
+        AdtSourceReplacementError::AbandonedLock(primary)
+            if matches!(
+                **primary,
+                AdtSourceReplacementError::Session(AdtEditSessionError::SourceWriteFailed { .. })
+            )
     ));
+    assert!(error.hint().unwrap().contains("still locked"));
     assert_eq!(error.code(), "edit_source_replacement_write_failed");
     assert!(error.to_string().contains("Complete source rejected"));
     server.verify().await;

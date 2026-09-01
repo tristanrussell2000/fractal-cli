@@ -72,12 +72,18 @@ pub enum AdtSourcePatchError {
         #[source]
         source: AdtSourceReadError,
     },
+    /// The operation failed and its lock could not be released. Wraps the
+    /// cause, so the reported code, status, and message are unchanged; only the
+    /// hint gains the stuck lock, because that changes the caller's next move.
+    #[error(transparent)]
+    AbandonedLock(Box<Self>),
 }
 
 impl AdtSourcePatchError {
     #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapClientError> {
+    pub fn sap_error(&self) -> Option<&SapClientError> {
         match self {
+            Self::AbandonedLock(primary) => primary.sap_error(),
             Self::LockedSourceRead(error)
             | Self::PreviewSourceRead(error)
             | Self::StoredSourceRead { source: error, .. } => error.sap_error(),
@@ -90,6 +96,7 @@ impl AdtSourcePatchError {
 impl ReportableError for AdtSourcePatchError {
     fn code(&self) -> &'static str {
         match self {
+            Self::AbandonedLock(primary) => primary.code(),
             Self::Validation(error) => error.code(),
             Self::Session(error) => error.code(),
             Self::Patch { source, .. } => source.code(),
@@ -100,11 +107,20 @@ impl ReportableError for AdtSourcePatchError {
     }
 
     fn status(&self) -> Option<u16> {
+        if let Self::AbandonedLock(primary) = self {
+            return primary.status();
+        }
         sap_http_status(self.sap_error())
     }
 
     fn hint(&self) -> Option<String> {
         Some(match self {
+            // The cause keeps its own advice; the stuck lock is appended,
+            // because clearing it has to happen before any retry.
+            Self::AbandonedLock(primary) => format!(
+                "{} Releasing its lock also failed, so the object is still locked: clear the lock before retrying, or the next attempt will fail on the lock rather than the original cause.",
+                primary.hint().unwrap_or_default()
+            ),
             Self::Validation(error) => error.hint()?,
             Self::Session(error) => error.hint()?,
             Self::LockedSourceRead(error) | Self::PreviewSourceRead(error) => error.hint()?,
@@ -142,6 +158,7 @@ impl ReportableError for AdtSourcePatchError {
     /// write, which must never appear in a field a caller may execute.
     fn suggested_command(&self) -> Option<String> {
         match self {
+            Self::AbandonedLock(primary) => primary.suggested_command(),
             Self::Patch {
                 identity,
                 source:
@@ -291,6 +308,9 @@ fn map_patch_save_error(
     identity: &EditableAdtSourceIdentity,
 ) -> AdtSourcePatchError {
     match error {
+        InactiveSourceSaveError::AbandonedLock(primary) => {
+            AdtSourcePatchError::AbandonedLock(Box::new(map_patch_save_error(*primary, identity)))
+        }
         InactiveSourceSaveError::Session(error) => AdtSourcePatchError::Session(error),
         InactiveSourceSaveError::LockedSourceRead(error) => {
             AdtSourcePatchError::LockedSourceRead(error)

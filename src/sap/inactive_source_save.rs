@@ -30,6 +30,10 @@ pub(super) enum InactiveSourceSaveError<E> {
     LockedSourceRead(AdtSourceReadError),
     Plan(E),
     StoredSourceRead(AdtSourceReadError),
+    /// The operation failed and its lock could not be released. Wraps the
+    /// failure that actually caused the operation to stop, so the reported
+    /// cause is unchanged; only the advice gains the stuck lock.
+    AbandonedLock(Box<Self>),
 }
 
 /// Saves one planned inactive source through a lock/read/write/unlock/verify cycle.
@@ -54,10 +58,14 @@ where
 
     let (original, change) = match operation {
         Err(primary) => {
-            // Cleanup errors must not replace the planning/read/write failure,
-            // but releasing the lock was still attempted above.
-            let _ = unlock;
-            return Err(primary);
+            // A cleanup failure must not replace the planning/read/write
+            // failure that caused this, but whether the lock survived is state
+            // the caller needs, so it is carried rather than discarded.
+            return Err(if unlock.is_err() {
+                InactiveSourceSaveError::AbandonedLock(Box::new(primary))
+            } else {
+                primary
+            });
         }
         Ok(value) => {
             unlock.map_err(InactiveSourceSaveError::Session)?;

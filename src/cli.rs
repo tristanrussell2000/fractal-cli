@@ -162,7 +162,7 @@ pub enum EditCommand {
 
 #[derive(Debug, Args)]
 pub struct EditObjectCreateArgs {
-    /// Object type to create. Currently PROG or CLAS.
+    /// Object type to create. Currently PROG, CLAS, INTF, or DDLS.
     #[arg(long = "type")]
     pub(crate) object_type: String,
     /// Object name, which must be inside a configured customer namespace.

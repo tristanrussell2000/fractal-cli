@@ -278,10 +278,7 @@ async fn a_failed_delete_releases_the_lock_it_took() {
     assert_eq!(error.status(), Some(403));
     assert!(matches!(
         error,
-        AdtObjectDeletionError::DeleteRequest {
-            still_locked: false,
-            ..
-        }
+        AdtObjectDeletionError::DeleteRequest { .. }
     ));
     // The unlock mock's `expect(1)` is the assertion: the object still exists,
     // so its lock had to be released.
@@ -327,13 +324,7 @@ async fn a_delete_that_fails_and_cannot_unlock_reports_both() {
     assert_eq!(error.code(), "edit_delete_request_failed");
     assert_eq!(error.status(), Some(403));
     assert!(error.message().contains("Not authorized"));
-    assert!(matches!(
-        error,
-        AdtObjectDeletionError::DeleteRequest {
-            still_locked: true,
-            ..
-        }
-    ));
+    assert!(matches!(error, AdtObjectDeletionError::AbandonedLock(_)));
     // ...but the caller is told the object is stuck, because that changes what
     // they have to do next.
     assert!(error.hint().unwrap().contains("still locked"));

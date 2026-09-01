@@ -362,6 +362,8 @@ async fn suggests_the_request_named_by_sap_when_transport_was_omitted() {
         error,
         AdtSourcePatchError::Session(AdtEditSessionError::SourceWriteFailed { .. })
     ));
+    // The unlock succeeded here, so no lock was abandoned.
+    assert!(!error.hint().unwrap().contains("still locked"));
     assert!(error.hint().unwrap().contains("--transport DE3K900575"));
     server.verify().await;
 }
@@ -539,10 +541,17 @@ async fn source_write_error_wins_even_when_cleanup_unlock_also_fails() {
             .await
             .unwrap_err();
 
+    // Both the write and the unlock failed. The write failure stays the
+    // reported cause; the abandoned lock is carried, not dropped.
     assert!(matches!(
-        error,
-        AdtSourcePatchError::Session(AdtEditSessionError::SourceWriteFailed { .. })
+        &error,
+        AdtSourcePatchError::AbandonedLock(primary)
+            if matches!(
+                **primary,
+                AdtSourcePatchError::Session(AdtEditSessionError::SourceWriteFailed { .. })
+            )
     ));
+    assert!(error.hint().unwrap().contains("still locked"));
     assert_eq!(error.code(), "edit_source_write_failed");
     assert!(error.to_string().contains("Source syntax rejected"));
     server.verify().await;

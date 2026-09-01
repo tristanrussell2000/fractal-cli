@@ -97,7 +97,7 @@ impl ReportableError for AdtObjectCreationError {
         Some(match self {
             Self::Validation(error) => return error.hint(),
             Self::UnsupportedObjectType { .. } => {
-                "Creation currently supports PROG and CLAS. Other types must be created in ADT."
+                "Creation currently supports PROG, CLAS, INTF, and DDLS. Other types must be created in ADT."
                     .to_owned()
             }
             Self::InvalidPackage(_) => {
@@ -236,9 +236,27 @@ fn creation_payload(
                 identity.name
             ),
         )),
-        unsupported => Err(AdtObjectCreationError::UnsupportedObjectType {
-            object_type: unsupported.as_str(),
-        }),
+        EditableAdtObjectType::Interface => Ok((
+            "application/vnd.sap.adt.oo.interfaces.v2+xml",
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><intf:abapInterface xmlns:intf=\"http://www.sap.com/adt/oo/interfaces\" xmlns:adtcore=\"http://www.sap.com/adt/core\" adtcore:description=\"{description}\" adtcore:name=\"{}\" adtcore:type=\"INTF/OI\"><adtcore:packageRef adtcore:name=\"{package}\"/></intf:abapInterface>",
+                identity.name
+            ),
+        )),
+        EditableAdtObjectType::DdlSource => Ok((
+            "application/vnd.sap.adt.ddlSource+xml",
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ddl:ddlSource xmlns:ddl=\"http://www.sap.com/adt/ddic/ddlsources\" xmlns:adtcore=\"http://www.sap.com/adt/core\" adtcore:description=\"{description}\" adtcore:name=\"{}\" adtcore:type=\"DDLS/DF\"><adtcore:packageRef adtcore:name=\"{package}\"/></ddl:ddlSource>",
+                identity.name
+            ),
+        )),
+        // Named rather than wildcarded so that adding an editable type forces a
+        // decision here instead of silently landing in "unsupported".
+        unsupported @ EditableAdtObjectType::Table => {
+            Err(AdtObjectCreationError::UnsupportedObjectType {
+                object_type: unsupported.as_str(),
+            })
+        }
     }
 }
 
@@ -310,6 +328,35 @@ mod tests {
         assert!(body.contains("adtcore:type=\"CLAS/OC\""));
         assert!(body.contains("class:visibility=\"public\""));
         assert!(body.contains("<adtcore:packageRef adtcore:name=\"ZPKG\"/>"));
+    }
+
+    #[test]
+    fn builds_the_interface_creation_payload() {
+        let (media_type, body) = creation_payload(
+            &identity(EditableAdtObjectType::Interface, "zif_sample"),
+            "ZPKG",
+            "Sample interface",
+        )
+        .unwrap();
+
+        assert_eq!(media_type, "application/vnd.sap.adt.oo.interfaces.v2+xml");
+        assert!(body.contains("adtcore:name=\"ZIF_SAMPLE\""));
+        assert!(body.contains("adtcore:type=\"INTF/OI\""));
+        assert!(body.contains("<adtcore:packageRef adtcore:name=\"ZPKG\"/>"));
+    }
+
+    #[test]
+    fn builds_the_ddl_source_creation_payload() {
+        let (media_type, body) = creation_payload(
+            &identity(EditableAdtObjectType::DdlSource, "zddl_sample"),
+            "ZPKG",
+            "Sample CDS view",
+        )
+        .unwrap();
+
+        assert_eq!(media_type, "application/vnd.sap.adt.ddlSource+xml");
+        assert!(body.contains("adtcore:name=\"ZDDL_SAMPLE\""));
+        assert!(body.contains("adtcore:type=\"DDLS/DF\""));
     }
 
     #[test]
