@@ -52,8 +52,6 @@ pub struct AdtObjectCreationResult {
 pub enum AdtObjectCreationError {
     #[error(transparent)]
     Validation(#[from] AdtEditTargetValidationError),
-    #[error("creating {object_type} objects is not supported yet")]
-    UnsupportedObjectType { object_type: &'static str },
     #[error("invalid package name '{0}'")]
     InvalidPackage(String),
     #[error("a new object needs a non-blank description")]
@@ -78,7 +76,6 @@ impl ReportableError for AdtObjectCreationError {
     fn code(&self) -> &'static str {
         match self {
             Self::Validation(error) => error.code(),
-            Self::UnsupportedObjectType { .. } => "unsupported_create_object_type",
             Self::InvalidPackage(_) => "invalid_package_name",
             Self::BlankDescription => "blank_object_description",
             Self::CreateRequest { .. } => "edit_create_request_failed",
@@ -96,10 +93,6 @@ impl ReportableError for AdtObjectCreationError {
     fn hint(&self) -> Option<String> {
         Some(match self {
             Self::Validation(error) => return error.hint(),
-            Self::UnsupportedObjectType { .. } => {
-                "Creation currently supports PROG, CLAS, INTF, and DDLS. Other types must be created in ADT."
-                    .to_owned()
-            }
             Self::InvalidPackage(_) => {
                 "Use an existing package name containing letters, digits, underscore, or slash, or $TMP for local objects."
                     .to_owned()
@@ -165,16 +158,9 @@ pub async fn create_adt_object(
         return Err(AdtObjectCreationError::BlankDescription);
     }
 
-    let (media_type, body) = creation_payload(&identity, &package, description)?;
+    let (media_type, body) = creation_payload(&identity, &package, description);
     let mut headers = HeaderMap::new();
-    headers.insert(
-        "Content-Type",
-        HeaderValue::from_str(media_type).map_err(|_| {
-            AdtObjectCreationError::UnsupportedObjectType {
-                object_type: identity.object_type.as_str(),
-            }
-        })?,
-    );
+    headers.insert("Content-Type", HeaderValue::from_static(media_type));
 
     let mut query = Vec::new();
     if let Some(transport) = &transport {
@@ -212,51 +198,56 @@ pub async fn create_adt_object(
 /// The media type and request body SAP expects for this object type.
 ///
 /// Each object family has its own ADT collection, media type, and root
-/// element; there is no generic create endpoint. New types are added here.
+/// element; there is no generic create endpoint. The match is deliberately
+/// exhaustive: a new editable type fails to compile here until someone decides
+/// what its payload is.
 fn creation_payload(
     identity: &EditableAdtSourceIdentity,
     package: &str,
     description: &str,
-) -> Result<(&'static str, String), AdtObjectCreationError> {
+) -> (&'static str, String) {
     let description = xml_escape_attribute(description);
     match identity.object_type {
-        EditableAdtObjectType::Program => Ok((
+        EditableAdtObjectType::Program => (
             "application/vnd.sap.adt.programs.programs.v2+xml",
             format!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?><program:abapProgram xmlns:program=\"http://www.sap.com/adt/programs/programs\" xmlns:adtcore=\"http://www.sap.com/adt/core\" adtcore:description=\"{description}\" adtcore:name=\"{}\" adtcore:type=\"PROG/P\"><adtcore:packageRef adtcore:name=\"{package}\"/></program:abapProgram>",
                 identity.name
             ),
-        )),
+        ),
         // A class shell is created public and final; ADT's own wizard defaults
         // the same way, and `edit set` replaces the whole source afterwards.
-        EditableAdtObjectType::Class => Ok((
+        EditableAdtObjectType::Class => (
             "application/vnd.sap.adt.oo.classes.v2+xml",
             format!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?><class:abapClass xmlns:class=\"http://www.sap.com/adt/oo/classes\" xmlns:adtcore=\"http://www.sap.com/adt/core\" adtcore:description=\"{description}\" adtcore:name=\"{}\" adtcore:type=\"CLAS/OC\" class:final=\"true\" class:visibility=\"public\"><adtcore:packageRef adtcore:name=\"{package}\"/></class:abapClass>",
                 identity.name
             ),
-        )),
-        EditableAdtObjectType::Interface => Ok((
+        ),
+        EditableAdtObjectType::Interface => (
             "application/vnd.sap.adt.oo.interfaces.v2+xml",
             format!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?><intf:abapInterface xmlns:intf=\"http://www.sap.com/adt/oo/interfaces\" xmlns:adtcore=\"http://www.sap.com/adt/core\" adtcore:description=\"{description}\" adtcore:name=\"{}\" adtcore:type=\"INTF/OI\"><adtcore:packageRef adtcore:name=\"{package}\"/></intf:abapInterface>",
                 identity.name
             ),
-        )),
-        EditableAdtObjectType::DdlSource => Ok((
+        ),
+        EditableAdtObjectType::DdlSource => (
             "application/vnd.sap.adt.ddlSource+xml",
             format!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ddl:ddlSource xmlns:ddl=\"http://www.sap.com/adt/ddic/ddlsources\" xmlns:adtcore=\"http://www.sap.com/adt/core\" adtcore:description=\"{description}\" adtcore:name=\"{}\" adtcore:type=\"DDLS/DF\"><adtcore:packageRef adtcore:name=\"{package}\"/></ddl:ddlSource>",
                 identity.name
             ),
-        )),
-        // Named rather than wildcarded so that adding an editable type forces a
-        // decision here instead of silently landing in "unsupported".
-        unsupported @ EditableAdtObjectType::Table => {
-            Err(AdtObjectCreationError::UnsupportedObjectType {
-                object_type: unsupported.as_str(),
-            })
-        }
+        ),
+        // A table is not an `adtcore` object like the others: its root element
+        // is the generic workbench-object wrapper, which is what a live table's
+        // own metadata returns.
+        EditableAdtObjectType::Table => (
+            "application/vnd.sap.adt.tables.v2+xml",
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><blue:blueSource xmlns:blue=\"http://www.sap.com/wbobj/blue\" xmlns:adtcore=\"http://www.sap.com/adt/core\" adtcore:description=\"{description}\" adtcore:name=\"{}\" adtcore:type=\"TABL/DT\"><adtcore:packageRef adtcore:name=\"{package}\"/></blue:blueSource>",
+                identity.name
+            ),
+        ),
     }
 }
 
@@ -301,8 +292,7 @@ mod tests {
             &identity(EditableAdtObjectType::Program, "zsample"),
             "ZPKG",
             "Sample report",
-        )
-        .unwrap();
+        );
 
         assert_eq!(
             media_type,
@@ -320,8 +310,7 @@ mod tests {
             &identity(EditableAdtObjectType::Class, "zcl_sample"),
             "ZPKG",
             "Sample class",
-        )
-        .unwrap();
+        );
 
         assert_eq!(media_type, "application/vnd.sap.adt.oo.classes.v2+xml");
         assert!(body.contains("adtcore:name=\"ZCL_SAMPLE\""));
@@ -336,8 +325,7 @@ mod tests {
             &identity(EditableAdtObjectType::Interface, "zif_sample"),
             "ZPKG",
             "Sample interface",
-        )
-        .unwrap();
+        );
 
         assert_eq!(media_type, "application/vnd.sap.adt.oo.interfaces.v2+xml");
         assert!(body.contains("adtcore:name=\"ZIF_SAMPLE\""));
@@ -351,8 +339,7 @@ mod tests {
             &identity(EditableAdtObjectType::DdlSource, "zddl_sample"),
             "ZPKG",
             "Sample CDS view",
-        )
-        .unwrap();
+        );
 
         assert_eq!(media_type, "application/vnd.sap.adt.ddlSource+xml");
         assert!(body.contains("adtcore:name=\"ZDDL_SAMPLE\""));
@@ -365,23 +352,23 @@ mod tests {
             &identity(EditableAdtObjectType::Program, "zsample"),
             "ZPKG",
             r#"Reads "A" & <B>"#,
-        )
-        .unwrap();
+        );
 
         assert!(body.contains("adtcore:description=\"Reads &quot;A&quot; &amp; &lt;B&gt;\""));
     }
 
     #[test]
-    fn refuses_object_types_without_a_confirmed_payload() {
-        let error = creation_payload(
+    fn builds_the_table_creation_payload() {
+        let (media_type, body) = creation_payload(
             &identity(EditableAdtObjectType::Table, "ztable"),
             "ZPKG",
             "Sample table",
-        )
-        .unwrap_err();
+        );
 
-        assert_eq!(error.code(), "unsupported_create_object_type");
-        assert!(error.hint().unwrap().contains("PROG"));
+        assert_eq!(media_type, "application/vnd.sap.adt.tables.v2+xml");
+        assert!(body.contains("adtcore:name=\"ZTABLE\""));
+        assert!(body.contains("adtcore:type=\"TABL/DT\""));
+        assert!(body.contains("xmlns:blue=\"http://www.sap.com/wbobj/blue\""));
     }
 
     #[test]

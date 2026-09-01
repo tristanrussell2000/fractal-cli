@@ -286,24 +286,3 @@ async fn validates_everything_local_before_any_request() {
         "local validation must not contact SAP"
     );
 }
-
-#[tokio::test]
-async fn refuses_object_types_whose_payload_is_not_implemented() {
-    let server = MockServer::start().await;
-    let request = AdtObjectCreationRequest {
-        object_type: EditableAdtObjectType::Table,
-        name: "ZTABLE".to_owned(),
-        ..creation_request(None)
-    };
-
-    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let error = create_adt_object(&mut client, &["Z*".to_owned()], &request)
-        .await
-        .unwrap_err();
-
-    assert_eq!(error.code(), "unsupported_create_object_type");
-    assert!(
-        server.received_requests().await.unwrap().is_empty(),
-        "an unsupported type must not reach SAP"
-    );
-}
