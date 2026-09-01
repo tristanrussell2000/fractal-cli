@@ -2,6 +2,7 @@ pub mod auth;
 pub mod edit_activate;
 pub mod edit_check;
 pub mod edit_create;
+pub mod edit_delete;
 pub mod edit_discard;
 pub mod edit_object_identity;
 pub mod edit_patch;

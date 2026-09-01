@@ -92,6 +92,13 @@ pub(super) struct AdtObjectLock {
     transport: Option<String>,
 }
 
+impl AdtObjectLock {
+    /// The handle SAP requires on every request made under this lock.
+    pub(super) fn handle(&self) -> &str {
+        &self.handle
+    }
+}
+
 pub(super) async fn acquire_adt_object_lock(
     sap: &mut SapClient,
     object_uri: &str,
@@ -198,7 +205,8 @@ async fn request_adt_object_lock(
     sap.post_text(object_uri, &query, None, headers).await
 }
 
-fn stateful_session_headers() -> HeaderMap {
+/// The header that keeps a request in the same stateful ADT session as its lock.
+pub(super) fn stateful_session_headers() -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(
         STATEFUL_SESSION_HEADER,

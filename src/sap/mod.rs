@@ -6,6 +6,7 @@ pub mod edit_session;
 pub mod editable_source;
 mod inactive_source_save;
 pub mod object_creation;
+pub mod object_deletion;
 pub mod object_info;
 pub mod object_search;
 pub mod object_source;

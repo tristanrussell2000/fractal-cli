@@ -1,10 +1,9 @@
 //! Object creation as a shell: one POST to the collection, then a read-back.
 //!
-//! The exact request body is this suite's central assertion. Creation is the
-//! one workflow whose payload has not yet been confirmed against a live
-//! backend, so these tests document what Fractal currently sends rather than
-//! what SAP is known to accept — if a live create disagrees, fix
-//! `creation_payload` and these expectations together.
+//! The exact request body is this suite's central assertion. Note what that
+//! does and does not prove: these tests pin what Fractal sends, not what SAP
+//! accepts, so a payload for a new object type still needs a real create
+//! before it can be trusted.
 
 use fractal::{
     config::Profile,

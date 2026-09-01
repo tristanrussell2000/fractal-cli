@@ -144,6 +144,8 @@ pub enum TableCommand {
 pub enum EditCommand {
     /// Create an empty object shell. Fill it with `edit set`; does not activate.
     Create(EditObjectCreateArgs),
+    /// Delete an object. Refuses while anything still references it.
+    Delete(EditObjectDeleteArgs),
     /// Read complete source and revision metadata for a future edit.
     Read(EditSourceReadArgs),
     /// Replace one exact fragment and save inactive source. Does not activate.
@@ -175,6 +177,25 @@ pub struct EditObjectCreateArgs {
     /// Parent transport request, required for a transportable package.
     #[arg(long)]
     pub(crate) transport: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct EditObjectDeleteArgs {
+    /// Object type to delete.
+    #[arg(long = "type")]
+    pub(crate) object_type: String,
+    /// Object name, which must be inside a configured customer namespace.
+    #[arg(long)]
+    pub(crate) name: String,
+    /// Parent transport request, required for a transportable object.
+    #[arg(long)]
+    pub(crate) transport: Option<String>,
+    /// Delete even though other objects still reference this one.
+    #[arg(long, default_value_t = false)]
+    pub(crate) force: bool,
+    /// Report what would be deleted, and what references it, without deleting.
+    #[arg(long, default_value_t = false)]
+    pub(crate) dry_run: bool,
 }
 
 #[derive(Debug, Args)]

@@ -12,6 +12,7 @@ use commands::auth::{auth_list, auth_login, auth_remove};
 use commands::edit_activate::{edit_source_activate, print_edit_source_activate};
 use commands::edit_check::{edit_source_check, print_edit_source_check};
 use commands::edit_create::{edit_object_create, print_edit_object_create};
+use commands::edit_delete::{edit_object_delete, print_edit_object_delete};
 use commands::edit_discard::{edit_source_discard, print_edit_source_discard};
 use commands::edit_patch::{edit_source_patch, print_edit_source_patch};
 use commands::edit_read::{edit_source_read, print_edit_source_read};
@@ -109,6 +110,16 @@ async fn main() {
             run_and_print_with_async(
                 || edit_object_create(cli.profile.as_deref(), args),
                 print_edit_object_create,
+                output,
+            )
+            .await
+        }
+        Command::Edit {
+            command: EditCommand::Delete(args),
+        } => {
+            run_and_print_with_async(
+                || edit_object_delete(cli.profile.as_deref(), args),
+                print_edit_object_delete,
                 output,
             )
             .await

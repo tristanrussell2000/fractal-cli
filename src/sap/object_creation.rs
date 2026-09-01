@@ -7,12 +7,11 @@
 //! read-back, and preserves the save-only discipline — creating an object
 //! never activates it.
 //!
-//! **The request payloads here are not yet confirmed against a live backend.**
-//! They follow ADT's documented shape for each object type, and the Wiremock
-//! tests pin them exactly, but until a real create has been observed treat the
-//! body and media type in `creation_payload` as the one place to correct. This
-//! codebase has been bitten before by an unverified assumption baked into
-//! fixtures (see the package `nodestructure` field encoding).
+//! Each object family needs its own payload, media type, and collection, so a
+//! new type is unverified until a real create has been observed for it:
+//! pinning a payload in a test proves what Fractal sends, never what SAP
+//! accepts. This codebase has been bitten by an assumption baked into its own
+//! fixtures before — see the package `nodestructure` field encoding.
 
 use reqwest::header::{HeaderMap, HeaderValue};
 use thiserror::Error;

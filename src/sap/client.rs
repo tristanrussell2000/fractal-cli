@@ -301,6 +301,39 @@ impl SapClient {
             })
     }
 
+    /// Sends a DELETE request using the SAP session and CSRF token.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SapClientError`] when the CSRF handshake, request, or response fails.
+    pub async fn delete(
+        &mut self,
+        path: &str,
+        query: &[(&str, &str)],
+        headers: HeaderMap,
+    ) -> Result<(), SapClientError> {
+        self.ensure_csrf().await?;
+        let url = self.request_url(path, query)?;
+        let request = self
+            .http
+            .delete(url.clone())
+            .headers(headers)
+            .basic_auth(&self.username, Some(&self.password));
+        let response = self
+            .apply_session_headers(request, true)
+            .send()
+            .await
+            .map_err(|error| SapClientError::Network {
+                url: url.to_string(),
+                message: describe_network_error(&error),
+            })?;
+        if !response.status().is_success() {
+            return Err(http_error(url, response).await);
+        }
+        self.capture_csrf_token(&response);
+        Ok(())
+    }
+
     /// Sends a text POST request using the SAP session and CSRF token.
     ///
     /// The CSRF token is fetched through ADT discovery when this client does not
