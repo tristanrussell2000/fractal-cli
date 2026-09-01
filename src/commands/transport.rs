@@ -4,13 +4,14 @@ use serde::Serialize;
 
 use super::connect;
 use crate::{
-    cli::{TransportCreateArgs, TransportListArgs},
+    cli::{TransportCreateArgs, TransportListArgs, TransportShowArgs},
     output::{OutputFormat, print_result},
     reported::Reported,
 };
 use fractal::sap::transport::{
-    CreatedTransportRequest, TransportRequest, TransportStatusFilter, TransportTarget,
-    create_transport_request, list_transport_requests,
+    CreatedTransportRequest, TransportObject, TransportRequest, TransportRequestDetail,
+    TransportStatusFilter, TransportTarget, create_transport_request, list_transport_requests,
+    show_transport_request,
 };
 
 #[derive(Debug, Serialize)]
@@ -174,6 +175,165 @@ fn map_created_request(profile: String, created: CreatedTransportRequest) -> Tra
         warning,
         next_step,
     }
+}
+
+#[derive(Debug, Serialize)]
+pub struct TransportObjectOutput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    program_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    object_type: Option<String>,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workbench_type: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TransportTaskDetailOutput {
+    number: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_type: Option<String>,
+    objects: Vec<TransportObjectOutput>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TransportShowOutput {
+    ok: bool,
+    profile: String,
+    number: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
+    total_objects: usize,
+    objects: Vec<TransportObjectOutput>,
+    tasks: Vec<TransportTaskDetailOutput>,
+    /// Set when SAP answered with a different request than the one asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+}
+
+/// # Errors
+///
+/// Returns [`Reported`] when the profile cannot be opened, the number is blank
+/// or unknown, or SAP's response cannot be read.
+pub async fn transport_show(
+    explicit_profile: Option<&str>,
+    args: &TransportShowArgs,
+) -> Result<TransportShowOutput, Reported> {
+    let (profile_name, _profile, client) = connect(explicit_profile).await?;
+    let detail = show_transport_request(&client, &args.number).await?;
+    Ok(map_request_detail(profile_name, &args.number, detail))
+}
+
+fn map_request_detail(
+    profile: String,
+    requested: &str,
+    detail: TransportRequestDetail,
+) -> TransportShowOutput {
+    // SAP resolves a task number to its parent silently, so the number in the
+    // answer is not always the number that was asked for. Saying so is the
+    // difference between "this is your request" and "this is the request your
+    // task belongs to".
+    let requested = requested.trim().to_uppercase();
+    let note = (requested != detail.number).then(|| {
+        format!(
+            "{requested} is a task; SAP answered with its parent request {}.",
+            detail.number
+        )
+    });
+    TransportShowOutput {
+        ok: true,
+        profile,
+        number: detail.number,
+        description: detail.description,
+        owner: detail.owner,
+        status: detail.status_text.or(detail.status),
+        target: detail.target,
+        total_objects: detail.objects.len(),
+        objects: detail.objects.into_iter().map(map_object).collect(),
+        tasks: detail
+            .tasks
+            .into_iter()
+            .map(|task| TransportTaskDetailOutput {
+                number: task.number,
+                description: task.description,
+                owner: task.owner,
+                status: task.status_text.or(task.status),
+                task_type: task.task_type,
+                objects: task.objects.into_iter().map(map_object).collect(),
+            })
+            .collect(),
+        note,
+    }
+}
+
+fn map_object(object: TransportObject) -> TransportObjectOutput {
+    TransportObjectOutput {
+        program_id: object.program_id,
+        object_type: object.object_type,
+        name: object.name,
+        workbench_type: object.workbench_type,
+    }
+}
+
+pub fn print_transport_show(result: &TransportShowOutput, output: OutputFormat) {
+    if matches!(output, OutputFormat::Json) {
+        print_result(result, output);
+        return;
+    }
+    print!("{}", render_transport_show_readable(result));
+}
+
+fn render_transport_show_readable(result: &TransportShowOutput) -> String {
+    let mut output = String::new();
+    let _ = writeln!(output, "profile: {}", result.profile);
+    if let Some(note) = &result.note {
+        let _ = writeln!(output, "note: {note}");
+    }
+    let _ = writeln!(
+        output,
+        "{} {}",
+        result.number,
+        result.description.as_deref().unwrap_or("(no description)")
+    );
+    let _ = writeln!(
+        output,
+        "owner: {}   status: {}   target: {}",
+        result.owner.as_deref().unwrap_or("(unknown)"),
+        result.status.as_deref().unwrap_or("(unknown)"),
+        // No target means local: it can hold objects but never be released.
+        result.target.as_deref().unwrap_or("(none - local request)")
+    );
+    let _ = writeln!(output, "{} object(s)", result.total_objects);
+    for object in &result.objects {
+        let _ = writeln!(
+            output,
+            "- {} {}",
+            object.object_type.as_deref().unwrap_or("?"),
+            object.name
+        );
+    }
+    for task in &result.tasks {
+        let _ = writeln!(
+            output,
+            "  task {} {} ({} object(s))",
+            task.number,
+            task.description.as_deref().unwrap_or(""),
+            task.objects.len()
+        );
+    }
+    output
 }
 
 pub fn print_transport_list(result: &TransportListOutput, output: OutputFormat) {
@@ -411,5 +571,90 @@ mod tests {
 
         assert_eq!(output.target.as_deref(), Some("QA1"));
         assert!(output.warning.is_none());
+    }
+
+    fn detail(number: &str) -> TransportRequestDetail {
+        TransportRequestDetail {
+            number: number.to_owned(),
+            description: Some("Widen the event log key".to_owned()),
+            owner: Some("DEVELOPER".to_owned()),
+            status: Some("D".to_owned()),
+            status_text: Some("Modifiable".to_owned()),
+            target: Some("QA1".to_owned()),
+            objects: vec![TransportObject {
+                program_id: Some("R3TR".to_owned()),
+                object_type: Some("PROG".to_owned()),
+                name: "ZEXAMPLE_REPORT".to_owned(),
+                workbench_type: Some("PROG/P".to_owned()),
+            }],
+            tasks: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn parses_the_request_number_as_a_positional_argument() {
+        let cli = Cli::try_parse_from(["fractal", "transport", "show", "AB1K900001"]).unwrap();
+        let Command::Transport {
+            command: TransportCommand::Show(args),
+        } = cli.command
+        else {
+            panic!("expected transport show command");
+        };
+
+        assert_eq!(args.number, "AB1K900001");
+    }
+
+    #[test]
+    fn says_so_when_a_task_number_resolved_to_its_parent() {
+        // SAP substitutes the parent silently, so without this the output
+        // simply shows a different number than the one that was asked for.
+        let output =
+            map_request_detail("development".to_owned(), "ab1k900002", detail("AB1K900001"));
+
+        let note = output.note.clone().unwrap();
+        assert!(note.contains("AB1K900002"));
+        assert!(note.contains("is a task"));
+        assert!(note.contains("AB1K900001"));
+    }
+
+    #[test]
+    fn asking_for_the_request_itself_carries_no_note() {
+        let output = map_request_detail(
+            "development".to_owned(),
+            "  ab1k900001 ",
+            detail("AB1K900001"),
+        );
+
+        assert_eq!(output.note, None);
+        assert_eq!(output.total_objects, 1);
+        assert_eq!(output.status.as_deref(), Some("Modifiable"));
+    }
+
+    #[test]
+    fn renders_a_request_with_its_objects() {
+        let readable = render_transport_show_readable(&map_request_detail(
+            "development".to_owned(),
+            "AB1K900001",
+            detail("AB1K900001"),
+        ));
+
+        assert!(readable.contains("AB1K900001 Widen the event log key"));
+        assert!(readable.contains("target: QA1"));
+        assert!(readable.contains("1 object(s)"));
+        assert!(readable.contains("- PROG ZEXAMPLE_REPORT"));
+    }
+
+    #[test]
+    fn a_local_request_is_named_as_such_when_rendered() {
+        let mut local = detail("AB1K900001");
+        local.target = None;
+
+        let readable = render_transport_show_readable(&map_request_detail(
+            "development".to_owned(),
+            "AB1K900001",
+            local,
+        ));
+
+        assert!(readable.contains("target: (none - local request)"));
     }
 }

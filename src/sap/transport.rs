@@ -34,6 +34,11 @@ const CREATE_RESPONSE_ACCEPT: &str = "text/plain";
 /// the backend names this one in its 406 response.
 const TRANSPORT_ORGANIZER_MEDIA_TYPE: &str =
     "application/vnd.sap.adt.transportorganizertree.v1+xml";
+/// One request has its own representation, and it is *not* the one the
+/// request's own `adturi` link advertises (`transportrequests.v1+xml`, which is
+/// refused with a 406). As with the organizer, the backend's error names the
+/// type it will actually accept.
+const TRANSPORT_REQUEST_ACCEPT: &str = "application/vnd.sap.adt.transportorganizer.v1+xml";
 
 /// One change request, with the tasks it owns.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,6 +123,258 @@ impl TransportTarget {
             Self::Local | Self::Unknown => None,
         }
     }
+}
+
+/// One request in full: its own metadata, its tasks, and what it holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportRequestDetail {
+    pub number: String,
+    pub description: Option<String>,
+    pub owner: Option<String>,
+    pub status: Option<String>,
+    /// SAP's own wording for the status, such as `Modifiable`.
+    pub status_text: Option<String>,
+    pub target: Option<String>,
+    /// Every object in the request, from SAP's own aggregate.
+    pub objects: Vec<TransportObject>,
+    pub tasks: Vec<TransportTaskDetail>,
+}
+
+/// A task with the objects recorded against it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportTaskDetail {
+    pub number: String,
+    pub description: Option<String>,
+    pub owner: Option<String>,
+    pub status: Option<String>,
+    pub status_text: Option<String>,
+    /// SAP's task category, such as `Development/Correction`.
+    pub task_type: Option<String>,
+    pub objects: Vec<TransportObject>,
+}
+
+/// One object recorded in a request or task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportObject {
+    /// SAP's program ID: `R3TR` for a whole object, `LIMU` for a part of one.
+    pub program_id: Option<String>,
+    /// The CTS object type, such as `PROG`.
+    pub object_type: Option<String>,
+    pub name: String,
+    /// The workbench type, such as `PROG/P`.
+    pub workbench_type: Option<String>,
+}
+
+/// A failure while reading one request.
+#[derive(Debug, Error)]
+pub enum TransportShowError {
+    #[error("a request number is required")]
+    BlankNumber,
+    #[error("transport request {number} does not exist")]
+    NotFound { number: String },
+    #[error("could not read transport request {number}: {source}")]
+    Request {
+        number: String,
+        #[source]
+        source: SapClientError,
+    },
+    #[error("SAP returned malformed transport XML: {0}")]
+    Parse(#[source] roxmltree::Error),
+    #[error("SAP's response for {number} contained no request")]
+    NoRequest { number: String },
+}
+
+impl ReportableError for TransportShowError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::BlankNumber => "blank_transport_number",
+            Self::NotFound { .. } => "transport_not_found",
+            Self::Request { .. } => "transport_request_failed",
+            Self::Parse(_) | Self::NoRequest { .. } => "transport_response_invalid",
+        }
+    }
+
+    fn status(&self) -> Option<u16> {
+        sap_http_status(match self {
+            Self::Request { source, .. } => Some(source),
+            _ => None,
+        })
+    }
+
+    fn hint(&self) -> Option<String> {
+        Some(match self {
+            Self::BlankNumber => "Pass the request number, such as ABCK900001.".to_owned(),
+            Self::NotFound { .. } => {
+                "No request or task with that number exists on this system. Check the number, or list your own requests."
+                    .to_owned()
+            }
+            Self::Request { source, .. } => return source.hint(),
+            Self::Parse(_) | Self::NoRequest { .. } => {
+                "The SAP transport response did not match the expected ADT XML.".to_owned()
+            }
+        })
+    }
+
+    fn suggested_command(&self) -> Option<String> {
+        match self {
+            Self::BlankNumber | Self::NotFound { .. } => Some(suggested_command::transport_list()),
+            _ => None,
+        }
+    }
+}
+
+/// Reads one request, with its tasks and the objects it holds.
+///
+/// A *task* number is accepted, because SAP accepts it: it answers with the
+/// parent request rather than an error, so the number in the result is not
+/// necessarily the number that was asked for.
+///
+/// # Errors
+///
+/// Returns [`TransportShowError`] for a blank or unknown number, a failed
+/// request, or a response that cannot be parsed.
+pub async fn show_transport_request(
+    sap: &SapClient,
+    number: &str,
+) -> Result<TransportRequestDetail, TransportShowError> {
+    let number = number.trim().to_uppercase();
+    if number.is_empty() {
+        return Err(TransportShowError::BlankNumber);
+    }
+
+    let mut headers = HeaderMap::new();
+    headers.insert("Accept", HeaderValue::from_static(TRANSPORT_REQUEST_ACCEPT));
+    let response = sap
+        .get_bytes_with_query_and_headers(
+            &format!("{TRANSPORT_REQUESTS_PATH}/{number}"),
+            &[],
+            headers,
+        )
+        .await
+        .map_err(|source| {
+            if source.is_not_found() {
+                TransportShowError::NotFound {
+                    number: number.clone(),
+                }
+            } else {
+                TransportShowError::Request {
+                    number: number.clone(),
+                    source,
+                }
+            }
+        })?;
+
+    parse_transport_request_detail(&String::from_utf8_lossy(&response), &number)
+}
+
+fn parse_transport_request_detail(
+    xml: &str,
+    number: &str,
+) -> Result<TransportRequestDetail, TransportShowError> {
+    let document = roxmltree::Document::parse(xml).map_err(TransportShowError::Parse)?;
+    let request = document
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "request")
+        .ok_or_else(|| TransportShowError::NoRequest {
+            number: number.to_owned(),
+        })?;
+    let tasks = read_tasks(&document);
+
+    Ok(TransportRequestDetail {
+        number: find_attribute_value(request, "number")
+            .unwrap_or_default()
+            .to_owned(),
+        description: find_non_empty_attribute(request, "desc"),
+        owner: find_non_empty_attribute(request, "owner"),
+        status: find_non_empty_attribute(request, "status"),
+        status_text: find_non_empty_attribute(request, "status_text"),
+        target: find_non_empty_attribute(request, "target"),
+        objects: aggregated_objects(request).unwrap_or_else(|| union_of_task_objects(&tasks)),
+        tasks,
+    })
+}
+
+/// Reads the tasks, wherever this response happens to put them.
+///
+/// Asking for a request nests each `tm:task` inside `tm:request`; asking for a
+/// *task* returns the parent's header and puts the task **beside** it, as a
+/// sibling under `tm:root`. Searching from the document root covers both, and
+/// cannot double-count because tasks do not nest.
+fn read_tasks(document: &roxmltree::Document<'_>) -> Vec<TransportTaskDetail> {
+    document
+        .descendants()
+        .filter(|node| node.is_element() && node.tag_name().name() == "task")
+        .map(|task| TransportTaskDetail {
+            number: find_attribute_value(task, "number")
+                .unwrap_or_default()
+                .to_owned(),
+            description: find_non_empty_attribute(task, "desc"),
+            owner: find_non_empty_attribute(task, "owner"),
+            status: find_non_empty_attribute(task, "status"),
+            status_text: find_non_empty_attribute(task, "status_text"),
+            task_type: find_non_empty_attribute(task, "type"),
+            objects: child_elements(task, "abap_object")
+                .map(read_object)
+                .collect(),
+        })
+        .collect()
+}
+
+/// The request's own object list, which SAP aggregates across its tasks.
+///
+/// Read from the `tm:all_objects` wrapper's direct children only. Every object
+/// appears *twice* when a request is asked for — once here and once under the
+/// task that owns it — so a descendant search reports each object twice.
+///
+/// `None` means the wrapper is absent, which is what asking for a *task*
+/// returns: SAP sends the parent's header with no aggregate at all. That is
+/// not the same as a request holding nothing.
+fn aggregated_objects(request: roxmltree::Node<'_, '_>) -> Option<Vec<TransportObject>> {
+    let wrapper = child_elements(request, "all_objects").next()?;
+    Some(
+        child_elements(wrapper, "abap_object")
+            .map(read_object)
+            .collect(),
+    )
+}
+
+/// The objects of every task, for a response that carries no aggregate.
+///
+/// Deduplicated: an object recorded in two tasks of the same request is one
+/// object, and reporting it twice would misstate what the request holds.
+fn union_of_task_objects(tasks: &[TransportTaskDetail]) -> Vec<TransportObject> {
+    let mut seen = HashSet::new();
+    tasks
+        .iter()
+        .flat_map(|task| task.objects.iter())
+        .filter(|object| {
+            seen.insert((
+                object.program_id.clone(),
+                object.object_type.clone(),
+                object.name.clone(),
+            ))
+        })
+        .cloned()
+        .collect()
+}
+
+fn read_object(node: roxmltree::Node<'_, '_>) -> TransportObject {
+    TransportObject {
+        program_id: find_non_empty_attribute(node, "pgmid"),
+        object_type: find_non_empty_attribute(node, "type"),
+        name: find_attribute_value(node, "name")
+            .unwrap_or_default()
+            .to_owned(),
+        workbench_type: find_non_empty_attribute(node, "wbtype"),
+    }
+}
+
+fn child_elements<'a>(
+    node: roxmltree::Node<'a, 'a>,
+    name: &'static str,
+) -> impl Iterator<Item = roxmltree::Node<'a, 'a>> {
+    node.children()
+        .filter(move |child| child.is_element() && child.tag_name().name() == name)
 }
 
 /// A failure while reading the transport organizer.

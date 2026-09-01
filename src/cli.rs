@@ -151,6 +151,15 @@ pub enum TransportCommand {
     List(TransportListArgs),
     /// Create a workbench change request.
     Create(TransportCreateArgs),
+    /// Show one request: its metadata, its tasks, and the objects it holds.
+    Show(TransportShowArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct TransportShowArgs {
+    /// Request number. A task number resolves to its parent request, which is
+    /// what SAP returns.
+    pub(crate) number: String,
 }
 
 #[derive(Debug, Args)]
