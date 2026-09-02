@@ -32,7 +32,10 @@ pub async fn connect(
 ) -> Result<(String, config::Profile, SapClient), Reported> {
     let loaded = config::load()?;
     let (profile_name, profile) = config::resolve_profile(&loaded.config, explicit_profile)?;
-    let password = credentials::get_password(profile_name)?;
+    // Not the keychain directly: an environment variable, a password command
+    // or an opted-in plain file all supply the password on machines that have
+    // no credential store.
+    let (password, _source) = credentials::resolve_password(profile_name, profile)?;
     let client = SapClient::new(profile, password)?;
     Ok((profile_name.to_owned(), profile.clone(), client))
 }

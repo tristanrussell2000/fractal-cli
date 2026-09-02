@@ -72,9 +72,13 @@ pub enum AuthCommand {
     Remove(ProfileArgs),
 }
 
+// Command-line flags are independent switches by nature, and collapsing them
+// into an enum would change what the user types. Same reasoning as the edit
+// output structs.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Args)]
 pub struct LoginArgs {
-    /// Name used to select this profile, for example `DE2_903`. Prompted for
+    /// Name used to select this profile, for example `DEV_100`. Prompted for
     /// when omitted and the terminal is interactive.
     pub(crate) name: Option<String>,
     /// SAP base URL, for example `<https://sap.example:8001>`. Prompted for
@@ -99,6 +103,15 @@ pub struct LoginArgs {
     /// Read the password from standard input instead of prompting.
     #[arg(long, default_value_t = false)]
     pub(crate) password_stdin: bool,
+    /// Command that prints this profile's password, for example
+    /// `pass show sap/dev`. Stored in the profile and run on each use, so no
+    /// password is kept by Fractal at all.
+    #[arg(long)]
+    pub(crate) password_command: Option<String>,
+    /// Store the password in a plain, unencrypted file readable only by you,
+    /// instead of the OS credential store. For machines that have no keychain.
+    #[arg(long, default_value_t = false)]
+    pub(crate) store_plaintext: bool,
 }
 
 #[derive(Debug, Args)]

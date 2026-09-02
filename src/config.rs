@@ -73,6 +73,14 @@ pub struct Profile {
     pub insecure_tls: bool,
     #[serde(default = "default_customer_namespaces")]
     pub customer_namespaces: Vec<String>,
+    /// A command whose standard output is this profile's password.
+    ///
+    /// The way to use a password manager — `pass`, the 1Password CLI, Vault —
+    /// on a machine with no OS keychain, without Fractal storing the secret
+    /// itself or inventing its own crypto. Run through the platform shell, so
+    /// pipes and redirections work as written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_command: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -94,6 +102,26 @@ pub struct LoadedConfig {
 ///
 /// Returns [`ConfigError::NoConfigDirectory`] when the platform does not expose
 /// a suitable per-user configuration directory.
+/// Where an opted-in plaintext password file lives.
+///
+/// Deliberately not `config.toml`: that file holds no secrets and is safe to
+/// share or paste into a bug report, and putting a password in it invites
+/// exactly that mistake.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::NoConfigDirectory`] when the platform has no config
+/// directory.
+pub fn plaintext_credentials_path() -> Result<PathBuf, ConfigError> {
+    Ok(config_path()?.with_file_name("credentials.toml"))
+}
+
+/// Where the profile configuration lives.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::NoConfigDirectory`] when the platform has no config
+/// directory.
 pub fn config_path() -> Result<PathBuf, ConfigError> {
     let dirs = ProjectDirs::from(QUALIFIER, ORGANIZATION, APPLICATION)
         .ok_or(ConfigError::NoConfigDirectory)?;
@@ -231,6 +259,7 @@ mod tests {
             client: "900".to_owned(),
             username: "developer".to_owned(),
             insecure_tls: false,
+            password_command: None,
             customer_namespaces: vec!["Z*".to_owned(), "Y*".to_owned()],
         }
     }

@@ -591,14 +591,14 @@ mod tests {
             }],
         };
         let output = map_object_search_result(
-            "DE2_903",
+            "DEV_100",
             "VERSION",
             &args,
             vec!["Z*".to_owned(), "Y*".to_owned()],
             result,
         );
 
-        assert_eq!(output.profile, "DE2_903");
+        assert_eq!(output.profile, "DEV_100");
         assert_eq!(output.package_patterns_source, "default");
         assert_eq!(output.total_matching, 13);
         assert_eq!(output.returned, 1);
