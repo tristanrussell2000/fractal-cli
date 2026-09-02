@@ -309,14 +309,43 @@ pub async fn create_validated_adt_object(
 /// element; there is no generic create endpoint. The match is deliberately
 /// exhaustive: a new editable type fails to compile here until someone decides
 /// what its payload is.
-/// The envelope a table and a structure share.
+/// The creation envelope most source-based families share.
 ///
-/// SAP models a structure as a `TABL/DS`: same root element, same namespace,
-/// same attributes, different subtype code and collection. Spelling it twice
-/// would let the two drift for no reason.
-fn blue_source_payload(name: &str, package: &str, description: &str, object_code: &str) -> String {
+/// Seven of them differ only in the root element and its namespace: a table, a
+/// structure and a behavior definition are all `blue:blueSource`, while DDL,
+/// service definition, metadata extension and access control each have their
+/// own `<x>:<x>Source` root. The attributes are identical throughout, so they
+/// are written once.
+///
+/// `element` is the qualified root name, such as `ddl:ddlSource`; its prefix is
+/// what `namespace` is bound to. `extra_attributes` carries whatever a family
+/// demands beyond the common set, already formatted with a leading space — only
+/// a service definition needs any.
+fn source_object_payload(
+    element: &str,
+    namespace: &str,
+    name: &str,
+    package: &str,
+    description: &str,
+    object_code: &str,
+    extra_attributes: &str,
+) -> String {
+    let prefix = element.split(':').next().unwrap_or(element);
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><blue:blueSource xmlns:blue=\"http://www.sap.com/wbobj/blue\" xmlns:adtcore=\"http://www.sap.com/adt/core\" adtcore:description=\"{description}\" adtcore:name=\"{name}\" adtcore:type=\"{object_code}\"><adtcore:packageRef adtcore:name=\"{package}\"/></blue:blueSource>"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><{element} xmlns:{prefix}=\"{namespace}\" xmlns:adtcore=\"http://www.sap.com/adt/core\"{extra_attributes} adtcore:description=\"{description}\" adtcore:name=\"{name}\" adtcore:type=\"{object_code}\"><adtcore:packageRef adtcore:name=\"{package}\"/></{element}>"
+    )
+}
+
+/// The envelope a table, a structure and a behavior definition share.
+fn blue_source_payload(name: &str, package: &str, description: &str, object_code: &str) -> String {
+    source_object_payload(
+        "blue:blueSource",
+        "http://www.sap.com/wbobj/blue",
+        name,
+        package,
+        description,
+        object_code,
+        "",
     )
 }
 
@@ -355,9 +384,14 @@ fn creation_payload(
         ),
         EditableAdtObjectType::DdlSource => (
             "application/vnd.sap.adt.ddlSource+xml",
-            format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ddl:ddlSource xmlns:ddl=\"http://www.sap.com/adt/ddic/ddlsources\" xmlns:adtcore=\"http://www.sap.com/adt/core\" adtcore:description=\"{description}\" adtcore:name=\"{}\" adtcore:type=\"{object_code}\"><adtcore:packageRef adtcore:name=\"{package}\"/></ddl:ddlSource>",
-                identity.name
+            source_object_payload(
+                "ddl:ddlSource",
+                "http://www.sap.com/adt/ddic/ddlsources",
+                &identity.name,
+                package,
+                &description,
+                object_code,
+                "",
             ),
         ),
         // A table is not an `adtcore` object like the others: its root element
@@ -373,6 +407,52 @@ fn creation_payload(
         EditableAdtObjectType::Structure => (
             "application/vnd.sap.adt.structures.v2+xml",
             blue_source_payload(&identity.name, package, &description, object_code),
+        ),
+        // A behavior definition is `blue:blueSource` as well, despite living
+        // under a wholly different collection.
+        EditableAdtObjectType::BehaviorDefinition => (
+            "application/vnd.sap.adt.blues.v1+xml",
+            blue_source_payload(&identity.name, package, &description, object_code),
+        ),
+        EditableAdtObjectType::ServiceDefinition => (
+            "application/vnd.sap.adt.ddic.srvd.v1+xml",
+            source_object_payload(
+                "srvd:srvdSource",
+                "http://www.sap.com/adt/ddic/srvdsources",
+                &identity.name,
+                package,
+                &description,
+                object_code,
+                // Required: SAP refuses a service definition with
+                // "Service Definition type '' does not exist". `S` is a
+                // definition, `X` an extension; only `S` is exposed for now,
+                // and SAP lists both at /ddic/srvd/sourceTypes.
+                " srvd:srvdSourceType=\"S\"",
+            ),
+        ),
+        EditableAdtObjectType::MetadataExtension => (
+            "application/vnd.sap.adt.ddic.ddlx.v1+xml",
+            source_object_payload(
+                "ddlx:ddlxSource",
+                "http://www.sap.com/adt/ddic/ddlxsources",
+                &identity.name,
+                package,
+                &description,
+                object_code,
+                "",
+            ),
+        ),
+        EditableAdtObjectType::AccessControl => (
+            "application/vnd.sap.adt.dclSource+xml",
+            source_object_payload(
+                "dcl:dclSource",
+                "http://www.sap.com/adt/acm/dclsources",
+                &identity.name,
+                package,
+                &description,
+                object_code,
+                "",
+            ),
         ),
     }
 }
@@ -577,6 +657,93 @@ mod tests {
             table_body.replace("TABL/DT", "TABL/XX"),
             structure_body.replace("TABL/DS", "TABL/XX")
         );
+    }
+
+    /// Each RAP family's envelope, all four read off live objects.
+    ///
+    /// The root element and namespace are not derivable from the type code —
+    /// a behavior definition is `blue:blueSource` like a table, while the other
+    /// three each have their own — so every one is pinned.
+    #[test]
+    fn builds_each_rap_creation_payload() {
+        for (object_type, media_type, root, namespace, code) in [
+            (
+                EditableAdtObjectType::BehaviorDefinition,
+                "application/vnd.sap.adt.blues.v1+xml",
+                "<blue:blueSource",
+                "http://www.sap.com/wbobj/blue",
+                "BDEF/BDO",
+            ),
+            (
+                EditableAdtObjectType::ServiceDefinition,
+                "application/vnd.sap.adt.ddic.srvd.v1+xml",
+                "<srvd:srvdSource",
+                "http://www.sap.com/adt/ddic/srvdsources",
+                "SRVD/SRV",
+            ),
+            (
+                EditableAdtObjectType::MetadataExtension,
+                "application/vnd.sap.adt.ddic.ddlx.v1+xml",
+                "<ddlx:ddlxSource",
+                "http://www.sap.com/adt/ddic/ddlxsources",
+                "DDLX/EX",
+            ),
+            (
+                EditableAdtObjectType::AccessControl,
+                "application/vnd.sap.adt.dclSource+xml",
+                "<dcl:dclSource",
+                "http://www.sap.com/adt/acm/dclsources",
+                "DCLS/DL",
+            ),
+        ] {
+            let (actual_media_type, body) =
+                creation_payload(&identity(object_type, "zsample"), "ZPKG", "Sample");
+
+            assert_eq!(actual_media_type, media_type, "{}", object_type.as_str());
+            assert!(body.contains(root), "{} root: {body}", object_type.as_str());
+            assert!(
+                body.contains(namespace),
+                "{} namespace: {body}",
+                object_type.as_str()
+            );
+            assert!(body.contains(&format!("adtcore:type=\"{code}\"")));
+            assert!(body.contains("<adtcore:packageRef adtcore:name=\"ZPKG\"/>"));
+        }
+    }
+
+    #[test]
+    fn a_service_definition_carries_the_type_sap_demands() {
+        // Without this SAP refuses the create outright, with
+        // "Service Definition type '' does not exist".
+        let (_, body) = creation_payload(
+            &identity(EditableAdtObjectType::ServiceDefinition, "zsample"),
+            "ZPKG",
+            "Sample",
+        );
+
+        assert!(body.contains("srvd:srvdSourceType=\"S\""));
+    }
+
+    #[test]
+    fn only_a_service_definition_carries_extra_attributes() {
+        // The shared envelope must stay shared: an attribute leaking into the
+        // others would be sent to families that never asked for it.
+        for object_type in [
+            EditableAdtObjectType::BehaviorDefinition,
+            EditableAdtObjectType::MetadataExtension,
+            EditableAdtObjectType::AccessControl,
+            EditableAdtObjectType::DdlSource,
+            EditableAdtObjectType::Table,
+            EditableAdtObjectType::Structure,
+        ] {
+            let (_, body) = creation_payload(&identity(object_type, "zsample"), "ZPKG", "Sample");
+
+            assert!(
+                !body.contains("srvdSourceType"),
+                "{} carried a service-definition attribute",
+                object_type.as_str()
+            );
+        }
     }
 
     #[test]

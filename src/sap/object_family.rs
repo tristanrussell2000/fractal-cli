@@ -53,7 +53,7 @@ impl ReportableError for UnsupportedObjectTypeError {
 
     fn hint(&self) -> Option<String> {
         Some(
-            "Source-based types: CLAS, INTF, PROG, DDLS, TABL, STRU. Metadata types, which have no source: DTEL, DOMA."
+            "Source-based types: CLAS, INTF, PROG, DDLS, TABL, STRU, BDEF, SRVD, DDLX, DCLS. Metadata types, which have no source: DTEL, DOMA."
                 .to_owned(),
         )
     }

@@ -21,6 +21,10 @@ pub enum EditableAdtObjectType {
     DdlSource,
     Table,
     Structure,
+    BehaviorDefinition,
+    ServiceDefinition,
+    MetadataExtension,
+    AccessControl,
 }
 
 impl EditableAdtObjectType {
@@ -45,6 +49,10 @@ impl EditableAdtObjectType {
             Self::DdlSource => RepositoryKind::Ddls,
             Self::Table => RepositoryKind::Tabl,
             Self::Structure => RepositoryKind::Stru,
+            Self::BehaviorDefinition => RepositoryKind::Bdef,
+            Self::ServiceDefinition => RepositoryKind::Srvd,
+            Self::MetadataExtension => RepositoryKind::Ddlx,
+            Self::AccessControl => RepositoryKind::Dcls,
         }
     }
 
@@ -67,6 +75,10 @@ impl EditableAdtObjectType {
             Self::Table => AdtObjectType::TablDt,
             // A structure is a TABL with a different subtype, not its own kind.
             Self::Structure => AdtObjectType::TablDs,
+            Self::BehaviorDefinition => AdtObjectType::BdefBdo,
+            Self::ServiceDefinition => AdtObjectType::SrvdSrv,
+            Self::MetadataExtension => AdtObjectType::DdlxEx,
+            Self::AccessControl => AdtObjectType::DclsDl,
         }
     }
 
@@ -85,6 +97,10 @@ impl EditableAdtObjectType {
             Self::DdlSource => "/sap/bc/adt/ddic/ddl/sources",
             Self::Table => "/sap/bc/adt/ddic/tables",
             Self::Structure => "/sap/bc/adt/ddic/structures",
+            Self::BehaviorDefinition => "/sap/bc/adt/bo/behaviordefinitions",
+            Self::ServiceDefinition => "/sap/bc/adt/ddic/srvd/sources",
+            Self::MetadataExtension => "/sap/bc/adt/ddic/ddlx/sources",
+            Self::AccessControl => "/sap/bc/adt/acm/dcl/sources",
         }
     }
 }
@@ -100,6 +116,10 @@ impl TryFrom<RepositoryKind> for EditableAdtObjectType {
             RepositoryKind::Ddls => Ok(Self::DdlSource),
             RepositoryKind::Tabl => Ok(Self::Table),
             RepositoryKind::Stru => Ok(Self::Structure),
+            RepositoryKind::Bdef => Ok(Self::BehaviorDefinition),
+            RepositoryKind::Srvd => Ok(Self::ServiceDefinition),
+            RepositoryKind::Ddlx => Ok(Self::MetadataExtension),
+            RepositoryKind::Dcls => Ok(Self::AccessControl),
             unsupported => Err(EditableAdtSourceTargetError::UnsupportedObjectType(
                 unsupported.as_str().to_owned(),
             )),
@@ -190,7 +210,7 @@ impl ReportableError for EditableAdtSourceTargetError {
     fn hint(&self) -> Option<String> {
         Some(match self {
             Self::UnsupportedObjectType(_) => {
-                "Use one of the supported source types: CLAS, INTF, PROG, DDLS, TABL, or STRU."
+                "Use one of the supported source types: CLAS, INTF, PROG, DDLS, TABL, STRU, BDEF, SRVD, DDLX, or DCLS."
                     .to_owned()
             }
             Self::InvalidObjectName(_) => {
@@ -524,6 +544,10 @@ mod tests {
             EditableAdtObjectType::DdlSource,
             EditableAdtObjectType::Table,
             EditableAdtObjectType::Structure,
+            EditableAdtObjectType::BehaviorDefinition,
+            EditableAdtObjectType::ServiceDefinition,
+            EditableAdtObjectType::MetadataExtension,
+            EditableAdtObjectType::AccessControl,
         ] {
             assert_eq!(
                 object_type.adt_object_type().kind(),
