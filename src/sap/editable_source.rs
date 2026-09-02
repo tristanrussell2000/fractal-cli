@@ -20,6 +20,7 @@ pub enum EditableAdtObjectType {
     Program,
     DdlSource,
     Table,
+    Structure,
 }
 
 impl EditableAdtObjectType {
@@ -43,6 +44,7 @@ impl EditableAdtObjectType {
             Self::Program => RepositoryKind::Prog,
             Self::DdlSource => RepositoryKind::Ddls,
             Self::Table => RepositoryKind::Tabl,
+            Self::Structure => RepositoryKind::Stru,
         }
     }
 
@@ -63,6 +65,8 @@ impl EditableAdtObjectType {
             Self::Program => AdtObjectType::ProgP,
             Self::DdlSource => AdtObjectType::DdlsDf,
             Self::Table => AdtObjectType::TablDt,
+            // A structure is a TABL with a different subtype, not its own kind.
+            Self::Structure => AdtObjectType::TablDs,
         }
     }
 
@@ -80,6 +84,7 @@ impl EditableAdtObjectType {
             Self::Program => "/sap/bc/adt/programs/programs",
             Self::DdlSource => "/sap/bc/adt/ddic/ddl/sources",
             Self::Table => "/sap/bc/adt/ddic/tables",
+            Self::Structure => "/sap/bc/adt/ddic/structures",
         }
     }
 }
@@ -94,6 +99,7 @@ impl TryFrom<RepositoryKind> for EditableAdtObjectType {
             RepositoryKind::Prog => Ok(Self::Program),
             RepositoryKind::Ddls => Ok(Self::DdlSource),
             RepositoryKind::Tabl => Ok(Self::Table),
+            RepositoryKind::Stru => Ok(Self::Structure),
             unsupported => Err(EditableAdtSourceTargetError::UnsupportedObjectType(
                 unsupported.as_str().to_owned(),
             )),
@@ -184,7 +190,7 @@ impl ReportableError for EditableAdtSourceTargetError {
     fn hint(&self) -> Option<String> {
         Some(match self {
             Self::UnsupportedObjectType(_) => {
-                "Use one of the initially supported source types: CLAS, INTF, PROG, DDLS, or TABL."
+                "Use one of the supported source types: CLAS, INTF, PROG, DDLS, TABL, or STRU."
                     .to_owned()
             }
             Self::InvalidObjectName(_) => {
@@ -517,6 +523,7 @@ mod tests {
             EditableAdtObjectType::Program,
             EditableAdtObjectType::DdlSource,
             EditableAdtObjectType::Table,
+            EditableAdtObjectType::Structure,
         ] {
             assert_eq!(
                 object_type.adt_object_type().kind(),
@@ -560,6 +567,26 @@ mod tests {
         assert_eq!(
             EditableAdtObjectType::parse("ddls").unwrap(),
             EditableAdtObjectType::DdlSource
+        );
+        // A structure is `STRU` to the caller even though SAP files it under
+        // TABL, so this is the name the CLI has to accept.
+        assert_eq!(
+            EditableAdtObjectType::parse("stru").unwrap(),
+            EditableAdtObjectType::Structure
+        );
+    }
+
+    #[test]
+    fn a_structure_is_edited_through_its_own_collection() {
+        let identity = editable_source_identity(EditableAdtObjectType::Structure, "zsample_s")
+            .expect("a valid structure name");
+
+        assert_eq!(identity.object_uri, "/sap/bc/adt/ddic/structures/zsample_s");
+        // The whole edit surface hangs off this: read, set, patch, activate and
+        // delete all derive from the object and source URIs.
+        assert_eq!(
+            identity.source_uri,
+            "/sap/bc/adt/ddic/structures/zsample_s/source/main"
         );
     }
 

@@ -208,7 +208,7 @@ pub enum EditCommand {
 
 #[derive(Debug, Args)]
 pub struct EditObjectCreateArgs {
-    /// Object type to create. Currently PROG, CLAS, INTF, or DDLS.
+    /// Object type to create: PROG, CLAS, INTF, DDLS, TABL, STRU, DTEL, or DOMA.
     #[arg(long = "type")]
     pub(crate) object_type: String,
     /// Object name, which must be inside a configured customer namespace.
@@ -246,7 +246,7 @@ pub struct EditObjectDeleteArgs {
 
 #[derive(Debug, Args)]
 pub struct EditSourceReadArgs {
-    /// Source object type: CLAS, INTF, PROG, DDLS, or TABL.
+    /// Source object type: CLAS, INTF, PROG, DDLS, TABL, or STRU.
     #[arg(long = "type")]
     pub(crate) object_type: String,
     /// ABAP repository object name.
@@ -265,7 +265,7 @@ pub enum EditSourceVersionArg {
 
 #[derive(Debug, Args)]
 pub struct EditSourceCheckArgs {
-    /// Source object type: CLAS, INTF, PROG, DDLS, or TABL.
+    /// Source object type: CLAS, INTF, PROG, DDLS, TABL, or STRU.
     #[arg(long = "type")]
     pub(crate) object_type: String,
     /// ABAP repository object name.
@@ -278,7 +278,7 @@ pub struct EditSourceCheckArgs {
 
 #[derive(Debug, Args)]
 pub struct EditSourceActivateArgs {
-    /// Source object type: CLAS, INTF, PROG, DDLS, or TABL.
+    /// Source object type: CLAS, INTF, PROG, DDLS, TABL, or STRU.
     #[arg(long = "type")]
     pub(crate) object_type: String,
     /// ABAP repository object name.
@@ -291,7 +291,7 @@ pub struct EditSourceActivateArgs {
 
 #[derive(Debug, Args)]
 pub struct EditSourceDiscardArgs {
-    /// Source object type: CLAS, INTF, PROG, DDLS, or TABL.
+    /// Source object type: CLAS, INTF, PROG, DDLS, TABL, or STRU.
     #[arg(long = "type")]
     pub(crate) object_type: String,
     /// ABAP repository object name.
@@ -304,7 +304,7 @@ pub struct EditSourceDiscardArgs {
 
 #[derive(Debug, Args)]
 pub struct EditSourcePatchArgs {
-    /// Source object type: CLAS, INTF, PROG, DDLS, or TABL.
+    /// Source object type: CLAS, INTF, PROG, DDLS, TABL, or STRU.
     #[arg(long = "type")]
     pub(crate) object_type: String,
     /// ABAP repository object name.
@@ -329,7 +329,7 @@ pub struct EditSourcePatchArgs {
 
 #[derive(Debug, Args)]
 pub struct EditSourceSetArgs {
-    /// Source object type: CLAS, INTF, PROG, DDLS, or TABL.
+    /// Source object type: CLAS, INTF, PROG, DDLS, TABL, or STRU.
     #[arg(long = "type")]
     pub(crate) object_type: String,
     /// ABAP repository object name.

@@ -309,6 +309,17 @@ pub async fn create_validated_adt_object(
 /// element; there is no generic create endpoint. The match is deliberately
 /// exhaustive: a new editable type fails to compile here until someone decides
 /// what its payload is.
+/// The envelope a table and a structure share.
+///
+/// SAP models a structure as a `TABL/DS`: same root element, same namespace,
+/// same attributes, different subtype code and collection. Spelling it twice
+/// would let the two drift for no reason.
+fn blue_source_payload(name: &str, package: &str, description: &str, object_code: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><blue:blueSource xmlns:blue=\"http://www.sap.com/wbobj/blue\" xmlns:adtcore=\"http://www.sap.com/adt/core\" adtcore:description=\"{description}\" adtcore:name=\"{name}\" adtcore:type=\"{object_code}\"><adtcore:packageRef adtcore:name=\"{package}\"/></blue:blueSource>"
+    )
+}
+
 fn creation_payload(
     identity: &EditableAdtSourceIdentity,
     package: &str,
@@ -352,12 +363,16 @@ fn creation_payload(
         // A table is not an `adtcore` object like the others: its root element
         // is the generic workbench-object wrapper, which is what a live table's
         // own metadata returns.
+        // A table and a structure are the same envelope with different subtype
+        // codes — SAP models a structure as a TABL/DS — so only the collection
+        // and media type distinguish them.
         EditableAdtObjectType::Table => (
             "application/vnd.sap.adt.tables.v2+xml",
-            format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><blue:blueSource xmlns:blue=\"http://www.sap.com/wbobj/blue\" xmlns:adtcore=\"http://www.sap.com/adt/core\" adtcore:description=\"{description}\" adtcore:name=\"{}\" adtcore:type=\"{object_code}\"><adtcore:packageRef adtcore:name=\"{package}\"/></blue:blueSource>",
-                identity.name
-            ),
+            blue_source_payload(&identity.name, package, &description, object_code),
+        ),
+        EditableAdtObjectType::Structure => (
+            "application/vnd.sap.adt.structures.v2+xml",
+            blue_source_payload(&identity.name, package, &description, object_code),
         ),
     }
 }
@@ -524,6 +539,44 @@ mod tests {
         assert!(body.contains("adtcore:name=\"ZTABLE\""));
         assert!(body.contains("adtcore:type=\"TABL/DT\""));
         assert!(body.contains("xmlns:blue=\"http://www.sap.com/wbobj/blue\""));
+    }
+
+    #[test]
+    fn builds_the_structure_creation_payload() {
+        // A structure shares the table's envelope but is a different subtype in
+        // a different collection: sending TABL/DT here would register it as a
+        // transparent table.
+        let (media_type, body) = creation_payload(
+            &identity(EditableAdtObjectType::Structure, "zstructure"),
+            "ZPKG",
+            "Sample structure",
+        );
+
+        assert_eq!(media_type, "application/vnd.sap.adt.structures.v2+xml");
+        assert!(body.contains("adtcore:name=\"ZSTRUCTURE\""));
+        assert!(body.contains("adtcore:type=\"TABL/DS\""));
+        assert!(body.contains("xmlns:blue=\"http://www.sap.com/wbobj/blue\""));
+    }
+
+    #[test]
+    fn a_structure_and_a_table_differ_only_where_sap_says_they_do() {
+        let (table_type, table_body) = creation_payload(
+            &identity(EditableAdtObjectType::Table, "zsample"),
+            "ZPKG",
+            "S",
+        );
+        let (structure_type, structure_body) = creation_payload(
+            &identity(EditableAdtObjectType::Structure, "zsample"),
+            "ZPKG",
+            "S",
+        );
+
+        assert_ne!(table_type, structure_type);
+        // Same envelope: the only difference in the body is the subtype code.
+        assert_eq!(
+            table_body.replace("TABL/DT", "TABL/XX"),
+            structure_body.replace("TABL/DS", "TABL/XX")
+        );
     }
 
     #[test]
