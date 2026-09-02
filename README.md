@@ -35,8 +35,9 @@ add that directory to your `PATH`. Plain `.tar.xz` archives for each platform ar
 release page, with a `sha256.sum` file for checking downloads.
 
 Linux stores passwords through the Secret Service D-Bus API. A desktop session with
-GNOME Keyring or KWallet works. Headless servers and plain WSL do not have one, so
-`auth login` will fail there with `credential_store_error`.
+GNOME Keyring or KWallet works. Headless servers, containers and plain WSL have no such
+service, so there the password has to come from somewhere else — see
+[Machines with no keychain](#machines-with-no-keychain).
 
 ### Check the install
 
@@ -50,8 +51,9 @@ fractal --help
 Run the installer or MSI for the new version over the old one. On Windows, uninstall from
 Apps & features. On macOS and Linux, delete the `fractal` binary from the install directory.
 
-Uninstalling does not remove your saved profiles or keychain passwords. Use
-`fractal auth remove <name>` for each profile first if you want them gone.
+Uninstalling does not remove your saved profiles or any stored passwords, including a
+plaintext `credentials.toml` if you made one. Use `fractal auth remove <name>` for each
+profile first if you want them gone.
 
 ## First use
 
@@ -63,7 +65,7 @@ fractal auth login
 ```
 
 It prompts for the profile name, base URL, SAP client, username, and password. The password
-is typed without echo and stored in the operating-system credential store, never in a file.
+is typed without echo and stored in the operating-system credential store.
 
 Every value can also be passed as a flag. Flags always win, and only the missing ones are
 asked for:
@@ -97,6 +99,44 @@ Profile metadata is stored in a TOML file:
 | Windows | `%APPDATA%\issi\fractal\config\config.toml` |
 | macOS | `~/Library/Application Support/com.issi.fractal/config.toml` |
 | Linux | `~/.config/fractal/config.toml` |
+
+### Machines with no keychain
+
+WSL, containers and SSH sessions usually have no OS credential store. Fractal looks for a
+password in this order, so any one of these works without a keychain:
+
+1. `FRACTAL_PASSWORD_<PROFILE>` — the profile name uppercased, with anything that is not a
+   letter or digit replaced by `_`. Profile `dev` reads `FRACTAL_PASSWORD_DEV`.
+2. `FRACTAL_PASSWORD` — used for whichever profile is selected. Handy in CI with one profile.
+3. The profile's `password_command`, if set.
+4. The plaintext file, if you opted into one.
+5. The OS credential store.
+
+The best option on a machine without a keychain is a password manager, which keeps Fractal
+out of the business of storing secrets entirely:
+
+```sh
+fractal auth login dev --url https://sap.example:8001 --client 100 --username demo_user \
+  --password-command 'pass show sap/dev'
+```
+
+The command runs through your shell on each use and its standard output is the password, so
+anything works: `pass`, the 1Password CLI, `gopass`, `vault read`. Nothing is stored by
+Fractal. A command that fails is reported rather than quietly skipped.
+
+As a last resort, keep the password in a plain file:
+
+```sh
+fractal auth login dev --url https://sap.example:8001 --client 100 --username demo_user \
+  --store-plaintext
+```
+
+This is **not encrypted**. The file is created readable only by you (mode `0600`) next to
+`config.toml` as `credentials.toml`, and every login that uses it says so. It is never chosen
+automatically — a machine without a keychain gets an error naming these options instead, so
+storing a password in the clear is always a choice you made.
+
+`fractal auth remove <name>` clears both the plaintext file and the keychain.
 
 ## Commands
 
