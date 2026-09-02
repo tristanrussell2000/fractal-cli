@@ -1,5 +1,5 @@
 use crate::reportable_error::ReportableError;
-use keyring::Entry;
+use keyring_core::Entry;
 use thiserror::Error;
 
 const KEYCHAIN_SERVICE: &str = "fractal";
@@ -12,6 +12,8 @@ pub enum CredentialError {
     Store(#[source] keyring::Error),
     #[error("no credential is stored for profile '{0}'")]
     Missing(String),
+    #[error("the OS credential store could not be initialized: {0}")]
+    StoreUnavailable(String),
 }
 
 impl ReportableError for CredentialError {
@@ -20,6 +22,7 @@ impl ReportableError for CredentialError {
             Self::InvalidProfileName(_) => "invalid_profile_name",
             Self::Store(_) => "credential_store_error",
             Self::Missing(_) => "credential_missing",
+            Self::StoreUnavailable(_) => "credential_store_unavailable",
         }
     }
 
@@ -79,8 +82,37 @@ fn entry(profile_name: &str) -> Result<Entry, CredentialError> {
     if profile_name.trim().is_empty() {
         return Err(CredentialError::InvalidProfileName(profile_name.to_owned()));
     }
+    install_platform_store_if_needed()?;
 
     Entry::new(KEYCHAIN_SERVICE, profile_name).map_err(CredentialError::Store)
+}
+
+/// Installs the OS credential store, unless one is already installed.
+///
+/// `keyring::Entry::new` installs the platform store itself, on first use, by
+/// calling `keyring_core::set_default_store` — which *overwrites* any store
+/// already registered. That silently defeated the mock store in this module's
+/// tests: they installed a mock, the first `Entry::new` replaced it with the
+/// real macOS Keychain, and every assertion then ran against the developer's
+/// actual keychain. It was not a correctness problem, but each real keychain
+/// call took several seconds and the four tests here cost roughly 40 seconds of
+/// every `cargo test` run.
+///
+/// Checking first is not enough on its own, because `keyring::Entry::new`
+/// forces that initialization whether or not a store is already registered.
+/// So entries are created through `keyring_core::Entry` and the `keyring`
+/// crate is used for one thing only: installing the platform store, here,
+/// when nothing else has installed one. Whoever installs first wins, so tests
+/// stay hermetic and fast while normal use is unchanged.
+fn install_platform_store_if_needed() -> Result<(), CredentialError> {
+    if keyring_core::get_default_store().is_some() {
+        return Ok(());
+    }
+    // Triggers the platform store initialization and reports how it went.
+    match keyring::Entry::store_status() {
+        Ok(()) => Ok(()),
+        Err(error) => Err(CredentialError::StoreUnavailable(error.to_string())),
+    }
 }
 
 #[cfg(test)]
@@ -137,6 +169,30 @@ mod tests {
             get_password(profile),
             Err(CredentialError::Missing(name)) if name == profile
         ));
+    }
+
+    /// A credential operation must not replace a store someone else installed.
+    ///
+    /// This is the difference between the tests here being hermetic and them
+    /// silently running against the developer's real keychain. Failure is not
+    /// an assertion error in the other tests — they still pass — it is those
+    /// tests taking about ten seconds per operation and reading and writing
+    /// real credentials. So it is asserted directly.
+    #[test]
+    fn a_credential_operation_keeps_the_store_that_is_already_installed() {
+        use_mock_store();
+        let installed = keyring_core::get_default_store().expect("mock store is installed");
+        let vendor_before = installed.vendor();
+
+        save_password("credentials-store-check", "password").unwrap();
+        delete_password("credentials-store-check").unwrap();
+
+        let still_installed = keyring_core::get_default_store().expect("a store is installed");
+        assert_eq!(
+            still_installed.vendor(),
+            vendor_before,
+            "a credential operation replaced the installed store with the platform one"
+        );
     }
 
     #[test]

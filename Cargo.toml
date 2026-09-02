@@ -13,6 +13,7 @@ toml = "0.8"
 directories = "6"
 thiserror = "2"
 keyring = "4"
+keyring-core = "1"
 rpassword = "7"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "cookies"] }
@@ -23,5 +24,4 @@ regex = "1"
 sha2 = "0.10"
 
 [dev-dependencies]
-keyring-core = "1"
 wiremock = "0.6.5"
