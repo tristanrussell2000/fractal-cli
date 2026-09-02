@@ -223,7 +223,7 @@ pub enum EditCommand {
 
 #[derive(Debug, Args)]
 pub struct EditObjectCreateArgs {
-    /// Object type to create: a source type (PROG, CLAS, INTF, DDLS, TABL, STRU, BDEF, SRVD, DDLX, DCLS) or a metadata type (DTEL, DOMA, TTYP).
+    /// Object type to create: a source type (PROG, CLAS, INTF, DDLS, TABL, STRU, BDEF, SRVD, DDLX, DCLS) or a metadata type (DTEL, DOMA, TTYP, MSAG).
     #[arg(long = "type")]
     pub(crate) object_type: String,
     /// Object name, which must be inside a configured customer namespace.

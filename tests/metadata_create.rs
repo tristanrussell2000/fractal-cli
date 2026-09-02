@@ -209,6 +209,53 @@ async fn a_table_type_uses_its_own_collection_envelope_and_media_type() {
 }
 
 #[tokio::test]
+async fn a_message_class_is_created_outside_the_ddic_collections() {
+    // Every other metadata family lives under /ddic/; this one does not, and
+    // its namespace is capitalised where the others are not. Both come from a
+    // live object rather than from the pattern the others suggest.
+    let server = MockServer::start().await;
+    session().mount_csrf_session(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/messageclass"))
+        .and(header(
+            "content-type",
+            "application/vnd.sap.adt.messageclass.v1+xml",
+        ))
+        .and(body_string_contains("<mc:messageClass"))
+        .and(body_string_contains(
+            "xmlns:mc=\"http://www.sap.com/adt/MessageClass\"",
+        ))
+        .and(body_string_contains("adtcore:type=\"MSAG/N\""))
+        .respond_with(ResponseTemplate::new(201).set_body_string("<mc:messageClass/>"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/messageclass/zsample_msg"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<mc:messageClass/>"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let result = create_metadata_object(
+        &mut client,
+        &["Z*".to_owned()],
+        &request(MetadataAdtObjectType::MessageClass, "zsample_msg"),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.identity.object_type, "MSAG");
+    assert_eq!(
+        result.identity.object_uri,
+        "/sap/bc/adt/messageclass/zsample_msg"
+    );
+    assert_eq!(result.identity.source_uri, None);
+    server.verify().await;
+}
+
+#[tokio::test]
 async fn deleting_a_metadata_object_is_guarded_by_where_used_like_any_other() {
     // A data element is referenced by every field built on it, so this guard
     // matters more here, not less. Nothing in the metadata module implements

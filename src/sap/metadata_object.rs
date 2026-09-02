@@ -47,6 +47,7 @@ pub enum MetadataAdtObjectType {
     DataElement,
     Domain,
     TableType,
+    MessageClass,
 }
 
 impl MetadataAdtObjectType {
@@ -67,6 +68,7 @@ impl MetadataAdtObjectType {
             Self::DataElement => RepositoryKind::Dtel,
             Self::Domain => RepositoryKind::Doma,
             Self::TableType => RepositoryKind::Ttyp,
+            Self::MessageClass => RepositoryKind::Msag,
         }
     }
 
@@ -82,6 +84,8 @@ impl MetadataAdtObjectType {
             Self::DataElement => "/sap/bc/adt/ddic/dataelements",
             Self::Domain => "/sap/bc/adt/ddic/domains",
             Self::TableType => "/sap/bc/adt/ddic/tabletypes",
+            // Not under `ddic/`, unlike every other member of this family.
+            Self::MessageClass => "/sap/bc/adt/messageclass",
         }
     }
 
@@ -96,6 +100,7 @@ impl MetadataAdtObjectType {
             Self::DataElement => AdtObjectType::DtelDe,
             Self::Domain => AdtObjectType::DomaDd,
             Self::TableType => AdtObjectType::TtypDa,
+            Self::MessageClass => AdtObjectType::MsagN,
         }
     }
 
@@ -106,6 +111,7 @@ impl MetadataAdtObjectType {
             Self::DataElement => "application/vnd.sap.adt.dataelements.v2+xml",
             Self::Domain => "application/vnd.sap.adt.domains.v2+xml",
             Self::TableType => "application/vnd.sap.adt.tabletype.v1+xml",
+            Self::MessageClass => "application/vnd.sap.adt.messageclass.v1+xml",
         }
     }
 
@@ -120,6 +126,9 @@ impl MetadataAdtObjectType {
             Self::DataElement => ("blue:wbobj", "http://www.sap.com/wbobj/dictionary/dtel"),
             Self::Domain => ("doma:domain", "http://www.sap.com/dictionary/domain"),
             Self::TableType => ("ttyp:tableType", "http://www.sap.com/dictionary/tabletype"),
+            // Note the capitalisation: SAP spells this namespace differently
+            // from every other one in this family.
+            Self::MessageClass => ("mc:messageClass", "http://www.sap.com/adt/MessageClass"),
         }
     }
 
@@ -129,6 +138,7 @@ impl MetadataAdtObjectType {
             Self::DataElement => "blue",
             Self::Domain => "doma",
             Self::TableType => "ttyp",
+            Self::MessageClass => "mc",
         }
     }
 }
@@ -141,6 +151,7 @@ impl TryFrom<RepositoryKind> for MetadataAdtObjectType {
             RepositoryKind::Dtel => Ok(Self::DataElement),
             RepositoryKind::Doma => Ok(Self::Domain),
             RepositoryKind::Ttyp => Ok(Self::TableType),
+            RepositoryKind::Msag => Ok(Self::MessageClass),
             unsupported => Err(MetadataObjectTypeError(unsupported.as_str().to_owned())),
         }
     }
@@ -157,7 +168,7 @@ impl ReportableError for MetadataObjectTypeError {
 
     fn hint(&self) -> Option<String> {
         Some(
-            "Metadata objects are DTEL, DOMA and TTYP. Source-based types use the same commands."
+            "Metadata objects are DTEL, DOMA, TTYP and MSAG. Source-based types use the same commands."
                 .to_owned(),
         )
     }
@@ -566,6 +577,10 @@ mod tests {
             MetadataAdtObjectType::parse("TTYP").unwrap(),
             MetadataAdtObjectType::TableType
         );
+        assert_eq!(
+            MetadataAdtObjectType::parse("MSAG").unwrap(),
+            MetadataAdtObjectType::MessageClass
+        );
         assert!(MetadataAdtObjectType::parse("CLAS").is_err());
         assert!(MetadataAdtObjectType::parse("TABL").is_err());
     }
@@ -590,6 +605,7 @@ mod tests {
             MetadataAdtObjectType::DataElement,
             MetadataAdtObjectType::Domain,
             MetadataAdtObjectType::TableType,
+            MetadataAdtObjectType::MessageClass,
         ] {
             assert_eq!(
                 object_type.adt_object_type().kind(),
@@ -606,6 +622,7 @@ mod tests {
             MetadataAdtObjectType::DataElement,
             MetadataAdtObjectType::Domain,
             MetadataAdtObjectType::TableType,
+            MetadataAdtObjectType::MessageClass,
         ] {
             assert_eq!(
                 MetadataAdtObjectType::parse(object_type.as_str()).unwrap(),
@@ -655,6 +672,27 @@ mod tests {
         assert!(body.contains("adtcore:type=\"DTEL/DE\""));
         assert!(body.contains("adtcore:name=\"ZSAMPLE_DE\""));
         assert!(body.contains("<adtcore:packageRef adtcore:name=\"$TMP\"/>"));
+    }
+
+    #[test]
+    fn a_message_class_uses_its_own_root_and_namespace() {
+        // The namespace is capitalised unlike every other member of this
+        // family, and the collection is not under `ddic/`; both were read off
+        // a live object.
+        let body = creation_payload(
+            MetadataAdtObjectType::MessageClass,
+            "ZSAMPLE_MSG",
+            "$TMP",
+            "Sample",
+        );
+
+        assert!(body.contains("<mc:messageClass"));
+        assert!(body.contains("xmlns:mc=\"http://www.sap.com/adt/MessageClass\""));
+        assert!(body.contains("adtcore:type=\"MSAG/N\""));
+        assert_eq!(
+            MetadataAdtObjectType::MessageClass.collection_path(),
+            "/sap/bc/adt/messageclass"
+        );
     }
 
     #[test]
