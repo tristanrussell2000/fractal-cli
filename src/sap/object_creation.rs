@@ -315,11 +315,14 @@ fn creation_payload(
     description: &str,
 ) -> (&'static str, String) {
     let description = xml_escape_attribute(description);
+    // One spelling of each subtype code, shared with the search classifier.
+    let object_code = identity.object_type.adt_object_type();
+    let object_code = object_code.as_str();
     match identity.object_type {
         EditableAdtObjectType::Program => (
             "application/vnd.sap.adt.programs.programs.v2+xml",
             format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><program:abapProgram xmlns:program=\"http://www.sap.com/adt/programs/programs\" xmlns:adtcore=\"http://www.sap.com/adt/core\" adtcore:description=\"{description}\" adtcore:name=\"{}\" adtcore:type=\"PROG/P\"><adtcore:packageRef adtcore:name=\"{package}\"/></program:abapProgram>",
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><program:abapProgram xmlns:program=\"http://www.sap.com/adt/programs/programs\" xmlns:adtcore=\"http://www.sap.com/adt/core\" adtcore:description=\"{description}\" adtcore:name=\"{}\" adtcore:type=\"{object_code}\"><adtcore:packageRef adtcore:name=\"{package}\"/></program:abapProgram>",
                 identity.name
             ),
         ),
@@ -328,21 +331,21 @@ fn creation_payload(
         EditableAdtObjectType::Class => (
             "application/vnd.sap.adt.oo.classes.v2+xml",
             format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><class:abapClass xmlns:class=\"http://www.sap.com/adt/oo/classes\" xmlns:adtcore=\"http://www.sap.com/adt/core\" adtcore:description=\"{description}\" adtcore:name=\"{}\" adtcore:type=\"CLAS/OC\" class:final=\"true\" class:visibility=\"public\"><adtcore:packageRef adtcore:name=\"{package}\"/></class:abapClass>",
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><class:abapClass xmlns:class=\"http://www.sap.com/adt/oo/classes\" xmlns:adtcore=\"http://www.sap.com/adt/core\" adtcore:description=\"{description}\" adtcore:name=\"{}\" adtcore:type=\"{object_code}\" class:final=\"true\" class:visibility=\"public\"><adtcore:packageRef adtcore:name=\"{package}\"/></class:abapClass>",
                 identity.name
             ),
         ),
         EditableAdtObjectType::Interface => (
             "application/vnd.sap.adt.oo.interfaces.v2+xml",
             format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><intf:abapInterface xmlns:intf=\"http://www.sap.com/adt/oo/interfaces\" xmlns:adtcore=\"http://www.sap.com/adt/core\" adtcore:description=\"{description}\" adtcore:name=\"{}\" adtcore:type=\"INTF/OI\"><adtcore:packageRef adtcore:name=\"{package}\"/></intf:abapInterface>",
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><intf:abapInterface xmlns:intf=\"http://www.sap.com/adt/oo/interfaces\" xmlns:adtcore=\"http://www.sap.com/adt/core\" adtcore:description=\"{description}\" adtcore:name=\"{}\" adtcore:type=\"{object_code}\"><adtcore:packageRef adtcore:name=\"{package}\"/></intf:abapInterface>",
                 identity.name
             ),
         ),
         EditableAdtObjectType::DdlSource => (
             "application/vnd.sap.adt.ddlSource+xml",
             format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ddl:ddlSource xmlns:ddl=\"http://www.sap.com/adt/ddic/ddlsources\" xmlns:adtcore=\"http://www.sap.com/adt/core\" adtcore:description=\"{description}\" adtcore:name=\"{}\" adtcore:type=\"DDLS/DF\"><adtcore:packageRef adtcore:name=\"{package}\"/></ddl:ddlSource>",
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ddl:ddlSource xmlns:ddl=\"http://www.sap.com/adt/ddic/ddlsources\" xmlns:adtcore=\"http://www.sap.com/adt/core\" adtcore:description=\"{description}\" adtcore:name=\"{}\" adtcore:type=\"{object_code}\"><adtcore:packageRef adtcore:name=\"{package}\"/></ddl:ddlSource>",
                 identity.name
             ),
         ),
@@ -352,7 +355,7 @@ fn creation_payload(
         EditableAdtObjectType::Table => (
             "application/vnd.sap.adt.tables.v2+xml",
             format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><blue:blueSource xmlns:blue=\"http://www.sap.com/wbobj/blue\" xmlns:adtcore=\"http://www.sap.com/adt/core\" adtcore:description=\"{description}\" adtcore:name=\"{}\" adtcore:type=\"TABL/DT\"><adtcore:packageRef adtcore:name=\"{package}\"/></blue:blueSource>",
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><blue:blueSource xmlns:blue=\"http://www.sap.com/wbobj/blue\" xmlns:adtcore=\"http://www.sap.com/adt/core\" adtcore:description=\"{description}\" adtcore:name=\"{}\" adtcore:type=\"{object_code}\"><adtcore:packageRef adtcore:name=\"{package}\"/></blue:blueSource>",
                 identity.name
             ),
         ),

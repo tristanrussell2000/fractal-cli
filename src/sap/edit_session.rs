@@ -97,6 +97,11 @@ impl AdtObjectLock {
     pub(super) fn handle(&self) -> &str {
         &self.handle
     }
+
+    /// The transport the lock was taken under, which write requests repeat.
+    pub(super) fn transport(&self) -> Option<&str> {
+        self.transport.as_deref()
+    }
 }
 
 pub(super) async fn acquire_adt_object_lock(

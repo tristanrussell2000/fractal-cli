@@ -8,6 +8,7 @@ pub mod edit_object_identity;
 pub mod edit_patch;
 pub mod edit_read;
 pub mod edit_set;
+pub mod edit_set_xml;
 pub mod object;
 pub mod package;
 pub mod query;

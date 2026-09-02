@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use super::{
     client::{SapClient, SapClientError},
-    repository_kind::RepositoryKind,
+    repository_kind::{AdtObjectType, RepositoryKind},
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
 use crate::{pattern::glob_matches, source_change::source_sha256, suggested_command};
@@ -49,6 +49,21 @@ impl EditableAdtObjectType {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         self.repository_kind().as_str()
+    }
+
+    /// SAP's own subtype code, which a creation payload has to carry.
+    ///
+    /// Spelled in [`AdtObjectType`] rather than here: the same codes are what
+    /// search results are classified by, and two tables of them drift.
+    #[must_use]
+    pub const fn adt_object_type(self) -> AdtObjectType {
+        match self {
+            Self::Class => AdtObjectType::ClasOc,
+            Self::Interface => AdtObjectType::IntfOi,
+            Self::Program => AdtObjectType::ProgP,
+            Self::DdlSource => AdtObjectType::DdlsDf,
+            Self::Table => AdtObjectType::TablDt,
+        }
     }
 
     /// The ADT collection this object family lives under. Reading appends the
@@ -489,6 +504,28 @@ pub(super) fn validate_object_name(name: &str) -> Result<String, EditableAdtSour
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each type's subtype code must belong to that type's own kind.
+    ///
+    /// A missing code fails to compile; a code pointing at the *wrong* type
+    /// does not, and would create objects registered as something else.
+    #[test]
+    fn every_editable_type_agrees_with_the_shared_code_table() {
+        for object_type in [
+            EditableAdtObjectType::Class,
+            EditableAdtObjectType::Interface,
+            EditableAdtObjectType::Program,
+            EditableAdtObjectType::DdlSource,
+            EditableAdtObjectType::Table,
+        ] {
+            assert_eq!(
+                object_type.adt_object_type().kind(),
+                object_type.repository_kind(),
+                "{} maps to a subtype code of a different kind",
+                object_type.as_str()
+            );
+        }
+    }
 
     #[test]
     fn maps_every_initial_object_type_to_a_fixed_adt_root() {

@@ -17,6 +17,7 @@ use commands::edit_discard::{edit_source_discard, print_edit_source_discard};
 use commands::edit_patch::{edit_source_patch, print_edit_source_patch};
 use commands::edit_read::{edit_source_read, print_edit_source_read};
 use commands::edit_set::{edit_source_set, print_edit_source_set};
+use commands::edit_set_xml::{edit_xml_set, print_edit_xml_set};
 use commands::object::{
     object_info, object_kinds, object_search, object_source, object_usages, object_xml,
     print_object_kinds,
@@ -184,6 +185,16 @@ async fn main() {
             run_and_print_with_async(
                 || edit_source_set(cli.profile.as_deref(), args),
                 print_edit_source_set,
+                output,
+            )
+            .await
+        }
+        Command::Edit {
+            command: EditCommand::SetXml(args),
+        } => {
+            run_and_print_with_async(
+                || edit_xml_set(cli.profile.as_deref(), args),
+                print_edit_xml_set,
                 output,
             )
             .await

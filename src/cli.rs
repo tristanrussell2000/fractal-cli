@@ -195,6 +195,9 @@ pub enum EditCommand {
     Patch(EditSourcePatchArgs),
     /// Replace complete source and save it inactive. Does not activate.
     Set(EditSourceSetArgs),
+    /// Replace the complete XML of an object that has no source, such as DTEL
+    /// or DOMA. Read it first with `object xml`.
+    SetXml(EditXmlSetArgs),
     /// Run SAP's syntax checker against a stored source version.
     Check(EditSourceCheckArgs),
     /// Activate and verify an object's stored inactive source.
@@ -344,6 +347,22 @@ pub struct EditSourceSetArgs {
     /// Validate and preview the complete replacement without locking or writing.
     #[arg(long)]
     pub(crate) dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct EditXmlSetArgs {
+    /// Metadata object type: DTEL or DOMA.
+    #[arg(long = "type")]
+    pub(crate) object_type: String,
+    /// ABAP repository object name.
+    #[arg(long)]
+    pub(crate) name: String,
+    /// Read the complete replacement XML from this file, or - for stdin.
+    #[arg(long, value_name = "PATH", allow_hyphen_values = true)]
+    pub(crate) xml_file: String,
+    /// Parent CTS change request to associate with the write.
+    #[arg(long)]
+    pub(crate) transport: Option<String>,
 }
 
 #[derive(Debug, Args)]

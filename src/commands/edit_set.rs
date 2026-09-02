@@ -130,7 +130,7 @@ impl ReportableError for SourceInputError {
     }
 }
 
-fn resolve_replacement_source<R: Read>(
+pub(super) fn resolve_replacement_source<R: Read>(
     source_file: &str,
     stdin: &mut R,
 ) -> Result<String, SourceInputError> {

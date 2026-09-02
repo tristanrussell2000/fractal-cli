@@ -13,9 +13,15 @@
 
 use thiserror::Error;
 
+use reqwest::header::HeaderValue;
+
 use super::{
     adt_object_identity::AdtObjectIdentity,
-    client::SapClient,
+    client::{SapClient, SapClientError},
+    edit_session::{
+        AdtEditSessionError, AdtObjectLock, acquire_adt_object_lock, release_adt_object_lock,
+        stateful_session_headers,
+    },
     editable_source::{
         AdtEditTargetValidationError, EditableAdtSourceTargetError, canonicalize_transport_request,
         validate_customer_namespace, validate_object_name,
@@ -28,9 +34,12 @@ use super::{
         AdtObjectDeletionError, AdtObjectDeletionPreview, AdtObjectDeletionResult,
         delete_validated_adt_object, preview_validated_deletion,
     },
-    repository_kind::RepositoryKind,
+    repository_kind::{AdtObjectType, RepositoryKind},
 };
-use crate::reportable_error::ReportableError;
+use crate::{
+    reportable_error::{ReportableError, sap_http_status},
+    suggested_command,
+};
 
 /// A DDIC family whose objects are XML documents rather than source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,12 +82,16 @@ impl MetadataAdtObjectType {
         }
     }
 
-    /// SAP's own type code, which the creation payload has to carry.
+    /// SAP's own subtype code, which the creation payload has to carry.
+    ///
+    /// Spelled in [`AdtObjectType`] rather than here, for the same reason the
+    /// logical name is spelled in [`RepositoryKind`]: search results are
+    /// classified by these codes, and a second table of them drifts.
     #[must_use]
-    pub const fn adtcore_type(self) -> &'static str {
+    pub const fn adt_object_type(self) -> AdtObjectType {
         match self {
-            Self::DataElement => "DTEL/DE",
-            Self::Domain => "DOMA/DD",
+            Self::DataElement => AdtObjectType::DtelDe,
+            Self::Domain => AdtObjectType::DomaDd,
         }
     }
 
@@ -139,6 +152,95 @@ impl ReportableError for MetadataObjectTypeError {
             "Metadata objects are DTEL and DOMA. Source-based types use the same commands."
                 .to_owned(),
         )
+    }
+}
+
+/// A failure while writing a metadata object's XML.
+#[derive(Debug, Error)]
+pub enum MetadataObjectWriteError {
+    #[error(transparent)]
+    Validation(#[from] AdtEditTargetValidationError),
+    #[error("the replacement document is empty")]
+    BlankDocument,
+    #[error("ADT edit session failed while writing: {0}")]
+    Session(#[source] AdtEditSessionError),
+    #[error("the ADT write request failed: {0}")]
+    Write(#[source] SapClientError),
+    /// SAP refused the write for want of a description.
+    ///
+    /// Its own read-back does not include one on a freshly created shell, so
+    /// writing back exactly what was read fails until the caller adds it.
+    #[error("SAP requires a description on this object: {0}")]
+    DescriptionMissing(#[source] SapClientError),
+    #[error("could not read {name} back: {source}")]
+    Read {
+        name: String,
+        #[source]
+        source: SapClientError,
+    },
+    /// The write failed and its lock could not be released. Wraps the cause, so
+    /// the reported code, status, and message are unchanged; only the hint
+    /// gains the stuck lock, because that changes the caller's next move.
+    #[error(transparent)]
+    AbandonedLock(Box<Self>),
+}
+
+impl ReportableError for MetadataObjectWriteError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::AbandonedLock(primary) => primary.code(),
+            Self::Validation(error) => error.code(),
+            Self::BlankDocument => "blank_xml_document",
+            Self::Session(_) => "edit_xml_lock_failed",
+            Self::Write(_) => "edit_xml_write_failed",
+            Self::DescriptionMissing(_) => "edit_xml_description_missing",
+            Self::Read { .. } => "edit_xml_verification_failed",
+        }
+    }
+
+    fn status(&self) -> Option<u16> {
+        match self {
+            Self::AbandonedLock(primary) => primary.status(),
+            Self::Session(error) => error.status(),
+            Self::Write(error) | Self::DescriptionMissing(error) => sap_http_status(Some(error)),
+            Self::Read { source, .. } => sap_http_status(Some(source)),
+            _ => None,
+        }
+    }
+
+    fn hint(&self) -> Option<String> {
+        Some(match self {
+            Self::AbandonedLock(primary) => format!(
+                "{} Releasing its lock also failed, so the object is still locked: clear the lock before retrying, or the next attempt will fail on the lock rather than the original cause.",
+                primary.hint().unwrap_or_default()
+            ),
+            Self::Validation(error) => return error.hint(),
+            Self::BlankDocument => {
+                "Pass the object's complete XML document; this replaces it rather than patching it."
+                    .to_owned()
+            }
+            Self::Session(error) => return error.hint(),
+            Self::Write(error) => format!(
+                "The object was not changed. {}",
+                error.hint().unwrap_or_default()
+            ),
+            Self::DescriptionMissing(_) => {
+                "Add adtcore:description=\"...\" to the root element and write again. A newly created shell stores no description, so the document `object xml` returns has none, and SAP refuses to save without one."
+                    .to_owned()
+            }
+            Self::Read { .. } => {
+                "The write may have been applied. Read the object before writing again, so a retry does not overwrite a change that landed."
+                    .to_owned()
+            }
+        })
+    }
+
+    fn suggested_command(&self) -> Option<String> {
+        match self {
+            Self::AbandonedLock(primary) => primary.suggested_command(),
+            Self::Read { .. } => Some(suggested_command::object_xml("<the object uri>")),
+            _ => None,
+        }
     }
 }
 
@@ -265,6 +367,134 @@ pub async fn preview_metadata_object_deletion(
     preview_validated_deletion(sap, identity, transport, force).await
 }
 
+/// The result of writing a metadata object's XML back to SAP.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetadataObjectWriteResult {
+    pub identity: AdtObjectIdentity,
+    pub transport: Option<String>,
+    /// What SAP holds after the write, read back rather than assumed.
+    pub stored_xml: String,
+    /// Whether the stored document differs from the one before the write.
+    ///
+    /// A write SAP accepts but does not apply is a shape this backend has
+    /// produced before (`activation?method=discard` answered 200 and did
+    /// nothing), so "it changed" is checked rather than trusted.
+    pub changed: bool,
+}
+
+/// Writes a metadata object's XML document, under a lock, and reads it back.
+///
+/// The whole document is replaced: for this family the XML *is* the object, so
+/// there is no partial edit to make. Read it with `object xml`, change the
+/// blanks, and pass the result here.
+///
+/// # Errors
+///
+/// Returns [`MetadataObjectWriteError`] for validation, a blank document, a
+/// failed lock, a rejected write, or a document that cannot be read back
+/// afterwards.
+pub async fn write_metadata_object(
+    sap: &mut SapClient,
+    customer_namespaces: &[String],
+    object_type: MetadataAdtObjectType,
+    name: &str,
+    xml: &str,
+    transport: Option<&str>,
+) -> Result<MetadataObjectWriteResult, MetadataObjectWriteError> {
+    let identity = metadata_object_identity(object_type, name, customer_namespaces)
+        .map_err(MetadataObjectWriteError::Validation)?;
+    let transport =
+        canonicalize_transport_request(transport).map_err(AdtEditTargetValidationError::from)?;
+    if xml.trim().is_empty() {
+        return Err(MetadataObjectWriteError::BlankDocument);
+    }
+
+    let before = read_metadata_object(sap, &identity).await?;
+    let lock = acquire_adt_object_lock(sap, &identity.object_uri, transport.as_deref())
+        .await
+        .map_err(MetadataObjectWriteError::Session)?;
+
+    let written = write_locked_xml(sap, &identity, object_type, &lock, xml).await;
+    // The object still exists either way, so its lock always has to come off.
+    let released = release_adt_object_lock(sap, &identity.object_uri, &lock).await;
+    match written {
+        Err(primary) => {
+            // A cleanup failure must not replace the write failure that caused
+            // it, but whether the lock survived is state the caller needs: the
+            // next attempt would otherwise fail on the lock rather than on the
+            // original cause, with nothing having said so.
+            return Err(if released.is_err() {
+                MetadataObjectWriteError::AbandonedLock(Box::new(primary))
+            } else {
+                primary
+            });
+        }
+        Ok(()) => released.map_err(MetadataObjectWriteError::Session)?,
+    }
+
+    let stored_xml = read_metadata_object(sap, &identity).await?;
+    Ok(MetadataObjectWriteResult {
+        changed: stored_xml != before,
+        identity,
+        transport,
+        stored_xml,
+    })
+}
+
+async fn write_locked_xml(
+    sap: &mut SapClient,
+    identity: &AdtObjectIdentity,
+    object_type: MetadataAdtObjectType,
+    lock: &AdtObjectLock,
+    xml: &str,
+) -> Result<(), MetadataObjectWriteError> {
+    let mut headers = stateful_session_headers();
+    headers.insert(
+        "Content-Type",
+        HeaderValue::from_static(object_type.media_type()),
+    );
+    let mut query = vec![("lockHandle", lock.handle())];
+    if let Some(transport) = lock.transport() {
+        query.push(("corrNr", transport));
+    }
+
+    sap.put_text(&identity.object_uri, &query, xml, headers)
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            if reports_a_missing_description(&error) {
+                MetadataObjectWriteError::DescriptionMissing(error)
+            } else {
+                MetadataObjectWriteError::Write(error)
+            }
+        })
+}
+
+/// Whether SAP refused the write only because it carried no description.
+///
+/// Matched on the message, as there is no machine-readable marker. Observed
+/// live as HTTP 400 `The description is missing` when writing back the exact
+/// document `object xml` returned for a newly created data element.
+fn reports_a_missing_description(error: &SapClientError) -> bool {
+    matches!(
+        error,
+        SapClientError::Http { message, .. }
+            if message.to_ascii_lowercase().contains("description is missing")
+    )
+}
+
+async fn read_metadata_object(
+    sap: &SapClient,
+    identity: &AdtObjectIdentity,
+) -> Result<String, MetadataObjectWriteError> {
+    sap.get_text(&identity.object_uri)
+        .await
+        .map_err(|source| MetadataObjectWriteError::Read {
+            name: identity.name.clone(),
+            source,
+        })
+}
+
 /// The creation body: a bare root element with the object's identity on it.
 ///
 /// No type information is sent. SAP accepts that and answers with the full
@@ -285,7 +515,7 @@ adtcore:name=\"{name}\" adtcore:type=\"{object_code}\" adtcore:description=\"{de
 <adtcore:packageRef adtcore:name=\"{package}\"/>\
 </{element}>",
         prefix = object_type.root_prefix(),
-        object_code = object_type.adtcore_type(),
+        object_code = object_type.adt_object_type().as_str(),
         description = xml_escape(description),
         package = xml_escape(package),
         name = xml_escape(name),
@@ -331,6 +561,21 @@ mod tests {
             MetadataAdtObjectType::Domain.as_str(),
             RepositoryKind::Doma.as_str()
         );
+    }
+
+    #[test]
+    fn every_metadata_type_agrees_with_the_shared_code_table() {
+        for object_type in [
+            MetadataAdtObjectType::DataElement,
+            MetadataAdtObjectType::Domain,
+        ] {
+            assert_eq!(
+                object_type.adt_object_type().kind(),
+                object_type.repository_kind(),
+                "{} maps to a subtype code of a different kind",
+                object_type.as_str()
+            );
+        }
     }
 
     #[test]
