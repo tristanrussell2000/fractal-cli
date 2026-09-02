@@ -135,6 +135,65 @@ async fn writes_the_document_under_a_lock_and_reads_back_what_sap_stored() {
 }
 
 #[tokio::test]
+async fn a_table_type_is_written_with_its_own_media_type() {
+    // The write PUTs the family's *creation* media type; sending a data
+    // element's would be a 415 against a table type's collection.
+    let object_path = "/sap/bc/adt/ddic/tabletypes/zsample_tt";
+    let server = MockServer::start().await;
+    let session = AdtEditSession {
+        object_path,
+        ..session()
+    };
+    session.mount_csrf_session(&server).await;
+    session.mount_lock(&server, None).await;
+    session
+        .unlock_request()
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(object_path))
+        .and(query_param("lockHandle", LOCK_HANDLE))
+        .and(header(
+            "content-type",
+            "application/vnd.sap.adt.tabletype.v1+xml",
+        ))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(object_path))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<ttyp:tableType/>"))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(object_path))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<ttyp:tableType edited=\"1\"/>"))
+        .mount(&server)
+        .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let result = write_metadata_object(
+        &mut client,
+        &["Z*".to_owned()],
+        MetadataAdtObjectType::TableType,
+        "zsample_tt",
+        "<ttyp:tableType edited=\"1\"/>",
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.identity.object_type, "TTYP");
+    assert!(result.changed);
+    server.verify().await;
+}
+
+#[tokio::test]
 async fn a_write_that_changed_nothing_is_reported_rather_than_hidden() {
     // SAP has answered 200 to a request that did nothing before, so "it
     // changed" is checked instead of assumed.

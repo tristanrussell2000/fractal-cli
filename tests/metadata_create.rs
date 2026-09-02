@@ -1,5 +1,10 @@
 //! Creating and deleting DDIC objects that have no source.
 //!
+//! Deletion reaches the same guarded path every other family uses, so what is
+//! pinned for it here is that a metadata object actually gets there: the
+//! where-used refusal and the read-back proof apply to a data element exactly
+//! as they do to a program.
+//!
 //! These share the POST-then-read-back and lock-then-prove-it-is-gone paths
 //! with every other family, so what is pinned here is what differs: the
 //! collection, the media type, the XML envelope, and the absence of a source
@@ -18,6 +23,7 @@ use fractal::{
         client::SapClient,
         metadata_object::{
             MetadataAdtObjectType, MetadataObjectCreationRequest, create_metadata_object,
+            delete_metadata_object,
         },
     },
 };
@@ -29,6 +35,8 @@ use wiremock::{
 const DATA_ELEMENT_COLLECTION: &str = "/sap/bc/adt/ddic/dataelements";
 const DOMAIN_COLLECTION: &str = "/sap/bc/adt/ddic/domains";
 const DATA_ELEMENT_MEDIA_TYPE: &str = "application/vnd.sap.adt.dataelements.v2+xml";
+const TABLE_TYPE_COLLECTION: &str = "/sap/bc/adt/ddic/tabletypes";
+const USAGES_PATH: &str = "/sap/bc/adt/repository/informationsystem/usageReferences";
 
 fn session() -> AdtEditSession {
     AdtEditSession {
@@ -154,6 +162,141 @@ async fn a_domain_uses_its_own_collection_envelope_and_media_type() {
     .unwrap();
 
     assert_eq!(result.identity.object_type, "DOMA");
+    assert_eq!(result.identity.source_uri, None);
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn a_table_type_uses_its_own_collection_envelope_and_media_type() {
+    // The third metadata family, and the third unrelated envelope: nothing is
+    // shared with the other two but the wrapper attributes.
+    let server = MockServer::start().await;
+    session().mount_csrf_session(&server).await;
+    Mock::given(method("POST"))
+        .and(path(TABLE_TYPE_COLLECTION))
+        .and(header(
+            "content-type",
+            "application/vnd.sap.adt.tabletype.v1+xml",
+        ))
+        .and(body_string_contains("<ttyp:tableType"))
+        .and(body_string_contains(
+            "xmlns:ttyp=\"http://www.sap.com/dictionary/tabletype\"",
+        ))
+        .and(body_string_contains("adtcore:type=\"TTYP/DA\""))
+        .respond_with(ResponseTemplate::new(201).set_body_string("<ttyp:tableType/>"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/ddic/tabletypes/zsample_tt"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<ttyp:tableType/>"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let result = create_metadata_object(
+        &mut client,
+        &["Z*".to_owned()],
+        &request(MetadataAdtObjectType::TableType, "zsample_tt"),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.identity.object_type, "TTYP");
+    assert_eq!(result.identity.source_uri, None);
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn deleting_a_metadata_object_is_guarded_by_where_used_like_any_other() {
+    // A data element is referenced by every field built on it, so this guard
+    // matters more here, not less. Nothing in the metadata module implements
+    // it — reaching the shared path is the whole point.
+    let server = MockServer::start().await;
+    session().mount_csrf_session(&server).await;
+    Mock::given(method("POST"))
+        .and(path(USAGES_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<usageReferences:usageReferenceResult xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences" xmlns:adtcore="http://www.sap.com/adt/core">
+  <usageReferences:referencedObjects>
+    <usageReferences:referencedObject uri="/sap/bc/adt/ddic/structures/zuses_it" isResult="true" parentUri="">
+      <usageReferences:adtObject adtcore:name="ZUSES_IT" adtcore:type="TABL/DS"/>
+    </usageReferences:referencedObject>
+  </usageReferences:referencedObjects>
+</usageReferences:usageReferenceResult>"#,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let error = delete_metadata_object(
+        &mut client,
+        &["Z*".to_owned()],
+        MetadataAdtObjectType::DataElement,
+        "zsample_de",
+        None,
+        false,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), "edit_delete_object_in_use");
+    assert!(error.hint().unwrap().contains("ZUSES_IT"));
+    // Refused before anything was locked or deleted.
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.method != wiremock::http::Method::DELETE),
+        "a guarded delete must not reach SAP"
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn a_deleted_metadata_object_must_read_back_as_gone() {
+    let server = MockServer::start().await;
+    let session = session();
+    session.mount_csrf_session(&server).await;
+    Mock::given(method("POST"))
+        .and(path(USAGES_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"<usageReferences:usageReferenceResult xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences"><usageReferences:referencedObjects/></usageReferences:usageReferenceResult>"#,
+        ))
+        .mount(&server)
+        .await;
+    session.mount_lock(&server, None).await;
+    Mock::given(method("DELETE"))
+        .and(path("/sap/bc/adt/ddic/dataelements/zsample_de"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // SAP has answered 200 to a destructive request that did nothing before, so
+    // success is the read-back saying not-found, not the status code.
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/ddic/dataelements/zsample_de"))
+        .respond_with(ResponseTemplate::new(404).set_body_string("<error/>"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let result = delete_metadata_object(
+        &mut client,
+        &["Z*".to_owned()],
+        MetadataAdtObjectType::DataElement,
+        "zsample_de",
+        None,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.identity.name, "ZSAMPLE_DE");
     assert_eq!(result.identity.source_uri, None);
     server.verify().await;
 }
