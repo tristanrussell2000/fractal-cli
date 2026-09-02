@@ -429,7 +429,7 @@ pub(super) fn editable_source_identity(
     })
 }
 
-fn canonicalize_transport_request(
+pub(super) fn canonicalize_transport_request(
     transport: Option<&str>,
 ) -> Result<Option<String>, TransportRequestError> {
     let Some(transport) = transport else {
@@ -450,7 +450,7 @@ fn canonicalize_transport_request(
 ///
 /// Matching is case-insensitive and uses the same `*` glob behavior as object
 /// search. An empty pattern list denies every object.
-fn validate_customer_namespace(
+pub(super) fn validate_customer_namespace(
     name: &str,
     namespaces: &[String],
 ) -> Result<(), CustomerNamespaceError> {
@@ -464,7 +464,7 @@ fn validate_customer_namespace(
     })
 }
 
-fn validate_object_name(name: &str) -> Result<String, EditableAdtSourceTargetError> {
+pub(super) fn validate_object_name(name: &str) -> Result<String, EditableAdtSourceTargetError> {
     let trimmed = name.trim();
     let characters_are_valid = trimmed
         .chars()

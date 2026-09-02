@@ -9,8 +9,9 @@ use crate::{
     reported::Reported,
 };
 use fractal::sap::{
-    editable_source::EditableAdtObjectType,
+    metadata_object::{MetadataObjectCreationRequest, create_metadata_object},
     object_creation::{AdtObjectCreationRequest, AdtObjectCreationResult, create_adt_object},
+    object_family::AdtObjectFamily,
 };
 
 // Same reasoning as the other edit outputs: `created`, `activated`, and
@@ -43,16 +44,41 @@ pub async fn edit_object_create(
     explicit_profile: Option<&str>,
     args: &EditObjectCreateArgs,
 ) -> Result<EditObjectCreateOutput, Reported> {
-    let object_type = EditableAdtObjectType::parse(&args.object_type)?;
-    let request = AdtObjectCreationRequest {
-        object_type,
-        name: args.name.clone(),
-        package: args.package.clone(),
-        description: args.description.clone(),
-        transport: args.transport.clone(),
-    };
+    // Resolved before connecting: an unknown type is not worth a round trip,
+    // and the two families validate their names differently.
+    let object_type = AdtObjectFamily::parse(&args.object_type)?;
     let (profile_name, profile, mut client) = connect(explicit_profile).await?;
-    let result = create_adt_object(&mut client, &profile.customer_namespaces, &request).await?;
+
+    let result = match object_type {
+        AdtObjectFamily::Source(object_type) => {
+            create_adt_object(
+                &mut client,
+                &profile.customer_namespaces,
+                &AdtObjectCreationRequest {
+                    object_type,
+                    name: args.name.clone(),
+                    package: args.package.clone(),
+                    description: args.description.clone(),
+                    transport: args.transport.clone(),
+                },
+            )
+            .await?
+        }
+        AdtObjectFamily::Metadata(object_type) => {
+            create_metadata_object(
+                &mut client,
+                &profile.customer_namespaces,
+                &MetadataObjectCreationRequest {
+                    object_type,
+                    name: args.name.clone(),
+                    package: args.package.clone(),
+                    description: args.description.clone(),
+                    transport: args.transport.clone(),
+                },
+            )
+            .await?
+        }
+    };
     Ok(map_object_creation_result(profile_name, result))
 }
 
@@ -68,10 +94,16 @@ fn map_object_creation_result(
     profile: String,
     result: AdtObjectCreationResult,
 ) -> EditObjectCreateOutput {
-    let next_step = format!(
-        "fractal edit set --type {} --name {} --source-file <path>",
-        result.identity.object_type.as_str(),
-        result.identity.name
+    // An object with no source cannot be filled by `edit set`; its XML is the
+    // object, so the next step is to read that XML and see what needs filling.
+    let next_step = result.identity.source_uri.as_ref().map_or_else(
+        || format!("fractal object xml {}", result.identity.object_uri),
+        |_| {
+            format!(
+                "fractal edit set --type {} --name {} --source-file <path>",
+                result.identity.object_type, result.identity.name
+            )
+        },
     );
     EditObjectCreateOutput {
         ok: true,
@@ -112,7 +144,7 @@ mod tests {
 
     use super::*;
     use crate::cli::{Cli, Command, EditCommand};
-    use fractal::sap::editable_source::EditableAdtSourceIdentity;
+    use fractal::sap::editable_source::{EditableAdtObjectType, EditableAdtSourceIdentity};
 
     fn create_args(cli: Cli) -> EditObjectCreateArgs {
         let Command::Edit {
@@ -215,7 +247,8 @@ mod tests {
                     name: "ZSAMPLE".to_owned(),
                     object_uri: "/sap/bc/adt/programs/programs/zsample".to_owned(),
                     source_uri: "/sap/bc/adt/programs/programs/zsample/source/main".to_owned(),
-                },
+                }
+                .into(),
                 package: "ZPKG".to_owned(),
                 description: "Sample report".to_owned(),
                 transport: Some("AB1K900575".to_owned()),

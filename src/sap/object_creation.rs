@@ -17,6 +17,7 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use thiserror::Error;
 
 use super::{
+    adt_object_identity::AdtObjectIdentity,
     client::{SapClient, SapClientError},
     editable_source::{
         AdtEditTargetValidationError, EditableAdtObjectType, EditableAdtSourceIdentity,
@@ -41,7 +42,7 @@ pub struct AdtObjectCreationRequest {
 /// The shell SAP created, confirmed to exist by a read-back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdtObjectCreationResult {
-    pub identity: EditableAdtSourceIdentity,
+    pub identity: AdtObjectIdentity,
     pub package: String,
     pub description: String,
     pub transport: Option<String>,
@@ -56,9 +57,13 @@ pub enum AdtObjectCreationError {
     InvalidPackage(String),
     #[error("a new object needs a non-blank description")]
     BlankDescription,
+    /// A media type that cannot be sent as a header at all, which would be a
+    /// mistake in this crate rather than anything SAP said.
+    #[error("'{0}' is not a usable media type")]
+    UnusableMediaType(String),
     #[error("the ADT object-creation request failed: {source}")]
     CreateRequest {
-        identity: Box<EditableAdtSourceIdentity>,
+        identity: Box<AdtObjectIdentity>,
         #[source]
         source: SapClientError,
     },
@@ -66,7 +71,7 @@ pub enum AdtObjectCreationError {
     /// cannot help and the remedy is a different command.
     #[error("{} {} already exists", identity.object_type.as_str(), identity.name)]
     AlreadyExists {
-        identity: Box<EditableAdtSourceIdentity>,
+        identity: Box<AdtObjectIdentity>,
         #[source]
         source: SapClientError,
     },
@@ -74,7 +79,7 @@ pub enum AdtObjectCreationError {
         "SAP accepted the creation request, but the new object could not be read back: {source}"
     )]
     Verification {
-        identity: Box<EditableAdtSourceIdentity>,
+        identity: Box<AdtObjectIdentity>,
         #[source]
         source: SapClientError,
     },
@@ -86,6 +91,7 @@ impl ReportableError for AdtObjectCreationError {
             Self::Validation(error) => error.code(),
             Self::InvalidPackage(_) => "invalid_package_name",
             Self::BlankDescription => "blank_object_description",
+            Self::UnusableMediaType(_) => "unusable_media_type",
             Self::CreateRequest { .. } => "edit_create_request_failed",
             Self::AlreadyExists { .. } => "edit_create_object_exists",
             Self::Verification { .. } => "edit_create_verification_failed",
@@ -110,6 +116,10 @@ impl ReportableError for AdtObjectCreationError {
             }
             Self::BlankDescription => {
                 "Pass --description with a short summary; SAP stores it as the object's text."
+                    .to_owned()
+            }
+            Self::UnusableMediaType(_) => {
+                "This is a defect in Fractal's object-type table, not something SAP reported."
                     .to_owned()
             }
             Self::CreateRequest { source, .. } => format!(
@@ -206,28 +216,75 @@ pub async fn create_adt_object(
     }
 
     let (media_type, body) = creation_payload(&identity, &package, description);
+    let collection_path = identity.object_type.collection_path();
+
+    create_validated_adt_object(
+        sap,
+        identity.into(),
+        AdtObjectCreatePayload {
+            collection_path,
+            media_type,
+            body: &body,
+        },
+        &package,
+        description,
+        transport,
+    )
+    .await
+}
+
+/// What SAP needs in order to create one object, once its identity is settled.
+///
+/// Every field here is family-specific, which is exactly why it is a parameter:
+/// each object family has its own collection, media type and XML envelope, and
+/// nothing else about creating differs between them.
+pub struct AdtObjectCreatePayload<'a> {
+    pub collection_path: &'a str,
+    pub media_type: &'a str,
+    pub body: &'a str,
+}
+
+/// Creates an object from a settled identity and payload, and proves it exists.
+///
+/// This is the shared half of creating: POST, classify a refusal, then read the
+/// object back, because HTTP success is not proof. Families differ only in
+/// validation and payload, so those stay with them and this is written once.
+///
+/// # Errors
+///
+/// Returns [`AdtObjectCreationError`] when SAP refuses the request — separating
+/// a taken name from any other refusal — or when the new object cannot be read
+/// back afterwards.
+pub async fn create_validated_adt_object(
+    sap: &mut SapClient,
+    identity: AdtObjectIdentity,
+    payload: AdtObjectCreatePayload<'_>,
+    package: &str,
+    description: &str,
+    transport: Option<String>,
+) -> Result<AdtObjectCreationResult, AdtObjectCreationError> {
     let mut headers = HeaderMap::new();
-    headers.insert("Content-Type", HeaderValue::from_static(media_type));
+    headers.insert(
+        "Content-Type",
+        HeaderValue::from_str(payload.media_type).map_err(|_| {
+            AdtObjectCreationError::UnusableMediaType(payload.media_type.to_owned())
+        })?,
+    );
 
     let mut query = Vec::new();
     if let Some(transport) = &transport {
         query.push(("corrNr", transport.as_str()));
     }
-    sap.post_text(
-        identity.object_type.collection_path(),
-        &query,
-        Some(&body),
-        headers,
-    )
-    .await
-    .map_err(|source| {
-        let identity = Box::new(identity.clone());
-        if reports_an_existing_object(&source) {
-            AdtObjectCreationError::AlreadyExists { identity, source }
-        } else {
-            AdtObjectCreationError::CreateRequest { identity, source }
-        }
-    })?;
+    sap.post_text(payload.collection_path, &query, Some(payload.body), headers)
+        .await
+        .map_err(|source| {
+            let identity = Box::new(identity.clone());
+            if reports_an_existing_object(&source) {
+                AdtObjectCreationError::AlreadyExists { identity, source }
+            } else {
+                AdtObjectCreationError::CreateRequest { identity, source }
+            }
+        })?;
 
     // HTTP success is not proof. Read the object's metadata back before
     // reporting that it exists.
@@ -240,7 +297,7 @@ pub async fn create_adt_object(
 
     Ok(AdtObjectCreationResult {
         identity,
-        package,
+        package: package.to_owned(),
         description: description.to_owned(),
         transport,
     })
@@ -303,7 +360,7 @@ fn creation_payload(
 }
 
 /// Accepts an ABAP package name, including `$TMP` and slash namespaces.
-fn validate_package_name(package: &str) -> Result<String, AdtObjectCreationError> {
+pub(super) fn validate_package_name(package: &str) -> Result<String, AdtObjectCreationError> {
     let trimmed = package.trim();
     let valid = !trimmed.is_empty()
         && trimmed.chars().all(|character| {

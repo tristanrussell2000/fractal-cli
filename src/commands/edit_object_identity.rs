@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 use fractal::sap::{
-    editable_source::EditableAdtSourceIdentity, object_deletion::DeletableAdtObject,
+    adt_object_identity::AdtObjectIdentity, editable_source::EditableAdtSourceIdentity,
 };
 
 /// The object identity every `edit` command reports.
@@ -33,8 +33,8 @@ impl From<EditableAdtSourceIdentity> for EditObjectIdentityOutput {
     }
 }
 
-impl From<DeletableAdtObject> for EditObjectIdentityOutput {
-    fn from(object: DeletableAdtObject) -> Self {
+impl From<AdtObjectIdentity> for EditObjectIdentityOutput {
+    fn from(object: AdtObjectIdentity) -> Self {
         Self {
             object_type: object.object_type,
             name: object.name,

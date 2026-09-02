@@ -9,11 +9,12 @@ use crate::{
     reported::Reported,
 };
 use fractal::sap::{
-    editable_source::EditableAdtObjectType,
+    metadata_object::{delete_metadata_object, preview_metadata_object_deletion},
     object_deletion::{
         AdtObjectDeletionPreview, AdtObjectDeletionRequest, AdtObjectDeletionResult,
         delete_adt_object, preview_adt_object_deletion,
     },
+    object_family::AdtObjectFamily,
 };
 
 // As with the other edit outputs, the flags are the JSON contract: `dry_run`,
@@ -44,22 +45,51 @@ pub async fn edit_object_delete(
     explicit_profile: Option<&str>,
     args: &EditObjectDeleteArgs,
 ) -> Result<EditObjectDeleteOutput, Reported> {
-    let object_type = EditableAdtObjectType::parse(&args.object_type)?;
-    let request = AdtObjectDeletionRequest {
-        object_type,
-        name: args.name.clone(),
-        transport: args.transport.clone(),
-        force: args.force,
-    };
+    let object_type = AdtObjectFamily::parse(&args.object_type)?;
     let (profile_name, profile, mut client) = connect(explicit_profile).await?;
-    if args.dry_run {
-        let preview =
-            preview_adt_object_deletion(&mut client, &profile.customer_namespaces, &request)
+    let namespaces = &profile.customer_namespaces;
+
+    match object_type {
+        AdtObjectFamily::Source(object_type) => {
+            let request = AdtObjectDeletionRequest {
+                object_type,
+                name: args.name.clone(),
+                transport: args.transport.clone(),
+                force: args.force,
+            };
+            if args.dry_run {
+                let preview =
+                    preview_adt_object_deletion(&mut client, namespaces, &request).await?;
+                return Ok(map_deletion_preview(profile_name, preview));
+            }
+            let result = delete_adt_object(&mut client, namespaces, &request).await?;
+            Ok(map_deletion_result(profile_name, result))
+        }
+        AdtObjectFamily::Metadata(object_type) => {
+            if args.dry_run {
+                let preview = preview_metadata_object_deletion(
+                    &mut client,
+                    namespaces,
+                    object_type,
+                    &args.name,
+                    args.transport.as_deref(),
+                    args.force,
+                )
                 .await?;
-        return Ok(map_deletion_preview(profile_name, preview));
+                return Ok(map_deletion_preview(profile_name, preview));
+            }
+            let result = delete_metadata_object(
+                &mut client,
+                namespaces,
+                object_type,
+                &args.name,
+                args.transport.as_deref(),
+                args.force,
+            )
+            .await?;
+            Ok(map_deletion_result(profile_name, result))
+        }
     }
-    let result = delete_adt_object(&mut client, &profile.customer_namespaces, &request).await?;
-    Ok(map_deletion_result(profile_name, result))
 }
 
 pub fn print_edit_object_delete(result: &EditObjectDeleteOutput, output: OutputFormat) {
@@ -150,7 +180,8 @@ mod tests {
     use super::*;
     use crate::cli::{Cli, Command, EditCommand};
     use fractal::sap::{
-        editable_source::EditableAdtSourceIdentity, object_deletion::DeletableAdtObject,
+        adt_object_identity::AdtObjectIdentity,
+        editable_source::{EditableAdtObjectType, EditableAdtSourceIdentity},
     };
 
     fn delete_args(cli: Cli) -> EditObjectDeleteArgs {
@@ -163,7 +194,7 @@ mod tests {
         args
     }
 
-    fn identity() -> DeletableAdtObject {
+    fn identity() -> AdtObjectIdentity {
         EditableAdtSourceIdentity {
             object_type: EditableAdtObjectType::Program,
             name: "ZSAMPLE".to_owned(),

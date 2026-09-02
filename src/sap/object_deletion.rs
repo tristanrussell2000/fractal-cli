@@ -15,48 +15,19 @@
 use thiserror::Error;
 
 use super::{
+    adt_object_identity::AdtObjectIdentity,
     client::{SapClient, SapClientError},
     edit_session::{
         AdtEditSessionError, acquire_adt_object_lock, release_adt_object_lock,
         stateful_session_headers,
     },
-    editable_source::{
-        AdtEditTargetValidationError, EditableAdtSourceIdentity, validate_adt_edit_target,
-    },
+    editable_source::{AdtEditTargetValidationError, validate_adt_edit_target},
     object_usages::{ObjectUsagesError, UsageReference, get_object_usages},
 };
 use crate::{
     reportable_error::{ReportableError, sap_http_status},
     suggested_command,
 };
-
-/// The identity a deletion needs: something to call the object, and a URI to
-/// act on.
-///
-/// Deliberately not the source-based edit identity. A data element has no
-/// source at all, but deleting one is the same lock, delete, and prove-it-is-
-/// gone sequence — and the where-used guard matters more there, not less.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeletableAdtObject {
-    /// Logical type label for messages, such as `PROG` or `DTEL`.
-    pub object_type: String,
-    pub name: String,
-    pub object_uri: String,
-    /// Carried so callers report the same fields they always did. Deletion
-    /// never reads it: an object with no source deletes identically.
-    pub source_uri: Option<String>,
-}
-
-impl From<EditableAdtSourceIdentity> for DeletableAdtObject {
-    fn from(identity: EditableAdtSourceIdentity) -> Self {
-        Self {
-            object_type: identity.object_type.as_str().to_owned(),
-            name: identity.name,
-            object_uri: identity.object_uri,
-            source_uri: Some(identity.source_uri),
-        }
-    }
-}
 
 /// One object to delete.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,7 +42,7 @@ pub struct AdtObjectDeletionRequest {
 /// What a deletion would do, without doing any of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdtObjectDeletionPreview {
-    pub identity: DeletableAdtObject,
+    pub identity: AdtObjectIdentity,
     pub transport: Option<String>,
     pub direct_usages: Vec<String>,
     pub would_delete: bool,
@@ -80,7 +51,7 @@ pub struct AdtObjectDeletionPreview {
 /// A deletion that has been carried out and verified.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdtObjectDeletionResult {
-    pub identity: DeletableAdtObject,
+    pub identity: AdtObjectIdentity,
     pub transport: Option<String>,
     pub direct_usages: Vec<String>,
     pub forced: bool,
@@ -95,7 +66,7 @@ pub enum AdtObjectDeletionError {
     UsageCheck(#[source] ObjectUsagesError),
     #[error("{name} is still referenced by {} object(s)", usages.len())]
     ObjectInUse {
-        identity: Box<DeletableAdtObject>,
+        identity: Box<AdtObjectIdentity>,
         name: String,
         usages: Vec<String>,
     },
@@ -103,15 +74,15 @@ pub enum AdtObjectDeletionError {
     Session(#[source] AdtEditSessionError),
     #[error("the ADT delete request failed: {source}")]
     DeleteRequest {
-        identity: Box<DeletableAdtObject>,
+        identity: Box<AdtObjectIdentity>,
         #[source]
         source: SapClientError,
     },
     #[error("SAP accepted the delete request, but the object still exists")]
-    NotDeleted { identity: Box<DeletableAdtObject> },
+    NotDeleted { identity: Box<AdtObjectIdentity> },
     #[error("SAP accepted the delete request, but its result could not be verified: {source}")]
     Verification {
-        identity: Box<DeletableAdtObject>,
+        identity: Box<AdtObjectIdentity>,
         #[source]
         source: SapClientError,
     },
@@ -219,7 +190,7 @@ pub async fn preview_adt_object_deletion(
 /// Returns [`AdtObjectDeletionError`] when the where-used lookup fails.
 pub async fn preview_validated_deletion(
     sap: &mut SapClient,
-    object: DeletableAdtObject,
+    object: AdtObjectIdentity,
     transport: Option<String>,
     force: bool,
 ) -> Result<AdtObjectDeletionPreview, AdtObjectDeletionError> {
@@ -274,7 +245,7 @@ pub async fn delete_adt_object(
 /// readable afterwards.
 pub async fn delete_validated_adt_object(
     sap: &mut SapClient,
-    identity: DeletableAdtObject,
+    identity: AdtObjectIdentity,
     transport: Option<String>,
     force: bool,
 ) -> Result<AdtObjectDeletionResult, AdtObjectDeletionError> {
@@ -334,7 +305,7 @@ pub async fn delete_validated_adt_object(
 /// what SAP said it did, or that we cannot tell.
 async fn verify_object_is_gone(
     sap: &SapClient,
-    identity: &DeletableAdtObject,
+    identity: &AdtObjectIdentity,
 ) -> Result<(), AdtObjectDeletionError> {
     match sap.get_text(&identity.object_uri).await {
         Ok(_) => Err(AdtObjectDeletionError::NotDeleted {
@@ -351,7 +322,7 @@ async fn verify_object_is_gone(
 /// The objects SAP reports as genuine references, ignoring hierarchy context.
 async fn direct_usages(
     sap: &mut SapClient,
-    identity: &DeletableAdtObject,
+    identity: &AdtObjectIdentity,
 ) -> Result<Vec<String>, AdtObjectDeletionError> {
     let references = get_object_usages(sap, &identity.object_uri)
         .await
