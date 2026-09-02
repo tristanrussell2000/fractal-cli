@@ -98,8 +98,13 @@ impl ReportableError for AuthCommandError {
             Self::ConfigWrite(_) => {
                 Some("Check that Fractal's application config directory is writable.".to_owned())
             }
-            Self::CredentialStoreAfterConfigSave { profile, .. } => Some(format!(
-                "Run `fractal auth list` and retry `fractal auth login {profile}`."
+            // The inner error knows why the store refused and what to do
+            // instead. Replacing that with "retry" would send the caller round
+            // a loop that fails identically — which is what it used to do on a
+            // machine with no working keychain.
+            Self::CredentialStoreAfterConfigSave { profile, source } => Some(format!(
+                "The profile '{profile}' is saved; only the password was not stored. {}",
+                source.hint().unwrap_or_default()
             )),
         }
     }
@@ -458,7 +463,7 @@ fn store_password(
 mod tests {
     use clap::Parser;
 
-    use super::{AuthCommandError, LoginArgs, LoginDetails, resolve_login_details};
+    use super::{AuthCommandError, LoginArgs, LoginDetails, credentials, resolve_login_details};
     use crate::cli::{AuthCommand, Cli, Command};
     use fractal::reportable_error::ReportableError;
 
@@ -707,5 +712,33 @@ mod tests {
             panic!("expected auth remove command");
         };
         assert_eq!(args.name, "DEV_100");
+    }
+
+    /// The login wrapper must not bury what the credential error said.
+    ///
+    /// It used to answer every storage failure with "retry `auth login`",
+    /// which on a machine with no working keychain is a loop that fails
+    /// identically — the profile is already saved, and only the password
+    /// needs supplying another way.
+    #[test]
+    fn a_failed_store_after_login_keeps_the_credential_errors_guidance() {
+        let error = AuthCommandError::CredentialStoreAfterConfigSave {
+            profile: "dev".to_owned(),
+            source: Box::new(credentials::CredentialError::Store {
+                profile: "dev".to_owned(),
+                source: keyring::Error::NoStorageAccess(Box::new(std::io::Error::other(
+                    "SS error: result not returned from SS API",
+                ))),
+            }),
+        };
+
+        let hint = error.hint().unwrap();
+        assert!(hint.contains("is saved"), "{hint}");
+        assert!(hint.contains("FRACTAL_PASSWORD_DEV"), "{hint}");
+        assert!(hint.contains("password_command"), "{hint}");
+        assert!(
+            !hint.contains("retry"),
+            "retrying fails identically: {hint}"
+        );
     }
 }

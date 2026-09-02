@@ -8,8 +8,18 @@ const KEYCHAIN_SERVICE: &str = "fractal";
 pub enum CredentialError {
     #[error("invalid profile name for credential storage: {0}")]
     InvalidProfileName(String),
-    #[error("could not access the OS credential store: {0}")]
-    Store(#[source] keyring::Error),
+    /// The store exists but refused the request.
+    ///
+    /// Distinct from [`Self::StoreUnavailable`], which is the store failing to
+    /// initialise at all. Both mean "no keychain you can use here", so both
+    /// carry the profile: the guidance names that profile's own environment
+    /// variable, and advice you cannot copy is advice nobody follows.
+    #[error("could not access the OS credential store: {source}")]
+    Store {
+        profile: String,
+        #[source]
+        source: keyring::Error,
+    },
     #[error("no credential is stored for profile '{0}'")]
     Missing(String),
     #[error("the OS credential store could not be initialized: {0}")]
@@ -77,7 +87,7 @@ impl ReportableError for CredentialError {
     fn code(&self) -> &'static str {
         match self {
             Self::InvalidProfileName(_) => "invalid_profile_name",
-            Self::Store(_) => "credential_store_error",
+            Self::Store { .. } => "credential_store_error",
             Self::Missing(_) => "credential_missing",
             Self::StoreUnavailable(_) => "credential_store_unavailable",
             Self::PasswordCommandFailed { .. } => "password_command_failed",
@@ -93,7 +103,7 @@ impl ReportableError for CredentialError {
     fn hint(&self) -> Option<String> {
         match self {
             Self::Missing(profile) => Some(format!(
-                "Run `fractal auth login {profile}` to store the credential, or supply it another way: {}",
+                "Run `fractal auth login {profile}` to store the credential, or supply it another way. {}",
                 supply_options(profile)
             )),
             // The machine has no keychain at all — WSL, a container, a headless
@@ -115,8 +125,15 @@ impl ReportableError for CredentialError {
                 "Fix or delete the file; `fractal auth login --store-plaintext` rewrites it."
                     .to_owned(),
             ),
+            // A store that exists but will not answer is the same dead end as
+            // having none: common on WSL and headless Linux, where the Secret
+            // Service library is installed but nothing is running behind it.
+            Self::Store { profile, .. } => Some(format!(
+                "The credential store refused the request, which usually means there is no working keychain here — normal on WSL, in containers, and over SSH. {}",
+                supply_options(profile)
+            )),
             Self::Config(error) => error.hint(),
-            Self::InvalidProfileName(_) | Self::Store(_) | Self::PlaintextWrite { .. } => None,
+            Self::InvalidProfileName(_) | Self::PlaintextWrite { .. } => None,
         }
     }
 }
@@ -124,7 +141,7 @@ impl ReportableError for CredentialError {
 /// The ways a password can be supplied, for an error that has none.
 fn supply_options(profile: &str) -> String {
     format!(
-        "set {} (or FRACTAL_PASSWORD), set `password_command` on the profile to read it from a password manager, or as a last resort run `fractal auth login {profile} --store-plaintext` to keep it in a plain file.",
+        "Set {} (or FRACTAL_PASSWORD), set `password_command` on the profile to read it from a password manager, or as a last resort run `fractal auth login {profile} --store-plaintext` to keep it in a plain file.",
         password_environment_variable(profile)
     )
 }
@@ -256,7 +273,12 @@ fn run_password_command(profile_name: &str, command: &str) -> Result<String, Cre
 /// cannot save the password.
 pub fn save_password(profile_name: &str, password: &str) -> Result<(), CredentialError> {
     let entry = entry(profile_name)?;
-    entry.set_password(password).map_err(CredentialError::Store)
+    entry
+        .set_password(password)
+        .map_err(|source| CredentialError::Store {
+            profile: profile_name.to_owned(),
+            source,
+        })
 }
 
 /// Retrieves a profile password from the operating-system credential store.
@@ -270,7 +292,10 @@ pub fn get_password(profile_name: &str) -> Result<String, CredentialError> {
     match entry.get_password() {
         Ok(password) => Ok(password),
         Err(keyring::Error::NoEntry) => Err(CredentialError::Missing(profile_name.to_owned())),
-        Err(error) => Err(CredentialError::Store(error)),
+        Err(source) => Err(CredentialError::Store {
+            profile: profile_name.to_owned(),
+            source,
+        }),
     }
 }
 
@@ -286,7 +311,10 @@ pub fn delete_password(profile_name: &str) -> Result<(), CredentialError> {
     let entry = entry(profile_name)?;
     match entry.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(error) => Err(CredentialError::Store(error)),
+        Err(source) => Err(CredentialError::Store {
+            profile: profile_name.to_owned(),
+            source,
+        }),
     }
 }
 
@@ -418,7 +446,10 @@ fn entry(profile_name: &str) -> Result<Entry, CredentialError> {
     }
     install_platform_store_if_needed()?;
 
-    Entry::new(KEYCHAIN_SERVICE, profile_name).map_err(CredentialError::Store)
+    Entry::new(KEYCHAIN_SERVICE, profile_name).map_err(|source| CredentialError::Store {
+        profile: profile_name.to_owned(),
+        source,
+    })
 }
 
 /// Installs the OS credential store, unless one is already installed.
@@ -720,6 +751,30 @@ mod tests {
         assert!(hint.contains("FRACTAL_PASSWORD"));
         assert!(hint.contains("password_command"));
         assert!(hint.contains("--store-plaintext"));
+    }
+
+    /// A keychain that answers with an error is the same dead end as none.
+    ///
+    /// This is what WSL actually produces: the Secret Service library loads,
+    /// so the store installs and `StoreUnavailable` never fires, and then
+    /// every operation fails with an SS error. Guidance attached only to
+    /// `StoreUnavailable` left this case with no hint at all.
+    #[test]
+    fn a_store_that_refuses_names_the_ways_round_it() {
+        let error = CredentialError::Store {
+            profile: "dev".to_owned(),
+            source: keyring::Error::NoStorageAccess(Box::new(std::io::Error::other(
+                "SS error: result not returned from SS API",
+            ))),
+        };
+
+        let hint = error.hint().unwrap();
+        assert!(hint.contains("FRACTAL_PASSWORD_DEV"), "{hint}");
+        assert!(hint.contains("password_command"), "{hint}");
+        assert!(hint.contains("--store-plaintext"), "{hint}");
+        // Storing a password in the clear must never be a suggested command:
+        // suggestions are read-only, and this one is a mutation.
+        assert_eq!(error.suggested_command(), None);
     }
 
     #[test]
