@@ -558,11 +558,19 @@ async fn source_write_error_wins_even_when_cleanup_unlock_also_fails() {
 }
 
 #[tokio::test]
-async fn unlock_failure_surfaces_after_a_successful_write() {
+async fn a_stuck_lock_after_a_successful_write_is_reported_without_failing_the_write() {
+    // The write landed, so this is a success with a caveat rather than a
+    // failure. Reporting failure would misstate the outcome and invite a retry,
+    // which would then fail on the very lock that is stuck — but the lock still
+    // blocks the next edit, so it has to be said.
     let server = MockServer::start().await;
     mount_csrf_session(&server).await;
     mount_successful_lock(&server).await;
-    mount_source_read(&server, ORIGINAL_SOURCE).await;
+    SESSION
+        .source_read("inactive")
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(ORIGINAL_SOURCE.as_bytes()))
+        .mount(&server)
+        .await;
     Mock::given(method("PUT"))
         .and(path(SOURCE_PATH))
         .and(query_param("lockHandle", LOCK_HANDLE))
@@ -575,16 +583,15 @@ async fn unlock_failure_surfaces_after_a_successful_write() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let error =
+    let result =
         patch_adt_source_atomically(&mut client, &profile.customer_namespaces, &patch_request())
             .await
-            .unwrap_err();
+            .expect("the write landed, so this is not a failure");
 
-    assert!(matches!(
-        error,
-        AdtSourcePatchError::Session(AdtEditSessionError::UnlockFailed(_))
-    ));
-    assert_eq!(error.code(), "edit_unlock_failed");
+    assert!(
+        result.still_locked,
+        "a lock that could not be released must reach the caller"
+    );
     server.verify().await;
 }
 

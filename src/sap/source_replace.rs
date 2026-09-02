@@ -44,6 +44,13 @@ pub struct AdtSourceReplacementWriteResult {
     pub replacement: AdtSourceSnapshot,
     pub stored: AdtSourceSnapshot,
     pub sap_normalized_source: bool,
+    /// The write landed, but its lock could not be released.
+    ///
+    /// Reported as success with a caveat rather than as a failure: the source
+    /// is written, and saying otherwise would invite a retry that then fails on
+    /// the stuck lock. The caller still has to clear it, because it blocks the
+    /// next edit of this object.
+    pub still_locked: bool,
 }
 
 /// A failure during complete inactive-source replacement or preview.
@@ -269,6 +276,7 @@ pub async fn replace_adt_source_atomically(
         replacement: saved.proposed,
         stored: saved.stored,
         sap_normalized_source,
+        still_locked: saved.still_locked,
     })
 }
 

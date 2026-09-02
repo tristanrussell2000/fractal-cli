@@ -164,6 +164,46 @@ async fn a_write_that_changed_nothing_is_reported_rather_than_hidden() {
 }
 
 #[tokio::test]
+async fn a_stuck_lock_after_a_successful_write_is_reported_without_failing_the_write() {
+    let server = MockServer::start().await;
+    let session = session();
+    session.mount_csrf_session(&server).await;
+    session.mount_lock(&server, None).await;
+    session
+        .unlock_request()
+        .respond_with(ResponseTemplate::new(500).set_body_string("<error/>"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(OBJECT_PATH))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    mount_reads(&server, &document("old"), &document("new")).await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let result = write_metadata_object(
+        &mut client,
+        &["Z*".to_owned()],
+        MetadataAdtObjectType::DataElement,
+        "zsample_de",
+        &document("new"),
+        None,
+    )
+    .await
+    .expect("the write landed, so this is not a failure");
+
+    assert!(result.changed);
+    assert!(
+        result.still_locked,
+        "a lock that could not be released must reach the caller"
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
 async fn a_refusal_for_a_missing_description_is_classified() {
     // The document `object xml` returns for a new shell has no description,
     // so this is what writing it straight back produces.

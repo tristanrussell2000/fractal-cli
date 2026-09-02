@@ -2,7 +2,10 @@ use std::fmt::Write as _;
 
 use serde::Serialize;
 
-use super::{connect, edit_object_identity::EditObjectIdentityOutput};
+use super::{
+    connect, edit_lock_warning::still_locked_warning,
+    edit_object_identity::EditObjectIdentityOutput,
+};
 use crate::{
     cli::EditSourceDiscardArgs,
     output::{OutputFormat, print_result},
@@ -44,6 +47,9 @@ pub struct EditSourceDiscardOutput {
     inactive_version_exists_after: bool,
     activation_response_parsed: bool,
     sap_reported_activation_executed: Option<bool>,
+    /// Present when the change landed but its lock could not be released.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
 }
 
 pub async fn edit_source_discard(
@@ -95,6 +101,7 @@ fn map_source_discard_result(
         inactive_version_exists_after: false,
         activation_response_parsed: result.activation_response_parsed,
         sap_reported_activation_executed: result.sap_reported_activation_executed,
+        warning: still_locked_warning(result.still_locked),
     }
 }
 
@@ -141,6 +148,9 @@ fn render_source_discard_readable(result: &EditSourceDiscardOutput) -> String {
     );
     let _ = writeln!(output, "active source unchanged: true");
     let _ = writeln!(output, "inactive version exists after: false");
+    if let Some(warning) = &result.warning {
+        let _ = writeln!(output, "warning: {warning}");
+    }
     output
 }
 
@@ -212,6 +222,7 @@ mod tests {
                 ),
                 activation_response_parsed: true,
                 sap_reported_activation_executed: Some(true),
+                still_locked: false,
             },
         );
 

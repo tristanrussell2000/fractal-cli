@@ -35,6 +35,13 @@ pub struct AdtInactiveSourceDiscardResult {
     pub active_after: AdtSourceSnapshot,
     pub activation_response_parsed: bool,
     pub sap_reported_activation_executed: Option<bool>,
+    /// The discard landed, but its lock could not be released.
+    ///
+    /// Reported as success with a caveat rather than as a failure: the work is
+    /// done, and saying otherwise would invite a retry that then fails on the
+    /// stuck lock. The caller still has to clear it, because it blocks the next
+    /// edit of this object.
+    pub still_locked: bool,
 }
 
 #[derive(Debug, Error)]
@@ -248,11 +255,9 @@ pub async fn discard_inactive_adt_source(
                 primary
             });
         }
-        Ok(prepared) => {
-            unlock.map_err(AdtInactiveSourceDiscardError::Session)?;
-            prepared
-        }
+        Ok(prepared) => prepared,
     };
+    let still_locked = unlock.is_err();
 
     // The transport was already applied by the restore lock/write cycle. Passing
     // it again would acquire a redundant second transport-qualified lock.
@@ -283,6 +288,7 @@ pub async fn discard_inactive_adt_source(
         active_after: activation.active,
         activation_response_parsed: activation.activation_response_parsed,
         sap_reported_activation_executed: activation.sap_reported_activation_executed,
+        still_locked,
     })
 }
 

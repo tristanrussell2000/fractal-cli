@@ -22,6 +22,13 @@ pub(super) struct SavedInactiveSourceChange<M> {
     pub(super) proposed: AdtSourceSnapshot,
     pub(super) stored: AdtSourceSnapshot,
     pub(super) metadata: M,
+    /// The save landed, but its lock could not be released.
+    ///
+    /// Not a failure of this operation: the source is written and reporting
+    /// otherwise would invite a retry, which would then fail on the very lock
+    /// that is stuck. It is carried so the caller can say so, because the lock
+    /// blocks the *next* edit and somebody has to clear it.
+    pub(super) still_locked: bool,
 }
 
 /// Internal save stages mapped into each public workflow's contextual error.
@@ -67,11 +74,9 @@ where
                 primary
             });
         }
-        Ok(value) => {
-            unlock.map_err(InactiveSourceSaveError::Session)?;
-            value
-        }
+        Ok(value) => value,
     };
+    let still_locked = unlock.is_err();
 
     let stored = read_adt_source_by_identity(sap, identity, AdtSourceVersion::Inactive)
         .await
@@ -83,6 +88,7 @@ where
         proposed: change.proposed,
         stored,
         metadata: change.metadata,
+        still_locked,
     })
 }
 

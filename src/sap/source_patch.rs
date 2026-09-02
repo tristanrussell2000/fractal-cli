@@ -46,6 +46,13 @@ pub struct AdtSourcePatchWriteResult {
     pub proposed: AdtSourceSnapshot,
     pub stored: AdtSourceSnapshot,
     pub replacements: usize,
+    /// The write landed, but its lock could not be released.
+    ///
+    /// Reported as success with a caveat rather than as a failure: the source
+    /// is written, and saying otherwise would invite a retry that then fails on
+    /// the stuck lock. The caller still has to clear it, because it blocks the
+    /// next edit of this object.
+    pub still_locked: bool,
 }
 
 /// A failure during the guarded ADT lock/read/patch/write/unlock workflow.
@@ -240,6 +247,7 @@ pub async fn patch_adt_source_atomically(
         proposed: saved.proposed,
         stored: saved.stored,
         replacements: saved.metadata,
+        still_locked: saved.still_locked,
     })
 }
 

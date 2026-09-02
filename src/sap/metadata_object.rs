@@ -374,6 +374,13 @@ pub struct MetadataObjectWriteResult {
     pub transport: Option<String>,
     /// What SAP holds after the write, read back rather than assumed.
     pub stored_xml: String,
+    /// The write landed, but its lock could not be released.
+    ///
+    /// Reported as success with a caveat rather than as a failure: the document
+    /// is written, and saying otherwise would invite a retry that then fails on
+    /// the stuck lock. The caller still has to clear it, because it blocks the
+    /// next edit of this object.
+    pub still_locked: bool,
     /// Whether the stored document differs from the one before the write.
     ///
     /// A write SAP accepts but does not apply is a shape this backend has
@@ -429,8 +436,9 @@ pub async fn write_metadata_object(
                 primary
             });
         }
-        Ok(()) => released.map_err(MetadataObjectWriteError::Session)?,
+        Ok(()) => {}
     }
+    let still_locked = released.is_err();
 
     let stored_xml = read_metadata_object(sap, &identity).await?;
     Ok(MetadataObjectWriteResult {
@@ -438,6 +446,7 @@ pub async fn write_metadata_object(
         identity,
         transport,
         stored_xml,
+        still_locked,
     })
 }
 

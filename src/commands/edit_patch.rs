@@ -2,7 +2,9 @@ use std::fmt::Write as _;
 
 use serde::Serialize;
 
-use super::edit_object_identity::EditObjectIdentityOutput;
+use super::{
+    edit_lock_warning::still_locked_warning, edit_object_identity::EditObjectIdentityOutput,
+};
 use crate::{
     cli::EditSourcePatchArgs,
     commands::connect,
@@ -45,6 +47,9 @@ pub struct EditSourcePatchOutput {
     replace: String,
     proposed_source: String,
     stored_source: Option<String>,
+    /// Present when the change landed but its lock could not be released.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
 }
 
 pub async fn edit_source_patch(
@@ -108,6 +113,8 @@ fn map_patch_preview(
         replace: request.replace.clone(),
         proposed_source: preview.proposed.source,
         stored_source: None,
+        // A dry run never locks, so there is no lock to leave behind.
+        warning: None,
     }
 }
 
@@ -138,6 +145,7 @@ fn map_applied_patch(
         replace: request.replace.clone(),
         proposed_source: result.proposed.source,
         stored_source: Some(result.stored.source),
+        warning: still_locked_warning(result.still_locked),
     }
 }
 
@@ -194,6 +202,9 @@ fn render_edit_source_patch_readable(result: &EditSourcePatchOutput) -> String {
         output.push_str(
             "note: a real patch re-reads and validates the source again while holding an ADT lock.\n",
         );
+    }
+    if let Some(warning) = &result.warning {
+        let _ = writeln!(output, "warning: {warning}");
     }
     output
 }
@@ -376,6 +387,7 @@ mod tests {
                     stored.len(),
                 ),
                 replacements: 1,
+                still_locked: false,
             },
         );
 

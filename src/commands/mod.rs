@@ -4,6 +4,7 @@ pub mod edit_check;
 pub mod edit_create;
 pub mod edit_delete;
 pub mod edit_discard;
+pub mod edit_lock_warning;
 pub mod edit_object_identity;
 pub mod edit_patch;
 pub mod edit_read;

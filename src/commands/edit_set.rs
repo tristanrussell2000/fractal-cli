@@ -5,7 +5,9 @@ use thiserror::Error;
 
 use fractal::reportable_error::ReportableError;
 
-use super::edit_object_identity::EditObjectIdentityOutput;
+use super::{
+    edit_lock_warning::still_locked_warning, edit_object_identity::EditObjectIdentityOutput,
+};
 use crate::{
     cli::EditSourceSetArgs,
     commands::connect,
@@ -46,6 +48,9 @@ pub struct EditSourceSetOutput {
     sap_normalized_source: Option<bool>,
     replacement_source: String,
     stored_source: Option<String>,
+    /// Present when the change landed but its lock could not be released.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
 }
 
 pub async fn edit_source_set(
@@ -172,6 +177,8 @@ fn map_set_preview(
         sap_normalized_source: None,
         replacement_source: preview.replacement.source,
         stored_source: None,
+        // A dry run never locks, so there is no lock to leave behind.
+        warning: None,
     }
 }
 
@@ -197,6 +204,7 @@ fn map_applied_set(
         replacement_sha256: result.replacement.sha256,
         stored_sha256: Some(result.stored.sha256),
         sap_normalized_source: Some(result.sap_normalized_source),
+        warning: still_locked_warning(result.still_locked),
         replacement_source: result.replacement.source,
         stored_source: Some(result.stored.source),
     }
@@ -248,6 +256,9 @@ fn render_edit_source_set_readable(result: &EditSourceSetOutput) -> String {
         output.push_str(
             "note: a real set re-reads and validates source while holding an ADT lock; it still does not activate.\n",
         );
+    }
+    if let Some(warning) = &result.warning {
+        let _ = writeln!(output, "warning: {warning}");
     }
     output
 }
@@ -420,6 +431,7 @@ mod tests {
                     stored.len(),
                 ),
                 sap_normalized_source: true,
+                still_locked: false,
             },
         );
         let applied_json = serde_json::to_value(&applied).unwrap();
@@ -431,5 +443,49 @@ mod tests {
             render_edit_source_set_readable(&applied)
                 .contains("complete source stored as inactive; not activated")
         );
+    }
+
+    fn applied_result() -> AdtSourceReplacementWriteResult {
+        let source = "REPORT zsample.\n";
+        let snapshot = || {
+            AdtSourceSnapshot::from_parts(source.to_owned(), source_sha256(source), source.len())
+        };
+        AdtSourceReplacementWriteResult {
+            identity: EditableAdtSourceIdentity {
+                object_type: EditableAdtObjectType::Program,
+                name: "ZSAMPLE".to_owned(),
+                object_uri: "/sap/bc/adt/programs/programs/zsample".to_owned(),
+                source_uri: "/sap/bc/adt/programs/programs/zsample/source/main".to_owned(),
+            },
+            transport: None,
+            original: snapshot(),
+            replacement: snapshot(),
+            stored: snapshot(),
+            sap_normalized_source: false,
+            still_locked: false,
+        }
+    }
+
+    #[test]
+    fn a_stuck_lock_reaches_the_caller_as_a_warning_on_a_successful_write() {
+        // Carrying the flag in the library is pointless if the command layer
+        // drops it: this is the only place the caller can see it.
+        let mut result = applied_result();
+        result.still_locked = true;
+
+        let output = map_applied_set("development".to_owned(), "-".to_owned(), result);
+
+        assert!(output.ok, "the write landed");
+        let warning = output.warning.clone().unwrap();
+        assert!(warning.contains("still locked"));
+        // Retrying would fail on the stuck lock, so the hint must not invite it.
+        assert!(warning.contains("do not repeat this command"));
+    }
+
+    #[test]
+    fn a_released_lock_carries_no_warning() {
+        let output = map_applied_set("development".to_owned(), "-".to_owned(), applied_result());
+
+        assert_eq!(output.warning, None);
     }
 }

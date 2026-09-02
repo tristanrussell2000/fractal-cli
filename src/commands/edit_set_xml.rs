@@ -3,7 +3,8 @@ use std::fmt::Write as _;
 use serde::Serialize;
 
 use super::{
-    connect, edit_object_identity::EditObjectIdentityOutput, edit_set::resolve_replacement_source,
+    connect, edit_lock_warning::still_locked_warning,
+    edit_object_identity::EditObjectIdentityOutput, edit_set::resolve_replacement_source,
 };
 use crate::{
     cli::EditXmlSetArgs,
@@ -61,10 +62,19 @@ pub async fn edit_xml_set(
     // A write SAP accepted that changed nothing is reported, not hidden: it is
     // the shape a silent no-op takes, and the caller would otherwise believe
     // their edit landed.
-    let warning = (!result.changed).then(|| {
-        "SAP accepted the write but the stored document is unchanged. Check that the XML you sent differs from what was there, and that the fields you set are ones SAP stores."
-            .to_owned()
-    });
+    // Both caveats can apply at once, so they are joined rather than one
+    // silently hiding the other.
+    let warning = [
+        still_locked_warning(result.still_locked),
+        (!result.changed).then(|| {
+            "SAP accepted the write but the stored document is unchanged. Check that the XML you sent differs from what was there, and that the fields you set are ones SAP stores."
+                .to_owned()
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    let warning = (!warning.is_empty()).then(|| warning.join(" "));
 
     Ok(EditXmlSetOutput {
         ok: true,
