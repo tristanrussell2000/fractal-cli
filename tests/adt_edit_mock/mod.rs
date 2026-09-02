@@ -52,6 +52,7 @@ impl AdtEditSession {
             client: self.sap_client.to_owned(),
             username: "developer".to_owned(),
             insecure_tls: false,
+            password_command: None,
             customer_namespaces: customer_namespaces
                 .iter()
                 .map(|namespace| (*namespace).to_owned())

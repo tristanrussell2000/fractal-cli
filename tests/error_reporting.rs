@@ -72,10 +72,10 @@ fn contract() -> Vec<Expectation> {
             suggested_command: None,
         },
         Expectation {
-            error: Box::new(CredentialError::Missing("DE2_903".to_owned())),
+            error: Box::new(CredentialError::Missing("DEV_100".to_owned())),
             code: "credential_missing",
             status: None,
-            message_contains: "DE2_903",
+            message_contains: "DEV_100",
             has_hint: true,
             suggested_command: None,
         },

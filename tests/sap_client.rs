@@ -14,6 +14,7 @@ fn profile(base_url: String) -> Profile {
         client: "903".to_owned(),
         username: "developer".to_owned(),
         insecure_tls: false,
+        password_command: None,
         customer_namespaces: vec!["Z*".to_owned(), "Y*".to_owned()],
     }
 }

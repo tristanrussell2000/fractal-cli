@@ -43,8 +43,11 @@ pub enum AuthCommandError {
     #[error("profile config saved, but the credential could not be stored: {source}")]
     CredentialStoreAfterConfigSave {
         profile: String,
+        /// Boxed to keep this error small: it rides on every `Result` in this
+        /// module, and `CredentialError` grew when the credential fallbacks
+        /// went in.
         #[source]
-        source: credentials::CredentialError,
+        source: Box<credentials::CredentialError>,
     },
 }
 
@@ -108,6 +111,12 @@ pub struct AuthLoginResult {
     profile: String,
     config_path: String,
     became_default: bool,
+    /// Where the password now lives: `os_keychain`, `plaintext_file`, or
+    /// `password_command` when Fractal keeps nothing at all.
+    password_storage: String,
+    /// Present when the password was stored somewhere unencrypted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
     message: String,
 }
 
@@ -184,7 +193,18 @@ pub fn auth_remove(args: &ProfileArgs) -> Result<AuthRemoveResult, Reported> {
     }
 
     let removed_default = loaded.config.default_profile.as_deref() == Some(args.name.as_str());
-    credentials::delete_password(&args.name)?;
+    // Both stores, not whichever one this machine happens to have: leaving a
+    // password behind in a file after "remove" reported success would be the
+    // worst possible outcome of this command.
+    credentials::delete_plaintext_password(&args.name)?;
+    // No credential store on this machine means nothing of ours can be in one,
+    // so there is nothing to remove. Failing here would make `remove`
+    // impossible on exactly the machines that keep passwords elsewhere.
+    if let Err(error) = credentials::delete_password(&args.name)
+        && !matches!(error, credentials::CredentialError::StoreUnavailable(_))
+    {
+        return Err(error.into());
+    }
     config::remove_profile(&mut loaded.config, &args.name);
     let config_path = config::save(&loaded.config)
         .map_err(AuthCommandError::ConfigWriteAfterCredentialRemoval)?;
@@ -322,14 +342,19 @@ pub fn auth_login(args: &LoginArgs) -> Result<AuthLoginResult, Reported> {
         resolve_login_details(args, interactive, &mut input, &mut output)?
     };
 
-    let password = if args.password_stdin {
+    // A password command supplies the secret on every use, so there is nothing
+    // to ask for and nothing to keep. Asking anyway would collect a password
+    // that is then never read.
+    let password = if args.password_command.is_some() {
+        None
+    } else if args.password_stdin {
         let mut password = String::new();
         std::io::stdin()
             .read_to_string(&mut password)
             .map_err(AuthCommandError::PasswordStdin)?;
-        password.trim_end_matches(['\r', '\n']).to_owned()
+        Some(password.trim_end_matches(['\r', '\n']).to_owned())
     } else if interactive {
-        rpassword::prompt_password("Password: ").map_err(AuthCommandError::PasswordPrompt)?
+        Some(rpassword::prompt_password("Password: ").map_err(AuthCommandError::PasswordPrompt)?)
     } else {
         // The secure prompt needs a terminal. Saying so beats letting it fail
         // with whatever error reading a pipe produces.
@@ -340,7 +365,7 @@ pub fn auth_login(args: &LoginArgs) -> Result<AuthLoginResult, Reported> {
         .into());
     };
 
-    if password.is_empty() {
+    if password.as_ref().is_some_and(String::is_empty) {
         return Err(AuthCommandError::EmptyPassword.into());
     }
 
@@ -355,6 +380,7 @@ pub fn auth_login(args: &LoginArgs) -> Result<AuthLoginResult, Reported> {
         } else {
             args.namespace.clone()
         },
+        password_command: args.password_command.clone(),
     };
     let became_default = config::update_profile(
         &mut loaded.config,
@@ -364,23 +390,67 @@ pub fn auth_login(args: &LoginArgs) -> Result<AuthLoginResult, Reported> {
     );
 
     let config_path = config::save(&loaded.config).map_err(AuthCommandError::ConfigWrite)?;
-    credentials::save_password(&details.name, &password).map_err(|source| {
-        AuthCommandError::CredentialStoreAfterConfigSave {
+    let storage = store_password(&details.name, password.as_deref(), args.store_plaintext)
+        .map_err(|source| AuthCommandError::CredentialStoreAfterConfigSave {
             profile: details.name.clone(),
-            source,
-        }
-    })?;
+            source: Box::new(source),
+        })?;
 
     Ok(AuthLoginResult {
         ok: true,
         profile: details.name,
         config_path: config_path.display().to_string(),
         became_default,
+        password_storage: storage.description.to_owned(),
+        warning: storage.warning,
         message: if became_default {
             "Profile saved and selected as the default profile.".to_owned()
         } else {
             "Profile saved; the existing default profile was preserved.".to_owned()
         },
+    })
+}
+
+/// Where the password went, and whether that is worth warning about.
+struct PasswordStorage {
+    description: &'static str,
+    warning: Option<String>,
+}
+
+/// Puts the password wherever the caller chose.
+///
+/// Three outcomes: no password at all when a command supplies it on each use,
+/// a plain file when the caller explicitly asked for one, or the OS credential
+/// store. The plaintext choice is never reached by falling back — a machine
+/// with no keychain gets an error naming the options instead, so the downgrade
+/// is always something the caller asked for.
+fn store_password(
+    profile_name: &str,
+    password: Option<&str>,
+    store_plaintext: bool,
+) -> Result<PasswordStorage, credentials::CredentialError> {
+    let Some(password) = password else {
+        return Ok(PasswordStorage {
+            description: "password_command",
+            warning: None,
+        });
+    };
+
+    if store_plaintext {
+        let path = credentials::save_plaintext_password(profile_name, password)?;
+        return Ok(PasswordStorage {
+            description: "plaintext_file",
+            warning: Some(format!(
+                "The password is stored unencrypted in {}, readable only by your user. Anything that can read your files can read it.",
+                path.display()
+            )),
+        });
+    }
+
+    credentials::save_password(profile_name, password)?;
+    Ok(PasswordStorage {
+        description: "os_keychain",
+        warning: None,
     })
 }
 
@@ -407,6 +477,8 @@ mod tests {
             namespace: Vec::new(),
             default: false,
             password_stdin: false,
+            password_command: None,
+            store_plaintext: false,
         }
     }
 
@@ -551,7 +623,7 @@ mod tests {
             "fractal",
             "auth",
             "login",
-            "DE2_903",
+            "DEV_100",
             "--url",
             "https://sap.example:8001",
             "--client",
@@ -574,7 +646,7 @@ mod tests {
         else {
             panic!("expected auth login command");
         };
-        assert_eq!(args.name.as_deref(), Some("DE2_903"));
+        assert_eq!(args.name.as_deref(), Some("DEV_100"));
         assert_eq!(args.url.as_deref(), Some("https://sap.example:8001"));
         assert_eq!(args.client.as_deref(), Some("903"));
         assert_eq!(args.username.as_deref(), Some("mparker"));
@@ -590,7 +662,7 @@ mod tests {
             "fractal",
             "auth",
             "login",
-            "DE2_903",
+            "DEV_100",
             "--url",
             "https://sap.example:8001",
             "--client",
@@ -626,7 +698,7 @@ mod tests {
 
     #[test]
     fn parses_auth_remove_options_from_cli() {
-        let cli = Cli::try_parse_from(["fractal", "auth", "remove", "DE2_903"]).unwrap();
+        let cli = Cli::try_parse_from(["fractal", "auth", "remove", "DEV_100"]).unwrap();
 
         let Command::Auth {
             command: AuthCommand::Remove(args),
@@ -634,6 +706,6 @@ mod tests {
         else {
             panic!("expected auth remove command");
         };
-        assert_eq!(args.name, "DE2_903");
+        assert_eq!(args.name, "DEV_100");
     }
 }
