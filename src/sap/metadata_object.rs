@@ -21,13 +21,14 @@ use super::{
         validate_customer_namespace, validate_object_name,
     },
     object_creation::{
-        AdtObjectCreationError, AdtObjectCreationResult, AdtObjectCreatePayload,
+        AdtObjectCreatePayload, AdtObjectCreationError, AdtObjectCreationResult,
         create_validated_adt_object, validate_package_name,
     },
     object_deletion::{
         AdtObjectDeletionError, AdtObjectDeletionPreview, AdtObjectDeletionResult,
         delete_validated_adt_object, preview_validated_deletion,
     },
+    repository_kind::RepositoryKind,
 };
 use crate::reportable_error::ReportableError;
 
@@ -45,19 +46,23 @@ impl MetadataAdtObjectType {
     ///
     /// Returns [`MetadataObjectTypeError`] for any type outside this family.
     pub fn parse(value: &str) -> Result<Self, MetadataObjectTypeError> {
-        match value.trim().to_ascii_uppercase().as_str() {
-            "DTEL" => Ok(Self::DataElement),
-            "DOMA" => Ok(Self::Domain),
-            _ => Err(MetadataObjectTypeError(value.to_owned())),
-        }
+        let kind = RepositoryKind::parse(value.trim())
+            .map_err(|_| MetadataObjectTypeError(value.to_owned()))?;
+        Self::try_from(kind).map_err(|_| MetadataObjectTypeError(value.to_owned()))
     }
 
     #[must_use]
-    pub const fn as_str(self) -> &'static str {
+    pub const fn repository_kind(self) -> RepositoryKind {
         match self {
-            Self::DataElement => "DTEL",
-            Self::Domain => "DOMA",
+            Self::DataElement => RepositoryKind::Dtel,
+            Self::Domain => RepositoryKind::Doma,
         }
+    }
+
+    /// The logical type name, spelled once in [`RepositoryKind`].
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        self.repository_kind().as_str()
     }
 
     #[must_use]
@@ -104,6 +109,18 @@ impl MetadataAdtObjectType {
         match self {
             Self::DataElement => "blue",
             Self::Domain => "doma",
+        }
+    }
+}
+
+impl TryFrom<RepositoryKind> for MetadataAdtObjectType {
+    type Error = MetadataObjectTypeError;
+
+    fn try_from(kind: RepositoryKind) -> Result<Self, Self::Error> {
+        match kind {
+            RepositoryKind::Dtel => Ok(Self::DataElement),
+            RepositoryKind::Doma => Ok(Self::Domain),
+            unsupported => Err(MetadataObjectTypeError(unsupported.as_str().to_owned())),
         }
     }
 }
@@ -300,6 +317,33 @@ mod tests {
         // A source-based type must not be routed through this family.
         assert!(MetadataAdtObjectType::parse("CLAS").is_err());
         assert!(MetadataAdtObjectType::parse("TABL").is_err());
+    }
+
+    #[test]
+    fn the_type_name_is_the_one_the_shared_kind_table_spells() {
+        // Spelling these here as well is what lets two tables drift. The name
+        // reported back to the caller has to be the name the CLI accepts.
+        assert_eq!(
+            MetadataAdtObjectType::DataElement.as_str(),
+            RepositoryKind::Dtel.as_str()
+        );
+        assert_eq!(
+            MetadataAdtObjectType::Domain.as_str(),
+            RepositoryKind::Doma.as_str()
+        );
+    }
+
+    #[test]
+    fn every_type_round_trips_through_its_own_name() {
+        for object_type in [
+            MetadataAdtObjectType::DataElement,
+            MetadataAdtObjectType::Domain,
+        ] {
+            assert_eq!(
+                MetadataAdtObjectType::parse(object_type.as_str()).unwrap(),
+                object_type
+            );
+        }
     }
 
     #[test]
