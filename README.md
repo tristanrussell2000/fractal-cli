@@ -55,11 +55,35 @@ Uninstalling does not remove your saved profiles or keychain passwords. Use
 
 ## First use
 
-Save a profile for each SAP system. The password is prompted for and stored in the
-operating-system credential store, never in a file.
+Save a profile for each SAP system. In a terminal, `auth login` asks for anything you leave
+out, so the simplest form is:
+
+```sh
+fractal auth login
+```
+
+It prompts for the profile name, base URL, SAP client, username, and password. The password
+is typed without echo and stored in the operating-system credential store, never in a file.
+
+Every value can also be passed as a flag. Flags always win, and only the missing ones are
+asked for:
 
 ```sh
 fractal auth login DEV_100 --url https://sap.example:8001 --client 100 --username demo_user
+```
+
+In a script or pipeline there is no terminal to ask, so pass every value as a flag and feed the
+password through `--password-stdin`:
+
+```sh
+printf '%s' "$SAP_PASSWORD" | fractal auth login DEV_100 \
+  --url https://sap.example:8001 --client 100 --username demo_user --password-stdin
+```
+
+A missing value with no terminal is an error that names the flag to pass; the command never
+hangs waiting on input. Then confirm the connection:
+
+```sh
 fractal system test
 ```
 
@@ -84,7 +108,7 @@ fractal object     search | source | xml | info | usages | kinds
 fractal table      data | metadata
 fractal query      <complete SELECT, or - for stdin>
 fractal transport  list | show | create
-fractal edit       create | delete | read | patch | set | check | activate | discard
+fractal edit       create | delete | read | patch | set | set-xml | check | activate | discard
 ```
 
 Every command and subcommand accepts `--help`.

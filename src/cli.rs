@@ -74,17 +74,19 @@ pub enum AuthCommand {
 
 #[derive(Debug, Args)]
 pub struct LoginArgs {
-    /// Name used to select this profile, for example `DE2_903`.
-    pub(crate) name: String,
-    /// SAP base URL, for example `<https://sap.example:8001>`.
+    /// Name used to select this profile, for example `DE2_903`. Prompted for
+    /// when omitted and the terminal is interactive.
+    pub(crate) name: Option<String>,
+    /// SAP base URL, for example `<https://sap.example:8001>`. Prompted for
+    /// when omitted.
     #[arg(long)]
-    pub(crate) url: String,
-    /// SAP client, for example 903.
+    pub(crate) url: Option<String>,
+    /// SAP client, for example 903. Prompted for when omitted.
     #[arg(long)]
-    pub(crate) client: String,
-    /// SAP username.
+    pub(crate) client: Option<String>,
+    /// SAP username. Prompted for when omitted.
     #[arg(long)]
-    pub(crate) username: String,
+    pub(crate) username: Option<String>,
     /// Allow invalid TLS certificates. Use only for development systems.
     #[arg(long, default_value_t = false)]
     pub(crate) insecure_tls: bool,
