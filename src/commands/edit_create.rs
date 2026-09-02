@@ -8,8 +8,12 @@ use crate::{
     output::{OutputFormat, print_result},
     reported::Reported,
 };
+use fractal::reportable_error::ReportableError;
 use fractal::sap::{
-    metadata_object::{MetadataObjectCreationRequest, create_metadata_object},
+    metadata_object::{
+        MetadataObjectCreationRequest, ServiceBindingSpec, ServiceBindingType,
+        create_metadata_object,
+    },
     object_creation::{AdtObjectCreationRequest, AdtObjectCreationResult, create_adt_object},
     object_family::AdtObjectFamily,
 };
@@ -74,12 +78,55 @@ pub async fn edit_object_create(
                     package: args.package.clone(),
                     description: args.description.clone(),
                     transport: args.transport.clone(),
+                    binding: binding_spec(args)?,
                 },
             )
             .await?
         }
     };
     Ok(map_object_creation_result(profile_name, result))
+}
+
+/// Reads the two arguments only a service binding uses.
+///
+/// Both or neither: a binding needs the pair, and any other type accepts
+/// neither, so a half-supplied pair is refused here rather than producing a
+/// payload SAP would reject with an unexplained 500.
+fn binding_spec(args: &EditObjectCreateArgs) -> Result<Option<ServiceBindingSpec>, Reported> {
+    match (
+        args.service_definition.as_deref(),
+        args.binding_type.as_deref(),
+    ) {
+        (None, None) => Ok(None),
+        (Some(service_definition), Some(binding_type)) => Ok(Some(ServiceBindingSpec {
+            service_definition: service_definition.to_owned(),
+            binding_type: ServiceBindingType::parse(binding_type)?,
+        })),
+        (Some(_), None) => Err(IncompleteBindingError::MissingBindingType.into()),
+        (None, Some(_)) => Err(IncompleteBindingError::MissingServiceDefinition.into()),
+    }
+}
+
+/// One of the binding arguments was given without the other.
+#[derive(Debug, thiserror::Error)]
+enum IncompleteBindingError {
+    #[error("--service-definition needs --binding-type as well")]
+    MissingBindingType,
+    #[error("--binding-type needs --service-definition as well")]
+    MissingServiceDefinition,
+}
+
+impl ReportableError for IncompleteBindingError {
+    fn code(&self) -> &'static str {
+        "incomplete_binding_arguments"
+    }
+
+    fn hint(&self) -> Option<String> {
+        Some(
+            "A service binding needs both: which service definition to expose, and over which protocol."
+                .to_owned(),
+        )
+    }
 }
 
 pub fn print_edit_object_create(result: &EditObjectCreateOutput, output: OutputFormat) {

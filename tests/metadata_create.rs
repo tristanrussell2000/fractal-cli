@@ -22,8 +22,8 @@ use fractal::{
     sap::{
         client::SapClient,
         metadata_object::{
-            MetadataAdtObjectType, MetadataObjectCreationRequest, create_metadata_object,
-            delete_metadata_object,
+            MetadataAdtObjectType, MetadataObjectCreationRequest, ServiceBindingSpec,
+            ServiceBindingType, create_metadata_object, delete_metadata_object,
         },
     },
 };
@@ -60,6 +60,7 @@ fn request(object_type: MetadataAdtObjectType, name: &str) -> MetadataObjectCrea
         package: "$TMP".to_owned(),
         description: "Sample element".to_owned(),
         transport: None,
+        binding: None,
     }
 }
 
@@ -253,6 +254,97 @@ async fn a_message_class_is_created_outside_the_ddic_collections() {
     );
     assert_eq!(result.identity.source_uri, None);
     server.verify().await;
+}
+
+#[tokio::test]
+async fn a_service_binding_sends_its_definition_and_protocol() {
+    // The one member of this family that is not a shell. SAP answers a bare
+    // binding with an HTTP 500 carrying no message, so the details cannot be
+    // filled in afterwards — they have to be in the create.
+    let server = MockServer::start().await;
+    session().mount_csrf_session(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/businessservices/bindings"))
+        .and(header(
+            "content-type",
+            "application/vnd.sap.adt.businessservices.servicebinding.v2+xml",
+        ))
+        .and(body_string_contains("<srvb:serviceBinding"))
+        .and(body_string_contains("adtcore:type=\"SRVB/SVB\""))
+        .and(body_string_contains(
+            "/sap/bc/adt/ddic/srvd/sources/zsample_sd",
+        ))
+        .and(body_string_contains(
+            "<srvb:binding srvb:type=\"ODATA\" srvb:version=\"V4\" srvb:category=\"1\"",
+        ))
+        .respond_with(ResponseTemplate::new(201).set_body_string("<srvb:serviceBinding/>"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/businessservices/bindings/zsample_sb"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<srvb:serviceBinding/>"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let result = create_metadata_object(
+        &mut client,
+        &["Z*".to_owned()],
+        &MetadataObjectCreationRequest {
+            binding: Some(ServiceBindingSpec {
+                service_definition: "ZSAMPLE_SD".to_owned(),
+                binding_type: ServiceBindingType::ODataV4WebApi,
+            }),
+            ..request(MetadataAdtObjectType::ServiceBinding, "zsample_sb")
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.identity.object_type, "SRVB");
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn a_binding_without_its_details_never_reaches_sap() {
+    // SAP's refusal for this is an unexplained 500, so it is caught here
+    // instead.
+    let server = MockServer::start().await;
+
+    let error = create_metadata_object(
+        &mut SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap(),
+        &["Z*".to_owned()],
+        &request(MetadataAdtObjectType::ServiceBinding, "zsample_sb"),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), "missing_binding_details");
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn binding_details_on_another_type_are_refused_rather_than_ignored() {
+    let server = MockServer::start().await;
+
+    let error = create_metadata_object(
+        &mut SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap(),
+        &["Z*".to_owned()],
+        &MetadataObjectCreationRequest {
+            binding: Some(ServiceBindingSpec {
+                service_definition: "ZSAMPLE_SD".to_owned(),
+                binding_type: ServiceBindingType::ODataV4Ui,
+            }),
+            ..request(MetadataAdtObjectType::DataElement, "zsample_de")
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), "unexpected_binding_details");
+    assert!(server.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]

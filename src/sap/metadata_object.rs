@@ -48,6 +48,7 @@ pub enum MetadataAdtObjectType {
     Domain,
     TableType,
     MessageClass,
+    ServiceBinding,
 }
 
 impl MetadataAdtObjectType {
@@ -69,6 +70,7 @@ impl MetadataAdtObjectType {
             Self::Domain => RepositoryKind::Doma,
             Self::TableType => RepositoryKind::Ttyp,
             Self::MessageClass => RepositoryKind::Msag,
+            Self::ServiceBinding => RepositoryKind::Srvb,
         }
     }
 
@@ -86,6 +88,7 @@ impl MetadataAdtObjectType {
             Self::TableType => "/sap/bc/adt/ddic/tabletypes",
             // Not under `ddic/`, unlike every other member of this family.
             Self::MessageClass => "/sap/bc/adt/messageclass",
+            Self::ServiceBinding => "/sap/bc/adt/businessservices/bindings",
         }
     }
 
@@ -101,6 +104,7 @@ impl MetadataAdtObjectType {
             Self::Domain => AdtObjectType::DomaDd,
             Self::TableType => AdtObjectType::TtypDa,
             Self::MessageClass => AdtObjectType::MsagN,
+            Self::ServiceBinding => AdtObjectType::SrvbSvb,
         }
     }
 
@@ -112,6 +116,9 @@ impl MetadataAdtObjectType {
             Self::Domain => "application/vnd.sap.adt.domains.v2+xml",
             Self::TableType => "application/vnd.sap.adt.tabletype.v1+xml",
             Self::MessageClass => "application/vnd.sap.adt.messageclass.v1+xml",
+            Self::ServiceBinding => {
+                "application/vnd.sap.adt.businessservices.servicebinding.v2+xml"
+            }
         }
     }
 
@@ -129,6 +136,10 @@ impl MetadataAdtObjectType {
             // Note the capitalisation: SAP spells this namespace differently
             // from every other one in this family.
             Self::MessageClass => ("mc:messageClass", "http://www.sap.com/adt/MessageClass"),
+            Self::ServiceBinding => (
+                "srvb:serviceBinding",
+                "http://www.sap.com/adt/ddic/ServiceBindings",
+            ),
         }
     }
 
@@ -139,6 +150,7 @@ impl MetadataAdtObjectType {
             Self::Domain => "doma",
             Self::TableType => "ttyp",
             Self::MessageClass => "mc",
+            Self::ServiceBinding => "srvb",
         }
     }
 }
@@ -152,6 +164,7 @@ impl TryFrom<RepositoryKind> for MetadataAdtObjectType {
             RepositoryKind::Doma => Ok(Self::Domain),
             RepositoryKind::Ttyp => Ok(Self::TableType),
             RepositoryKind::Msag => Ok(Self::MessageClass),
+            RepositoryKind::Srvb => Ok(Self::ServiceBinding),
             unsupported => Err(MetadataObjectTypeError(unsupported.as_str().to_owned())),
         }
     }
@@ -271,6 +284,83 @@ pub struct MetadataObjectCreationRequest {
     pub package: String,
     pub description: String,
     pub transport: Option<String>,
+    /// Required for a service binding, meaningless for every other type.
+    ///
+    /// A binding is not a shell: it exists to expose one service definition
+    /// over one protocol, and SAP refuses to create it without both. Asking
+    /// for them up front is the only option, because the refusal is an
+    /// HTTP 500 with no message at all.
+    pub binding: Option<ServiceBindingSpec>,
+}
+
+/// What a service binding needs beyond a name and a package.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceBindingSpec {
+    /// The service definition this binding exposes.
+    pub service_definition: String,
+    pub binding_type: ServiceBindingType,
+}
+
+/// The protocol a binding exposes its service over.
+///
+/// SAP lists six at `/businessservices/bindings/bindingtypes` as a
+/// (name, category) pair: `INA`, `ODATA` V2 and V4, and `SQL`, each in a UI or
+/// Web API category. Only the OData four are offered here — they are the RAP
+/// cases — and the other two are refused by name rather than guessed at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceBindingType {
+    ODataV2Ui,
+    ODataV2WebApi,
+    ODataV4Ui,
+    ODataV4WebApi,
+}
+
+impl ServiceBindingType {
+    /// Parses the CLI spelling, such as `odata-v4-ui`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServiceBindingTypeError`] for anything else, including the
+    /// `INA` and `SQL` bindings SAP supports but this does not.
+    pub fn parse(value: &str) -> Result<Self, ServiceBindingTypeError> {
+        match value.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+            "odata-v2-ui" => Ok(Self::ODataV2Ui),
+            "odata-v2-web-api" => Ok(Self::ODataV2WebApi),
+            "odata-v4-ui" => Ok(Self::ODataV4Ui),
+            "odata-v4-web-api" => Ok(Self::ODataV4WebApi),
+            _ => Err(ServiceBindingTypeError(value.to_owned())),
+        }
+    }
+
+    /// SAP's own triple: protocol, version, and category.
+    ///
+    /// Category `0` is a UI service and `1` a Web API; both are real values
+    /// from the backend's own list, not a convention invented here.
+    const fn as_sap_parts(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::ODataV2Ui => ("ODATA", "V2", "0"),
+            Self::ODataV2WebApi => ("ODATA", "V2", "1"),
+            Self::ODataV4Ui => ("ODATA", "V4", "0"),
+            Self::ODataV4WebApi => ("ODATA", "V4", "1"),
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("unsupported service binding type '{0}'")]
+pub struct ServiceBindingTypeError(pub String);
+
+impl ReportableError for ServiceBindingTypeError {
+    fn code(&self) -> &'static str {
+        "unsupported_binding_type"
+    }
+
+    fn hint(&self) -> Option<String> {
+        Some(
+            "Use odata-v2-ui, odata-v2-web-api, odata-v4-ui, or odata-v4-web-api. SAP also has INA and SQL bindings, which this command does not build."
+                .to_owned(),
+        )
+    }
 }
 
 /// Builds the identity of a metadata object, validating name and namespace.
@@ -323,7 +413,16 @@ pub async fn create_metadata_object(
         return Err(AdtObjectCreationError::BlankDescription);
     }
 
-    let body = creation_payload(request.object_type, &identity.name, &package, description);
+    let body = match (request.object_type, request.binding.as_ref()) {
+        (MetadataAdtObjectType::ServiceBinding, Some(binding)) => {
+            service_binding_payload(&identity.name, &package, description, binding)
+        }
+        (MetadataAdtObjectType::ServiceBinding, None) => {
+            return Err(AdtObjectCreationError::MissingBindingDetails);
+        }
+        (_, Some(_)) => return Err(AdtObjectCreationError::UnexpectedBindingDetails),
+        (object_type, None) => creation_payload(object_type, &identity.name, &package, description),
+    };
     create_validated_adt_object(
         sap,
         identity,
@@ -523,6 +622,45 @@ async fn read_metadata_object(
         })
 }
 
+/// The creation body for a service binding, which is not a shell.
+///
+/// It carries the service definition being exposed and the protocol to expose
+/// it over, both of which SAP requires: without them the create fails with an
+/// HTTP 500 carrying no message.
+///
+/// `srvb:contract` is sent because a live binding shows it, but SAP does not
+/// echo it back — it is evidently derived rather than stored.
+fn service_binding_payload(
+    name: &str,
+    package: &str,
+    description: &str,
+    binding: &ServiceBindingSpec,
+) -> String {
+    let (protocol, version, category) = binding.binding_type.as_sap_parts();
+    let definition = binding.service_definition.to_ascii_uppercase();
+    let definition_uri = format!(
+        "/sap/bc/adt/ddic/srvd/sources/{}",
+        definition.to_ascii_lowercase()
+    );
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+<srvb:serviceBinding xmlns:srvb=\"http://www.sap.com/adt/ddic/ServiceBindings\" xmlns:adtcore=\"http://www.sap.com/adt/core\" \
+srvb:contract=\"C1\" adtcore:name=\"{name}\" adtcore:type=\"SRVB/SVB\" adtcore:description=\"{description}\">\
+<adtcore:packageRef adtcore:name=\"{package}\"/>\
+<srvb:services srvb:name=\"{name}\">\
+<srvb:content srvb:version=\"0001\">\
+<srvb:serviceDefinition adtcore:name=\"{definition}\" adtcore:type=\"SRVD/SRV\" adtcore:uri=\"{definition_uri}\"/>\
+</srvb:content>\
+</srvb:services>\
+<srvb:binding srvb:type=\"{protocol}\" srvb:version=\"{version}\" srvb:category=\"{category}\"/>\
+</srvb:serviceBinding>",
+        name = xml_escape(name),
+        description = xml_escape(description),
+        package = xml_escape(package),
+        definition = xml_escape(&definition),
+    )
+}
+
 /// The creation body: a bare root element with the object's identity on it.
 ///
 /// No type information is sent. SAP accepts that and answers with the full
@@ -581,6 +719,10 @@ mod tests {
             MetadataAdtObjectType::parse("MSAG").unwrap(),
             MetadataAdtObjectType::MessageClass
         );
+        assert_eq!(
+            MetadataAdtObjectType::parse("SRVB").unwrap(),
+            MetadataAdtObjectType::ServiceBinding
+        );
         assert!(MetadataAdtObjectType::parse("CLAS").is_err());
         assert!(MetadataAdtObjectType::parse("TABL").is_err());
     }
@@ -606,6 +748,7 @@ mod tests {
             MetadataAdtObjectType::Domain,
             MetadataAdtObjectType::TableType,
             MetadataAdtObjectType::MessageClass,
+            MetadataAdtObjectType::ServiceBinding,
         ] {
             assert_eq!(
                 object_type.adt_object_type().kind(),
@@ -623,6 +766,7 @@ mod tests {
             MetadataAdtObjectType::Domain,
             MetadataAdtObjectType::TableType,
             MetadataAdtObjectType::MessageClass,
+            MetadataAdtObjectType::ServiceBinding,
         ] {
             assert_eq!(
                 MetadataAdtObjectType::parse(object_type.as_str()).unwrap(),
@@ -672,6 +816,61 @@ mod tests {
         assert!(body.contains("adtcore:type=\"DTEL/DE\""));
         assert!(body.contains("adtcore:name=\"ZSAMPLE_DE\""));
         assert!(body.contains("<adtcore:packageRef adtcore:name=\"$TMP\"/>"));
+    }
+
+    fn binding(binding_type: ServiceBindingType) -> ServiceBindingSpec {
+        ServiceBindingSpec {
+            service_definition: "zsample_sd".to_owned(),
+            binding_type,
+        }
+    }
+
+    #[test]
+    fn a_service_binding_carries_its_definition_and_protocol() {
+        // Not a shell: SAP refuses a bare binding with an HTTP 500 carrying no
+        // message at all, so both have to be in the creation payload.
+        let body = service_binding_payload(
+            "ZSAMPLE_SB",
+            "$TMP",
+            "Sample",
+            &binding(ServiceBindingType::ODataV4Ui),
+        );
+
+        assert!(body.contains("<srvb:serviceBinding"));
+        assert!(body.contains("xmlns:srvb=\"http://www.sap.com/adt/ddic/ServiceBindings\""));
+        assert!(body.contains("adtcore:type=\"SRVB/SVB\""));
+        // The reference is by name *and* URI, and the URI is lower-cased.
+        assert!(body.contains("adtcore:name=\"ZSAMPLE_SD\" adtcore:type=\"SRVD/SRV\""));
+        assert!(body.contains("/sap/bc/adt/ddic/srvd/sources/zsample_sd"));
+        assert!(
+            body.contains(
+                "<srvb:binding srvb:type=\"ODATA\" srvb:version=\"V4\" srvb:category=\"0\""
+            )
+        );
+    }
+
+    #[test]
+    fn each_binding_type_maps_to_saps_own_triple() {
+        // Category 0 is a UI service and 1 a Web API; both come from SAP's own
+        // bindingtypes list, not from a convention invented here.
+        for (parsed, expected) in [
+            ("odata-v2-ui", ("ODATA", "V2", "0")),
+            ("odata-v2-web-api", ("ODATA", "V2", "1")),
+            ("odata-v4-ui", ("ODATA", "V4", "0")),
+            ("odata-v4-web-api", ("ODATA", "V4", "1")),
+        ] {
+            assert_eq!(
+                ServiceBindingType::parse(parsed).unwrap().as_sap_parts(),
+                expected,
+                "{parsed}"
+            );
+        }
+        // Underscores and case are accepted; the two SAP types this does not
+        // build are refused by name rather than guessed at.
+        assert!(ServiceBindingType::parse("ODATA_V4_UI").is_ok());
+        let error = ServiceBindingType::parse("sql").unwrap_err();
+        assert_eq!(error.code(), "unsupported_binding_type");
+        assert!(error.hint().unwrap().contains("INA and SQL"));
     }
 
     #[test]

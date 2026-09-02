@@ -61,6 +61,10 @@ pub enum AdtObjectCreationError {
     /// mistake in this crate rather than anything SAP said.
     #[error("'{0}' is not a usable media type")]
     UnusableMediaType(String),
+    #[error("a service binding needs a service definition and a binding type")]
+    MissingBindingDetails,
+    #[error("only a service binding takes a service definition and a binding type")]
+    UnexpectedBindingDetails,
     #[error("the ADT object-creation request failed: {source}")]
     CreateRequest {
         identity: Box<AdtObjectIdentity>,
@@ -92,6 +96,8 @@ impl ReportableError for AdtObjectCreationError {
             Self::InvalidPackage(_) => "invalid_package_name",
             Self::BlankDescription => "blank_object_description",
             Self::UnusableMediaType(_) => "unusable_media_type",
+            Self::MissingBindingDetails => "missing_binding_details",
+            Self::UnexpectedBindingDetails => "unexpected_binding_details",
             Self::CreateRequest { .. } => "edit_create_request_failed",
             Self::AlreadyExists { .. } => "edit_create_object_exists",
             Self::Verification { .. } => "edit_create_verification_failed",
@@ -120,6 +126,14 @@ impl ReportableError for AdtObjectCreationError {
             }
             Self::UnusableMediaType(_) => {
                 "This is a defect in Fractal's object-type table, not something SAP reported."
+                    .to_owned()
+            }
+            Self::MissingBindingDetails => {
+                "Pass --service-definition and --binding-type. A binding exists to expose one service definition over one protocol, and SAP refuses to create it without both."
+                    .to_owned()
+            }
+            Self::UnexpectedBindingDetails => {
+                "Drop --service-definition and --binding-type, or create a SRVB instead; no other object type has them."
                     .to_owned()
             }
             Self::CreateRequest { source, .. } => format!(

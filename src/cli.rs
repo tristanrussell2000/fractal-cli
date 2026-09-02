@@ -238,6 +238,13 @@ pub struct EditObjectCreateArgs {
     /// Parent transport request, required for a transportable package.
     #[arg(long)]
     pub(crate) transport: Option<String>,
+    /// Service definition a SRVB binding exposes. Only for --type SRVB.
+    #[arg(long)]
+    pub(crate) service_definition: Option<String>,
+    /// Protocol a SRVB binding exposes its service over: odata-v2-ui,
+    /// odata-v2-web-api, odata-v4-ui, or odata-v4-web-api. Only for --type SRVB.
+    #[arg(long)]
+    pub(crate) binding_type: Option<String>,
 }
 
 #[derive(Debug, Args)]
