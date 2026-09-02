@@ -35,8 +35,11 @@ add that directory to your `PATH`. Plain `.tar.xz` archives for each platform ar
 release page, with a `sha256.sum` file for checking downloads.
 
 Linux stores passwords through the Secret Service D-Bus API. A desktop session with
-GNOME Keyring or KWallet works. Headless servers, containers and plain WSL have no such
-service, so there the password has to come from somewhere else — see
+GNOME Keyring or KWallet works. Headless servers, containers and WSL have no such service.
+
+Getting one running there is not worth the effort, and a half-installed keyring is worse than
+none: the library loads, so Fractal uses it, and every operation then fails with
+`credential_store_error`. Supply the password another way instead — see
 [Machines with no keychain](#machines-with-no-keychain).
 
 ### Check the install
