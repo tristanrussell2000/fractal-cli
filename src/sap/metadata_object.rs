@@ -46,6 +46,7 @@ use crate::{
 pub enum MetadataAdtObjectType {
     DataElement,
     Domain,
+    TableType,
 }
 
 impl MetadataAdtObjectType {
@@ -65,6 +66,7 @@ impl MetadataAdtObjectType {
         match self {
             Self::DataElement => RepositoryKind::Dtel,
             Self::Domain => RepositoryKind::Doma,
+            Self::TableType => RepositoryKind::Ttyp,
         }
     }
 
@@ -79,6 +81,7 @@ impl MetadataAdtObjectType {
         match self {
             Self::DataElement => "/sap/bc/adt/ddic/dataelements",
             Self::Domain => "/sap/bc/adt/ddic/domains",
+            Self::TableType => "/sap/bc/adt/ddic/tabletypes",
         }
     }
 
@@ -92,6 +95,7 @@ impl MetadataAdtObjectType {
         match self {
             Self::DataElement => AdtObjectType::DtelDe,
             Self::Domain => AdtObjectType::DomaDd,
+            Self::TableType => AdtObjectType::TtypDa,
         }
     }
 
@@ -101,19 +105,21 @@ impl MetadataAdtObjectType {
         match self {
             Self::DataElement => "application/vnd.sap.adt.dataelements.v2+xml",
             Self::Domain => "application/vnd.sap.adt.domains.v2+xml",
+            Self::TableType => "application/vnd.sap.adt.tabletype.v1+xml",
         }
     }
 
     /// The root element and its namespace, read off a real object of this type.
     ///
-    /// The two families do not share an envelope: a data element is a generic
-    /// `blue:wbobj` wrapper while a domain is its own `doma:domain` root, and
-    /// the namespace URIs are unrelated. Neither is guessable from the type
-    /// code.
+    /// No two of these share an envelope: a data element is a generic
+    /// `blue:wbobj` wrapper, while a domain and a table type each have their
+    /// own root, with unrelated namespace URIs. None of it is guessable from
+    /// the type code, so each was read off a live object.
     const fn root_element(self) -> (&'static str, &'static str) {
         match self {
             Self::DataElement => ("blue:wbobj", "http://www.sap.com/wbobj/dictionary/dtel"),
             Self::Domain => ("doma:domain", "http://www.sap.com/dictionary/domain"),
+            Self::TableType => ("ttyp:tableType", "http://www.sap.com/dictionary/tabletype"),
         }
     }
 
@@ -122,6 +128,7 @@ impl MetadataAdtObjectType {
         match self {
             Self::DataElement => "blue",
             Self::Domain => "doma",
+            Self::TableType => "ttyp",
         }
     }
 }
@@ -133,6 +140,7 @@ impl TryFrom<RepositoryKind> for MetadataAdtObjectType {
         match kind {
             RepositoryKind::Dtel => Ok(Self::DataElement),
             RepositoryKind::Doma => Ok(Self::Domain),
+            RepositoryKind::Ttyp => Ok(Self::TableType),
             unsupported => Err(MetadataObjectTypeError(unsupported.as_str().to_owned())),
         }
     }
@@ -149,7 +157,7 @@ impl ReportableError for MetadataObjectTypeError {
 
     fn hint(&self) -> Option<String> {
         Some(
-            "Metadata objects are DTEL and DOMA. Source-based types use the same commands."
+            "Metadata objects are DTEL, DOMA and TTYP. Source-based types use the same commands."
                 .to_owned(),
         )
     }
@@ -554,6 +562,10 @@ mod tests {
             MetadataAdtObjectType::Domain
         );
         // A source-based type must not be routed through this family.
+        assert_eq!(
+            MetadataAdtObjectType::parse("TTYP").unwrap(),
+            MetadataAdtObjectType::TableType
+        );
         assert!(MetadataAdtObjectType::parse("CLAS").is_err());
         assert!(MetadataAdtObjectType::parse("TABL").is_err());
     }
@@ -577,6 +589,7 @@ mod tests {
         for object_type in [
             MetadataAdtObjectType::DataElement,
             MetadataAdtObjectType::Domain,
+            MetadataAdtObjectType::TableType,
         ] {
             assert_eq!(
                 object_type.adt_object_type().kind(),
@@ -592,6 +605,7 @@ mod tests {
         for object_type in [
             MetadataAdtObjectType::DataElement,
             MetadataAdtObjectType::Domain,
+            MetadataAdtObjectType::TableType,
         ] {
             assert_eq!(
                 MetadataAdtObjectType::parse(object_type.as_str()).unwrap(),
@@ -641,6 +655,20 @@ mod tests {
         assert!(body.contains("adtcore:type=\"DTEL/DE\""));
         assert!(body.contains("adtcore:name=\"ZSAMPLE_DE\""));
         assert!(body.contains("<adtcore:packageRef adtcore:name=\"$TMP\"/>"));
+    }
+
+    #[test]
+    fn a_table_type_uses_its_own_root_and_namespace() {
+        let body = creation_payload(
+            MetadataAdtObjectType::TableType,
+            "ZSAMPLE_TT",
+            "$TMP",
+            "Sample",
+        );
+
+        assert!(body.contains("<ttyp:tableType"));
+        assert!(body.contains("xmlns:ttyp=\"http://www.sap.com/dictionary/tabletype\""));
+        assert!(body.contains("adtcore:type=\"TTYP/DA\""));
     }
 
     #[test]

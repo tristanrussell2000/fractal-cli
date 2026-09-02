@@ -135,7 +135,12 @@ impl AdtObjectType {
             Self::MsagN => RepositoryKind::Msag,
             Self::DclsDl => RepositoryKind::Dcls,
             Self::DdlxEx => RepositoryKind::Ddlx,
-            Self::FugrF | Self::FugrFf => RepositoryKind::Fugr,
+            Self::FugrF => RepositoryKind::Fugr,
+            // A function *module* inside a group, not a group. The two were
+            // mapped to the same kind until a group's `objectstructure` showed
+            // its FUGR/FF children: `--kind FUGR` was returning containers and
+            // their contents as though they were one thing.
+            Self::FugrFf => RepositoryKind::Func,
             Self::ProgP => RepositoryKind::Prog,
             Self::EnhoXhh | Self::EnhoXhb => RepositoryKind::Enho,
             Self::EnhsXsb | Self::EnhsXsd | Self::EnhsXb => RepositoryKind::Enhs,
@@ -162,6 +167,7 @@ pub enum RepositoryKind {
     Srvb,
     Msag,
     Fugr,
+    Func,
     Prog,
     Enho,
     Enhs,
@@ -192,6 +198,7 @@ impl RepositoryKind {
             "SRVB" => Ok(Self::Srvb),
             "MSAG" => Ok(Self::Msag),
             "FUGR" => Ok(Self::Fugr),
+            "FUNC" => Ok(Self::Func),
             "PROG" => Ok(Self::Prog),
             "ENHO" => Ok(Self::Enho),
             "ENHS" => Ok(Self::Enhs),
@@ -219,6 +226,7 @@ impl RepositoryKind {
             Self::Srvb => "SRVB",
             Self::Msag => "MSAG",
             Self::Fugr => "FUGR",
+            Self::Func => "FUNC",
             Self::Prog => "PROG",
             Self::Enho => "ENHO",
             Self::Enhs => "ENHS",
@@ -227,7 +235,7 @@ impl RepositoryKind {
     }
 
     /// Every known kind, in the same order as [`Self::as_str`].
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 21] = [
         Self::Clas,
         Self::Intf,
         Self::Tabl,
@@ -244,6 +252,7 @@ impl RepositoryKind {
         Self::Srvb,
         Self::Msag,
         Self::Fugr,
+        Self::Func,
         Self::Prog,
         Self::Enho,
         Self::Enhs,
@@ -276,6 +285,7 @@ impl RepositoryKind {
             }
             Self::Msag => "Message class — a container of ABAP messages",
             Self::Fugr => "Function group — a container of function modules",
+            Self::Func => "Function module — one callable routine inside a function group",
             Self::Prog => "Program — a classic ABAP report or executable program",
             Self::Enho => {
                 "Enhancement implementation — an implementation of an enhancement spot or BAdI"
@@ -327,7 +337,7 @@ mod tests {
     fn maps_the_subtype_codes_a_live_system_actually_sends() {
         for (code, expected) in [
             ("TTYP/DA", RepositoryKind::Ttyp),
-            ("FUGR/FF", RepositoryKind::Fugr),
+            ("FUGR/FF", RepositoryKind::Func),
             ("ENHO/XHB", RepositoryKind::Enho),
             ("DCLS/DL", RepositoryKind::Dcls),
             ("DDLX/EX", RepositoryKind::Ddlx),
@@ -339,6 +349,19 @@ mod tests {
             );
             assert_eq!(AdtObjectType::parse(code).as_str(), code);
         }
+    }
+
+    /// A function module is not a function group.
+    ///
+    /// Both codes are real and both were mapped to `FUGR`, so
+    /// `object search --kind FUGR` returned containers and their contents as
+    /// though they were one thing. A group's `objectstructure` lists its
+    /// `FUGR/FF` children, which is how the conflation showed up.
+    #[test]
+    fn a_function_module_is_not_classified_as_its_group() {
+        assert_eq!(AdtObjectType::parse("FUGR/F").kind(), RepositoryKind::Fugr);
+        assert_eq!(AdtObjectType::parse("FUGR/FF").kind(), RepositoryKind::Func);
+        assert_ne!(RepositoryKind::Fugr, RepositoryKind::Func);
     }
 
     #[test]
