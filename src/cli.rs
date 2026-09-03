@@ -43,6 +43,11 @@ pub enum Command {
         #[command(subcommand)]
         command: ObjectCommand,
     },
+    /// Inspect DDIC data elements and domains.
+    Ddic {
+        #[command(subcommand)]
+        command: DdicCommand,
+    },
     /// Read data from SAP tables and views.
     Table {
         #[command(subcommand)]
@@ -150,6 +155,32 @@ pub enum ObjectCommand {
     Usages(UsagesArgs),
     /// List known repository kinds with plain-text descriptions.
     Kinds,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DdicCommand {
+    /// Show one data element or domain, resolving a data element to its domain.
+    Show(DdicShowArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct DdicShowArgs {
+    /// Data element or domain name.
+    pub(crate) name: String,
+    /// Skip detection and read this type directly.
+    #[arg(long = "type", value_enum)]
+    pub(crate) object_type: Option<DdicTypeArg>,
+    /// Report the data element alone, without reading its domain.
+    #[arg(long, default_value_t = false)]
+    pub(crate) no_resolve: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum DdicTypeArg {
+    /// Data element.
+    Dtel,
+    /// Domain.
+    Doma,
 }
 
 #[derive(Debug, Subcommand)]

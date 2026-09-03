@@ -3,6 +3,7 @@ pub mod adt_object_identity;
 pub mod adt_object_uri;
 pub mod adt_response;
 pub mod client;
+pub mod ddic_type;
 pub mod edit_session;
 pub mod editable_source;
 mod inactive_source_save;

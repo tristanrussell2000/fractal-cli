@@ -210,13 +210,13 @@ fn render_table_metadata_readable(result: &TableMetadataResultOutput) -> String 
     }
 
     let columns = [
-        metadata_column("KEY"),
-        metadata_column("FIELD"),
-        metadata_column("DECLARED TYPE"),
-        metadata_column("SAP TYPE"),
-        metadata_column("COLUMN TYPE"),
-        metadata_column("LENGTH"),
-        metadata_column("DESCRIPTION"),
+        tabular::plain_column("KEY"),
+        tabular::plain_column("FIELD"),
+        tabular::plain_column("DECLARED TYPE"),
+        tabular::plain_column("SAP TYPE"),
+        tabular::plain_column("COLUMN TYPE"),
+        tabular::plain_column("LENGTH"),
+        tabular::plain_column("DESCRIPTION"),
     ];
     let rows: Vec<_> = result
         .fields
@@ -238,16 +238,6 @@ fn render_table_metadata_readable(result: &TableMetadataResultOutput) -> String 
         .collect();
     output.push_str(&tabular::render_grid(&columns, &rows));
     output
-}
-
-fn metadata_column(name: &str) -> tabular::ColumnOutput {
-    tabular::ColumnOutput {
-        name: name.to_owned(),
-        sap_type: None,
-        col_type: None,
-        length: None,
-        description: None,
-    }
 }
 
 #[cfg(test)]

@@ -5,10 +5,11 @@ mod reported;
 
 use clap::Parser;
 use cli::{
-    AuthCommand, Cli, Command, EditCommand, ObjectCommand, PackageCommand, SystemCommand,
-    TableCommand, TransportCommand,
+    AuthCommand, Cli, Command, DdicCommand, EditCommand, ObjectCommand, PackageCommand,
+    SystemCommand, TableCommand, TransportCommand,
 };
 use commands::auth::{auth_list, auth_login, auth_remove};
+use commands::ddic::{ddic_show, print_ddic_show};
 use commands::edit_activate::{edit_source_activate, print_edit_source_activate};
 use commands::edit_check::{edit_source_check, print_edit_source_check};
 use commands::edit_create::{edit_object_create, print_edit_object_create};
@@ -61,6 +62,16 @@ async fn main() {
         Command::System {
             command: SystemCommand::Test,
         } => run_and_print_async(|| system_test(cli.profile.as_deref()), output).await,
+        Command::Ddic {
+            command: DdicCommand::Show(args),
+        } => {
+            run_and_print_with_async(
+                || ddic_show(cli.profile.as_deref(), args),
+                print_ddic_show,
+                output,
+            )
+            .await
+        }
         Command::Object {
             command: ObjectCommand::Search(args),
         } => run_and_print_async(|| object_search(cli.profile.as_deref(), args), output).await,

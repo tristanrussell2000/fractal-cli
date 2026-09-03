@@ -26,6 +26,18 @@ pub(super) fn map_columns(columns: Vec<TableColumn>) -> Vec<ColumnOutput> {
         .collect()
 }
 
+/// A grid column that is only a heading: the metadata fields describe SAP
+/// table columns and mean nothing for a rendered-only grid.
+pub(super) fn plain_column(name: &str) -> ColumnOutput {
+    ColumnOutput {
+        name: name.to_owned(),
+        sap_type: None,
+        col_type: None,
+        length: None,
+        description: None,
+    }
+}
+
 pub(super) fn render_grid(columns: &[ColumnOutput], rows: &[Vec<String>]) -> String {
     if columns.is_empty() {
         return "(no columns)\n".to_owned();

@@ -542,19 +542,16 @@ pub async fn write_metadata_object(
     let written = write_locked_xml(sap, &identity, object_type, &lock, xml).await;
     // The object still exists either way, so its lock always has to come off.
     let released = release_adt_object_lock(sap, &identity.object_uri, &lock).await;
-    match written {
-        Err(primary) => {
-            // A cleanup failure must not replace the write failure that caused
-            // it, but whether the lock survived is state the caller needs: the
-            // next attempt would otherwise fail on the lock rather than on the
-            // original cause, with nothing having said so.
-            return Err(if released.is_err() {
-                MetadataObjectWriteError::AbandonedLock(Box::new(primary))
-            } else {
-                primary
-            });
-        }
-        Ok(()) => {}
+    if let Err(primary) = written {
+        // A cleanup failure must not replace the write failure that caused it,
+        // but whether the lock survived is state the caller needs: the next
+        // attempt would otherwise fail on the lock rather than on the original
+        // cause, with nothing having said so.
+        return Err(if released.is_err() {
+            MetadataObjectWriteError::AbandonedLock(Box::new(primary))
+        } else {
+            primary
+        });
     }
     let still_locked = released.is_err();
 

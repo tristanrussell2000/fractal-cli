@@ -148,6 +148,7 @@ fractal auth       login | list | remove
 fractal system     list | test
 fractal package    tree | items
 fractal object     search | source | xml | info | usages | kinds
+fractal ddic       show
 fractal table      data | metadata
 fractal query      <complete SELECT, or - for stdin>
 fractal transport  list | show | create

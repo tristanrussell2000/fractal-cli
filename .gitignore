@@ -9,6 +9,9 @@
 # Local planning / working notes
 /plans/
 
+# Claude Code session state, including worktrees created inside the repo
+/.claude/
+
 # Fractal local configuration / development credentials
 config.local.toml
 credentials.local.toml
