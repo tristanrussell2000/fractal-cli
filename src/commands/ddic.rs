@@ -199,10 +199,10 @@ mod tests {
 
     fn data_element_info() -> DdicTypeInfo {
         DdicTypeInfo {
-            name: "ZDTLS_RULE_FIELD".to_owned(),
+            name: "ZSAMPLE_STATUS".to_owned(),
             kind: "DTEL",
-            uri: "/sap/bc/adt/ddic/dataelements/zdtls_rule_field".to_owned(),
-            description: Some("Rule field".to_owned()),
+            uri: "/sap/bc/adt/ddic/dataelements/zsample_status".to_owned(),
+            description: Some("Sample status".to_owned()),
             package: Some("ZPKG".to_owned()),
             effective_type: EffectiveType {
                 data_type: Some("NUMC".to_owned()),
@@ -210,10 +210,10 @@ mod tests {
                 decimals: Some(0),
             },
             data_element: Some(DataElementInfo {
-                type_source: DataElementTypeSource::Domain("ZDTLS_RULE".to_owned()),
-                short_label: Some("Rule".to_owned()),
+                type_source: DataElementTypeSource::Domain("ZSAMPLE_STATUS_DOM".to_owned()),
+                short_label: Some("Status".to_owned()),
                 medium_label: None,
-                long_label: Some("Template rule type".to_owned()),
+                long_label: Some("Sample status label".to_owned()),
                 heading_label: None,
                 search_help: None,
                 search_help_parameter: None,
@@ -226,9 +226,9 @@ mod tests {
 
     fn domain_info() -> DomainInfo {
         DomainInfo {
-            name: "ZDTLS_RULE".to_owned(),
-            uri: "/sap/bc/adt/ddic/domains/zdtls_rule".to_owned(),
-            description: Some("Rule domain".to_owned()),
+            name: "ZSAMPLE_STATUS_DOM".to_owned(),
+            uri: "/sap/bc/adt/ddic/domains/zsample_status_dom".to_owned(),
+            description: Some("Sample status domain".to_owned()),
             package: Some("ZCFG".to_owned()),
             data_type: Some("NUMC".to_owned()),
             length: Some(2),
@@ -238,14 +238,14 @@ mod tests {
             lowercase: false,
             sign_exists: false,
             value_table: Some(DdicObjectRef {
-                name: "T134".to_owned(),
+                name: "ZSAMPLE_VALUES".to_owned(),
                 uri: None,
             }),
             fixed_values: vec![DomainFixedValue {
                 position: Some(1),
                 low: "01".to_owned(),
                 high: None,
-                text: Some("May be template managed".to_owned()),
+                text: Some("Optional".to_owned()),
             }],
         }
     }
@@ -279,18 +279,21 @@ mod tests {
         info.domain = Some(domain_info());
         let rendered = render_ddic_show_readable(&info);
 
-        assert!(rendered.contains("ZDTLS_RULE_FIELD (DTEL)"), "{rendered}");
+        assert!(rendered.contains("ZSAMPLE_STATUS (DTEL)"), "{rendered}");
         assert!(
-            rendered.contains("type: NUMC 2 (via domain ZDTLS_RULE)"),
+            rendered.contains("type: NUMC 2 (via domain ZSAMPLE_STATUS_DOM)"),
             "{rendered}"
         );
         assert!(
-            rendered.contains("label long: Template rule type"),
+            rendered.contains("label long: Sample status label"),
             "{rendered}"
         );
-        assert!(rendered.contains("domain ZDTLS_RULE"), "{rendered}");
-        assert!(rendered.contains("value table: T134"), "{rendered}");
-        assert!(rendered.contains("May be template managed"), "{rendered}");
+        assert!(rendered.contains("domain ZSAMPLE_STATUS_DOM"), "{rendered}");
+        assert!(
+            rendered.contains("value table: ZSAMPLE_VALUES"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("Optional"), "{rendered}");
         // Zero decimals are noise on a non-decimal type.
         assert!(!rendered.contains("NUMC 2,0"), "{rendered}");
     }
@@ -366,7 +369,7 @@ mod tests {
         };
         let rendered = render_ddic_show_readable(&info);
 
-        assert!(rendered.contains("ZDTLS_RULE (DOMA)"), "{rendered}");
+        assert!(rendered.contains("ZSAMPLE_STATUS_DOM (DOMA)"), "{rendered}");
         assert!(!rendered.contains("label "), "{rendered}");
         assert!(!rendered.contains("domain: "), "{rendered}");
         assert!(rendered.contains("fixed values: 1"), "{rendered}");

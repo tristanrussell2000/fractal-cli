@@ -320,7 +320,7 @@ async fn read_domain(
 }
 
 /// Builds the ADT URI for a DDIC name. Registered namespaces are percent-
-/// encoded so `/BCV/CFG_STRING` stays one path segment.
+/// encoded so `/ACME/SAMPLE_TEXT` stays one path segment.
 fn ddic_object_uri(object_type: MetadataAdtObjectType, name: &str) -> String {
     let path_name = name.to_ascii_lowercase().replace('/', "%2f");
     format!("{}/{path_name}", object_type.collection_path())
@@ -456,18 +456,18 @@ mod tests {
     use super::*;
 
     const DOMAIN_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
-<doma:domain adtcore:name="ZDTLS_RULE" adtcore:type="DOMA/DD" adtcore:description="Rule"
+<doma:domain adtcore:name="ZSAMPLE_STATUS_DOM" adtcore:type="DOMA/DD" adtcore:description="Status"
     xmlns:doma="http://www.sap.com/dictionary/domain" xmlns:adtcore="http://www.sap.com/adt/core">
   <adtcore:packageRef adtcore:uri="/sap/bc/adt/packages/zpkg" adtcore:type="DEVC/K" adtcore:name="ZPKG"/>
   <doma:content>
     <doma:typeInformation><doma:datatype>NUMC</doma:datatype><doma:length>000002</doma:length><doma:decimals>000000</doma:decimals></doma:typeInformation>
     <doma:outputInformation><doma:length>000002</doma:length><doma:style>00</doma:style><doma:conversionExit/><doma:signExists>false</doma:signExists><doma:lowercase>true</doma:lowercase><doma:ampmFormat>false</doma:ampmFormat></doma:outputInformation>
     <doma:valueInformation>
-      <doma:valueTableRef adtcore:uri="/sap/bc/adt/ddic/tables/t134" adtcore:type="TABL/DT" adtcore:name="T134"/>
+      <doma:valueTableRef adtcore:uri="/sap/bc/adt/ddic/tables/zsample_values" adtcore:type="TABL/DT" adtcore:name="ZSAMPLE_VALUES"/>
       <doma:appendExists>false</doma:appendExists>
       <doma:fixValues>
-        <doma:fixValue><doma:position>0001</doma:position><doma:low>01</doma:low><doma:high/><doma:text>May</doma:text></doma:fixValue>
-        <doma:fixValue><doma:position>0002</doma:position><doma:low>02</doma:low><doma:high>09</doma:high><doma:text>Must</doma:text></doma:fixValue>
+        <doma:fixValue><doma:position>0001</doma:position><doma:low>01</doma:low><doma:high/><doma:text>Optional</doma:text></doma:fixValue>
+        <doma:fixValue><doma:position>0002</doma:position><doma:low>02</doma:low><doma:high>09</doma:high><doma:text>Mandatory</doma:text></doma:fixValue>
       </doma:fixValues>
     </doma:valueInformation>
   </doma:content>
@@ -476,7 +476,7 @@ mod tests {
     fn data_element_xml(type_kind: &str, type_name: &str) -> String {
         format!(
             r#"<?xml version="1.0" encoding="utf-8"?>
-<blue:wbobj adtcore:name="ZDTLS_FIELD" adtcore:type="DTEL/DE" adtcore:description="A field"
+<blue:wbobj adtcore:name="ZSAMPLE_FIELD" adtcore:type="DTEL/DE" adtcore:description="A sample field"
     xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core">
   <adtcore:packageRef adtcore:uri="/sap/bc/adt/packages/zpkg" adtcore:type="DEVC/K" adtcore:name="ZPKG"/>
   <dtel:dataElement xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements">
@@ -485,10 +485,10 @@ mod tests {
     <dtel:dataType>NUMC</dtel:dataType>
     <dtel:dataTypeLength>000002</dtel:dataTypeLength>
     <dtel:dataTypeDecimals>000000</dtel:dataTypeDecimals>
-    <dtel:shortFieldLabel>Rule</dtel:shortFieldLabel>
-    <dtel:mediumFieldLabel>Rule type</dtel:mediumFieldLabel>
-    <dtel:longFieldLabel>Template rule type</dtel:longFieldLabel>
-    <dtel:headingFieldLabel>Template rule</dtel:headingFieldLabel>
+    <dtel:shortFieldLabel>Status</dtel:shortFieldLabel>
+    <dtel:mediumFieldLabel>Status type</dtel:mediumFieldLabel>
+    <dtel:longFieldLabel>Sample status label</dtel:longFieldLabel>
+    <dtel:headingFieldLabel>Sample status</dtel:headingFieldLabel>
     <dtel:searchHelp/>
     <dtel:setGetParameter/>
     <dtel:changeDocument>true</dtel:changeDocument>
@@ -499,23 +499,29 @@ mod tests {
 
     #[test]
     fn reads_a_domain_typed_data_element() {
-        let info = parse_data_element(&data_element_xml("domain", "ZDTLS_RULE"), "ZDTLS_FIELD")
-            .expect("parses");
+        let info = parse_data_element(
+            &data_element_xml("domain", "ZSAMPLE_STATUS_DOM"),
+            "ZSAMPLE_FIELD",
+        )
+        .expect("parses");
         let element = info.data_element.expect("has data element detail");
 
         assert_eq!(info.kind, "DTEL");
-        assert_eq!(info.uri, "/sap/bc/adt/ddic/dataelements/zdtls_field");
-        assert_eq!(info.description.as_deref(), Some("A field"));
+        assert_eq!(info.uri, "/sap/bc/adt/ddic/dataelements/zsample_field");
+        assert_eq!(info.description.as_deref(), Some("A sample field"));
         assert_eq!(info.package.as_deref(), Some("ZPKG"));
         assert_eq!(info.effective_type.data_type.as_deref(), Some("NUMC"));
         assert_eq!(info.effective_type.length, Some(2));
         assert_eq!(info.effective_type.decimals, Some(0));
         assert_eq!(
             element.type_source,
-            DataElementTypeSource::Domain("ZDTLS_RULE".to_owned())
+            DataElementTypeSource::Domain("ZSAMPLE_STATUS_DOM".to_owned())
         );
-        assert_eq!(element.type_source.domain_name(), Some("ZDTLS_RULE"));
-        assert_eq!(element.long_label.as_deref(), Some("Template rule type"));
+        assert_eq!(
+            element.type_source.domain_name(),
+            Some("ZSAMPLE_STATUS_DOM")
+        );
+        assert_eq!(element.long_label.as_deref(), Some("Sample status label"));
         assert!(element.change_document);
         // Self-closed elements mean "no value", not an empty string.
         assert_eq!(element.search_help, None);
@@ -524,7 +530,7 @@ mod tests {
 
     #[test]
     fn a_predefined_type_names_no_domain() {
-        let info = parse_data_element(&data_element_xml("predefinedAbapType", ""), "ZDTLS_FIELD")
+        let info = parse_data_element(&data_element_xml("predefinedAbapType", ""), "ZSAMPLE_FIELD")
             .expect("parses");
         let element = info.data_element.expect("has data element detail");
 
@@ -538,8 +544,11 @@ mod tests {
 
     #[test]
     fn an_unrecognized_type_kind_is_preserved_rather_than_guessed() {
-        let info = parse_data_element(&data_element_xml("referenceType", "IF_ANY"), "ZDTLS_FIELD")
-            .expect("parses");
+        let info = parse_data_element(
+            &data_element_xml("referenceType", "IF_SAMPLE"),
+            "ZSAMPLE_FIELD",
+        )
+        .expect("parses");
         let element = info.data_element.expect("has data element detail");
 
         assert_eq!(
@@ -552,9 +561,9 @@ mod tests {
 
     #[test]
     fn reads_a_domain_with_fixed_values_and_a_value_table() {
-        let domain = parse_domain(DOMAIN_XML, "ZDTLS_RULE").expect("parses");
+        let domain = parse_domain(DOMAIN_XML, "ZSAMPLE_STATUS_DOM").expect("parses");
 
-        assert_eq!(domain.uri, "/sap/bc/adt/ddic/domains/zdtls_rule");
+        assert_eq!(domain.uri, "/sap/bc/adt/ddic/domains/zsample_status_dom");
         assert_eq!(domain.data_type.as_deref(), Some("NUMC"));
         assert_eq!(domain.length, Some(2));
         assert_eq!(domain.output_length, Some(2));
@@ -564,22 +573,22 @@ mod tests {
         assert_eq!(
             domain.value_table,
             Some(DdicObjectRef {
-                name: "T134".to_owned(),
-                uri: Some("/sap/bc/adt/ddic/tables/t134".to_owned()),
+                name: "ZSAMPLE_VALUES".to_owned(),
+                uri: Some("/sap/bc/adt/ddic/tables/zsample_values".to_owned()),
             })
         );
         assert_eq!(domain.fixed_values.len(), 2);
         assert_eq!(domain.fixed_values[0].position, Some(1));
         assert_eq!(domain.fixed_values[0].low, "01");
         assert_eq!(domain.fixed_values[0].high, None);
-        assert_eq!(domain.fixed_values[0].text.as_deref(), Some("May"));
+        assert_eq!(domain.fixed_values[0].text.as_deref(), Some("Optional"));
         // An interval keeps its upper bound.
         assert_eq!(domain.fixed_values[1].high.as_deref(), Some("09"));
     }
 
     #[test]
     fn a_domain_read_directly_reports_its_own_type_as_effective() {
-        let info = parse_domain_object(DOMAIN_XML, "ZDTLS_RULE").expect("parses");
+        let info = parse_domain_object(DOMAIN_XML, "ZSAMPLE_STATUS_DOM").expect("parses");
 
         assert_eq!(info.kind, "DOMA");
         assert_eq!(info.data_element, None);
@@ -593,8 +602,8 @@ mod tests {
     #[test]
     fn registered_namespaces_stay_one_path_segment() {
         assert_eq!(
-            ddic_object_uri(MetadataAdtObjectType::Domain, "/BCV/CFG_STRING"),
-            "/sap/bc/adt/ddic/domains/%2fbcv%2fcfg_string"
+            ddic_object_uri(MetadataAdtObjectType::Domain, "/ACME/SAMPLE_TEXT"),
+            "/sap/bc/adt/ddic/domains/%2facme%2fsample_text"
         );
     }
 

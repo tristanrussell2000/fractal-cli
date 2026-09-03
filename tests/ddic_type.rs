@@ -31,23 +31,23 @@ fn resolving() -> DdicTypeOptions {
 }
 
 const DATA_ELEMENT_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
-<blue:wbobj adtcore:name="ZDTLS_RULE_FIELD" adtcore:type="DTEL/DE" adtcore:description="Rule field"
+<blue:wbobj adtcore:name="ZSAMPLE_STATUS" adtcore:type="DTEL/DE" adtcore:description="Sample status"
     xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core">
   <adtcore:packageRef adtcore:uri="/sap/bc/adt/packages/zpkg" adtcore:type="DEVC/K" adtcore:name="ZPKG"/>
   <dtel:dataElement xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements">
     <dtel:typeKind>domain</dtel:typeKind>
-    <dtel:typeName>ZDTLS_RULE</dtel:typeName>
+    <dtel:typeName>ZSAMPLE_STATUS_DOM</dtel:typeName>
     <dtel:dataType>NUMC</dtel:dataType>
     <dtel:dataTypeLength>000002</dtel:dataTypeLength>
     <dtel:dataTypeDecimals>000000</dtel:dataTypeDecimals>
-    <dtel:shortFieldLabel>Rule</dtel:shortFieldLabel>
+    <dtel:shortFieldLabel>Status</dtel:shortFieldLabel>
     <dtel:searchHelp/>
     <dtel:changeDocument>false</dtel:changeDocument>
   </dtel:dataElement>
 </blue:wbobj>"#;
 
 const PREDEFINED_DATA_ELEMENT_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
-<blue:wbobj adtcore:name="ZDTLS_ACT" adtcore:description="Actual"
+<blue:wbobj adtcore:name="ZSAMPLE_AMOUNT" adtcore:description="Sample amount"
     xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core">
   <dtel:dataElement xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements">
     <dtel:typeKind>predefinedAbapType</dtel:typeKind>
@@ -59,7 +59,7 @@ const PREDEFINED_DATA_ELEMENT_XML: &str = r#"<?xml version="1.0" encoding="utf-8
 </blue:wbobj>"#;
 
 const DOMAIN_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
-<doma:domain adtcore:name="ZDTLS_RULE" adtcore:type="DOMA/DD" adtcore:description="Rule domain"
+<doma:domain adtcore:name="ZSAMPLE_STATUS_DOM" adtcore:type="DOMA/DD" adtcore:description="Sample status domain"
     xmlns:doma="http://www.sap.com/dictionary/domain" xmlns:adtcore="http://www.sap.com/adt/core">
   <adtcore:packageRef adtcore:uri="/sap/bc/adt/packages/zcfg" adtcore:type="DEVC/K" adtcore:name="ZCFG"/>
   <doma:content>
@@ -68,8 +68,8 @@ const DOMAIN_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
     <doma:valueInformation>
       <doma:valueTableRef/>
       <doma:fixValues>
-        <doma:fixValue><doma:position>0001</doma:position><doma:low>01</doma:low><doma:high/><doma:text>May</doma:text></doma:fixValue>
-        <doma:fixValue><doma:position>0002</doma:position><doma:low>02</doma:low><doma:high/><doma:text>Must</doma:text></doma:fixValue>
+        <doma:fixValue><doma:position>0001</doma:position><doma:low>01</doma:low><doma:high/><doma:text>Optional</doma:text></doma:fixValue>
+        <doma:fixValue><doma:position>0002</doma:position><doma:low>02</doma:low><doma:high/><doma:text>Mandatory</doma:text></doma:fixValue>
       </doma:fixValues>
     </doma:valueInformation>
   </doma:content>
@@ -93,34 +93,34 @@ fn mock_not_found(path_value: &'static str) -> Mock {
 async fn resolves_a_data_element_through_to_its_domain() {
     let server = MockServer::start().await;
     mock_ok(
-        "/sap/bc/adt/ddic/dataelements/zdtls_rule_field",
+        "/sap/bc/adt/ddic/dataelements/zsample_status",
         DATA_ELEMENT_XML,
     )
     .mount(&server)
     .await;
-    mock_ok("/sap/bc/adt/ddic/domains/zdtls_rule", DOMAIN_XML)
+    mock_ok("/sap/bc/adt/ddic/domains/zsample_status_dom", DOMAIN_XML)
         .mount(&server)
         .await;
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let info = get_ddic_type(&mut client, "zdtls_rule_field", &resolving())
+    let info = get_ddic_type(&mut client, "zsample_status", &resolving())
         .await
         .unwrap();
 
-    assert_eq!(info.name, "ZDTLS_RULE_FIELD");
+    assert_eq!(info.name, "ZSAMPLE_STATUS");
     assert_eq!(info.kind, "DTEL");
     assert_eq!(info.package.as_deref(), Some("ZPKG"));
     assert_eq!(info.effective_type.data_type.as_deref(), Some("NUMC"));
 
     let domain = info.domain.expect("resolved the domain");
-    assert_eq!(domain.name, "ZDTLS_RULE");
+    assert_eq!(domain.name, "ZSAMPLE_STATUS_DOM");
     // The value list is the whole reason for following the link.
     assert_eq!(domain.fixed_values.len(), 2);
-    assert_eq!(domain.fixed_values[1].text.as_deref(), Some("Must"));
+    assert_eq!(domain.fixed_values[1].text.as_deref(), Some("Mandatory"));
     // The domain carries its own package and description, not the element's.
     assert_eq!(domain.package.as_deref(), Some("ZCFG"));
-    assert_eq!(domain.description.as_deref(), Some("Rule domain"));
+    assert_eq!(domain.description.as_deref(), Some("Sample status domain"));
     server.verify().await;
 }
 
@@ -128,7 +128,7 @@ async fn resolves_a_data_element_through_to_its_domain() {
 async fn no_resolve_reads_the_data_element_alone() {
     let server = MockServer::start().await;
     mock_ok(
-        "/sap/bc/adt/ddic/dataelements/zdtls_rule_field",
+        "/sap/bc/adt/ddic/dataelements/zsample_status",
         DATA_ELEMENT_XML,
     )
     .mount(&server)
@@ -140,7 +140,7 @@ async fn no_resolve_reads_the_data_element_alone() {
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
     let info = get_ddic_type(
         &mut client,
-        "ZDTLS_RULE_FIELD",
+        "ZSAMPLE_STATUS",
         &DdicTypeOptions {
             object_type: None,
             resolve_domain: false,
@@ -152,7 +152,7 @@ async fn no_resolve_reads_the_data_element_alone() {
     assert!(info.domain.is_none());
     assert_eq!(
         info.data_element.expect("has detail").type_source,
-        DataElementTypeSource::Domain("ZDTLS_RULE".to_owned())
+        DataElementTypeSource::Domain("ZSAMPLE_STATUS_DOM".to_owned())
     );
     server.verify().await;
 }
@@ -161,7 +161,7 @@ async fn no_resolve_reads_the_data_element_alone() {
 async fn a_predefined_type_needs_no_domain_request() {
     let server = MockServer::start().await;
     mock_ok(
-        "/sap/bc/adt/ddic/dataelements/zdtls_act",
+        "/sap/bc/adt/ddic/dataelements/zsample_amount",
         PREDEFINED_DATA_ELEMENT_XML,
     )
     .mount(&server)
@@ -169,7 +169,7 @@ async fn a_predefined_type_needs_no_domain_request() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let info = get_ddic_type(&mut client, "ZDTLS_ACT", &resolving())
+    let info = get_ddic_type(&mut client, "ZSAMPLE_AMOUNT", &resolving())
         .await
         .unwrap();
 
@@ -182,16 +182,16 @@ async fn a_predefined_type_needs_no_domain_request() {
 #[tokio::test]
 async fn falls_back_to_a_domain_when_no_data_element_has_the_name() {
     let server = MockServer::start().await;
-    mock_not_found("/sap/bc/adt/ddic/dataelements/zdtls_rule")
+    mock_not_found("/sap/bc/adt/ddic/dataelements/zsample_status_dom")
         .mount(&server)
         .await;
-    mock_ok("/sap/bc/adt/ddic/domains/zdtls_rule", DOMAIN_XML)
+    mock_ok("/sap/bc/adt/ddic/domains/zsample_status_dom", DOMAIN_XML)
         .mount(&server)
         .await;
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let info = get_ddic_type(&mut client, "ZDTLS_RULE", &resolving())
+    let info = get_ddic_type(&mut client, "ZSAMPLE_STATUS_DOM", &resolving())
         .await
         .unwrap();
 
@@ -208,7 +208,7 @@ async fn an_explicit_type_skips_detection() {
     let server = MockServer::start().await;
     // Only the domain endpoint is mocked: asking for a domain must not try the
     // data-element collection first.
-    mock_ok("/sap/bc/adt/ddic/domains/zdtls_rule", DOMAIN_XML)
+    mock_ok("/sap/bc/adt/ddic/domains/zsample_status_dom", DOMAIN_XML)
         .mount(&server)
         .await;
 
@@ -216,7 +216,7 @@ async fn an_explicit_type_skips_detection() {
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
     let info = get_ddic_type(
         &mut client,
-        "ZDTLS_RULE",
+        "ZSAMPLE_STATUS_DOM",
         &DdicTypeOptions {
             object_type: Some(MetadataAdtObjectType::Domain),
             resolve_domain: true,
@@ -257,7 +257,7 @@ async fn a_name_that_is_neither_reports_one_error_rather_than_a_bare_404() {
 async fn detection_stops_at_a_failure_that_is_not_a_missing_object() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/sap/bc/adt/ddic/dataelements/zdtls_rule_field"))
+        .and(path("/sap/bc/adt/ddic/dataelements/zsample_status"))
         .respond_with(ResponseTemplate::new(401).set_body_string("Unauthorized"))
         .expect(1)
         .mount(&server)
@@ -267,7 +267,7 @@ async fn detection_stops_at_a_failure_that_is_not_a_missing_object() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let error = get_ddic_type(&mut client, "ZDTLS_RULE_FIELD", &resolving())
+    let error = get_ddic_type(&mut client, "ZSAMPLE_STATUS", &resolving())
         .await
         .unwrap_err();
 
@@ -280,25 +280,25 @@ async fn detection_stops_at_a_failure_that_is_not_a_missing_object() {
 async fn a_referenced_domain_that_cannot_be_read_names_both_objects() {
     let server = MockServer::start().await;
     mock_ok(
-        "/sap/bc/adt/ddic/dataelements/zdtls_rule_field",
+        "/sap/bc/adt/ddic/dataelements/zsample_status",
         DATA_ELEMENT_XML,
     )
     .mount(&server)
     .await;
-    mock_not_found("/sap/bc/adt/ddic/domains/zdtls_rule")
+    mock_not_found("/sap/bc/adt/ddic/domains/zsample_status_dom")
         .mount(&server)
         .await;
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let error = get_ddic_type(&mut client, "ZDTLS_RULE_FIELD", &resolving())
+    let error = get_ddic_type(&mut client, "ZSAMPLE_STATUS", &resolving())
         .await
         .unwrap_err();
 
     assert_eq!(error.code(), "ddic_domain_missing");
     let message = error.message();
-    assert!(message.contains("ZDTLS_RULE_FIELD"), "{message}");
-    assert!(message.contains("ZDTLS_RULE"), "{message}");
+    assert!(message.contains("ZSAMPLE_STATUS"), "{message}");
+    assert!(message.contains("ZSAMPLE_STATUS_DOM"), "{message}");
     server.verify().await;
 }
 
@@ -321,16 +321,16 @@ async fn a_standard_domain_outside_the_customer_namespaces_is_readable() {
     let server = MockServer::start().await;
     // The point of the read path having no namespace guard: customer data
     // elements almost always delegate to SAP-standard domains.
-    mock_not_found("/sap/bc/adt/ddic/dataelements/mtart")
+    mock_not_found("/sap/bc/adt/ddic/dataelements/std_sample_dom")
         .mount(&server)
         .await;
-    mock_ok("/sap/bc/adt/ddic/domains/mtart", DOMAIN_XML)
+    mock_ok("/sap/bc/adt/ddic/domains/std_sample_dom", DOMAIN_XML)
         .mount(&server)
         .await;
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let info = get_ddic_type(&mut client, "MTART", &resolving())
+    let info = get_ddic_type(&mut client, "STD_SAMPLE_DOM", &resolving())
         .await
         .unwrap();
 
