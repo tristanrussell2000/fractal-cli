@@ -12,6 +12,8 @@
 //! guards that do work are the explicit `delete` verb, the customer-namespace
 //! check, the where-used refusal, and the read-back.
 
+use super::package_authorization::{PackageAuthorizationError, authorize_object_package};
+use crate::config::EditPolicy;
 use thiserror::Error;
 
 use super::{
@@ -62,6 +64,8 @@ pub struct AdtObjectDeletionResult {
 pub enum AdtObjectDeletionError {
     #[error(transparent)]
     Validation(#[from] AdtEditTargetValidationError),
+    #[error(transparent)]
+    PackageNotAllowed(#[from] PackageAuthorizationError),
     #[error("could not determine what references this object: {0}")]
     UsageCheck(#[source] ObjectUsagesError),
     #[error("{name} is still referenced by {} object(s)", usages.len())]
@@ -97,6 +101,7 @@ impl ReportableError for AdtObjectDeletionError {
         match self {
             Self::AbandonedLock(primary) => primary.code(),
             Self::Validation(error) => error.code(),
+            Self::PackageNotAllowed(error) => error.code(),
             Self::UsageCheck(_) => "edit_delete_usage_check_failed",
             Self::ObjectInUse { .. } => "edit_delete_object_in_use",
             Self::Session(_) => "edit_delete_lock_failed",
@@ -110,6 +115,7 @@ impl ReportableError for AdtObjectDeletionError {
         match self {
             Self::AbandonedLock(primary) => primary.status(),
             Self::UsageCheck(error) => error.status(),
+            Self::PackageNotAllowed(error) => error.status(),
             Self::Session(error) => error.status(),
             Self::DeleteRequest { source, .. } | Self::Verification { source, .. } => {
                 sap_http_status(Some(source))
@@ -121,6 +127,7 @@ impl ReportableError for AdtObjectDeletionError {
     fn hint(&self) -> Option<String> {
         Some(match self {
             Self::Validation(error) => return error.hint(),
+            Self::PackageNotAllowed(error) => return error.hint(),
             Self::UsageCheck(error) => return error.hint(),
             Self::ObjectInUse { usages, .. } => format!(
                 "Deleting it would break {}. Remove those references first, or pass --force if they are already dead.",
@@ -149,6 +156,7 @@ impl ReportableError for AdtObjectDeletionError {
     fn suggested_command(&self) -> Option<String> {
         match self {
             Self::AbandonedLock(primary) => primary.suggested_command(),
+            Self::PackageNotAllowed(error) => error.suggested_command(),
             // Show the caller exactly what is holding the object.
             Self::ObjectInUse { identity, .. } => Some(format!(
                 "fractal object usages {} --direct-results",
@@ -170,16 +178,23 @@ impl ReportableError for AdtObjectDeletionError {
 /// lookup that could not be completed.
 pub async fn preview_adt_object_deletion(
     sap: &mut SapClient,
-    customer_namespaces: &[String],
+    policy: &EditPolicy,
     request: &AdtObjectDeletionRequest,
 ) -> Result<AdtObjectDeletionPreview, AdtObjectDeletionError> {
     let target = validate_adt_edit_target(
         request.object_type,
         &request.name,
-        customer_namespaces,
+        policy,
         request.transport.as_deref(),
     )?;
-    preview_validated_deletion(sap, target.identity.into(), target.transport, request.force).await
+    preview_validated_deletion(
+        sap,
+        policy,
+        target.identity.into(),
+        target.transport,
+        request.force,
+    )
+    .await
 }
 
 /// [`preview_adt_object_deletion`] for an object whose identity is already
@@ -190,10 +205,12 @@ pub async fn preview_adt_object_deletion(
 /// Returns [`AdtObjectDeletionError`] when the where-used lookup fails.
 pub async fn preview_validated_deletion(
     sap: &mut SapClient,
+    policy: &EditPolicy,
     object: AdtObjectIdentity,
     transport: Option<String>,
     force: bool,
 ) -> Result<AdtObjectDeletionPreview, AdtObjectDeletionError> {
+    authorize_object_package(sap, policy, &object.name, &object.object_uri).await?;
     let direct_usages = direct_usages(sap, &object).await?;
 
     Ok(AdtObjectDeletionPreview {
@@ -217,16 +234,23 @@ pub async fn preview_validated_deletion(
 /// that is still readable afterwards.
 pub async fn delete_adt_object(
     sap: &mut SapClient,
-    customer_namespaces: &[String],
+    policy: &EditPolicy,
     request: &AdtObjectDeletionRequest,
 ) -> Result<AdtObjectDeletionResult, AdtObjectDeletionError> {
     let target = validate_adt_edit_target(
         request.object_type,
         &request.name,
-        customer_namespaces,
+        policy,
         request.transport.as_deref(),
     )?;
-    delete_validated_adt_object(sap, target.identity.into(), target.transport, request.force).await
+    delete_validated_adt_object(
+        sap,
+        policy,
+        target.identity.into(),
+        target.transport,
+        request.force,
+    )
+    .await
 }
 
 /// [`delete_adt_object`] for an object whose identity and transport are already
@@ -245,10 +269,12 @@ pub async fn delete_adt_object(
 /// readable afterwards.
 pub async fn delete_validated_adt_object(
     sap: &mut SapClient,
+    policy: &EditPolicy,
     identity: AdtObjectIdentity,
     transport: Option<String>,
     force: bool,
 ) -> Result<AdtObjectDeletionResult, AdtObjectDeletionError> {
+    authorize_object_package(sap, policy, &identity.name, &identity.object_uri).await?;
     let direct_usages = direct_usages(sap, &identity).await?;
     if !direct_usages.is_empty() && !force {
         return Err(AdtObjectDeletionError::ObjectInUse {

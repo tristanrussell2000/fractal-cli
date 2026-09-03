@@ -68,13 +68,11 @@ pub async fn edit_source_patch(
     let (profile_name, profile, mut client) = connect(explicit_profile).await?;
 
     if args.dry_run {
-        let preview =
-            preview_adt_source_patch(&client, &profile.customer_namespaces, &request).await?;
+        let preview = preview_adt_source_patch(&client, &profile.edit_policy(), &request).await?;
         return Ok(map_patch_preview(profile_name, &request, preview));
     }
 
-    let result =
-        patch_adt_source_atomically(&mut client, &profile.customer_namespaces, &request).await?;
+    let result = patch_adt_source_atomically(&mut client, &profile.edit_policy(), &request).await?;
     Ok(map_applied_patch(profile_name, &request, result))
 }
 

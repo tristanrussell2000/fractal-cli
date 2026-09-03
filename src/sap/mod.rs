@@ -16,6 +16,7 @@ pub mod object_search;
 pub mod object_source;
 pub mod object_usages;
 pub mod package;
+pub mod package_authorization;
 pub mod repository_kind;
 pub mod source_activation;
 pub mod source_check;

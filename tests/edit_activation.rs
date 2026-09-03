@@ -4,6 +4,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+use fractal::config::EditPolicy;
 use fractal::reportable_error::ReportableError;
 use fractal::{
     config::Profile,
@@ -34,6 +35,8 @@ fn profile(base_url: String) -> Profile {
         username: "developer".to_owned(),
         insecure_tls: false,
         password_command: None,
+        edit_packages: None,
+        allow_temporary_package: true,
         customer_namespaces: vec!["Z*".to_owned()],
     }
 }
@@ -233,9 +236,13 @@ async fn activates_and_verifies_the_exact_inactive_source() {
     mount_source_read(&server, "active", SOURCE).await;
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let result = activate_adt_source(&mut client, &["Z*".to_owned()], &activation_request(None))
-        .await
-        .unwrap();
+    let result = activate_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &activation_request(None),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(result.identity.name, "ZCL_SAMPLE");
     assert_eq!(result.identity.object_uri, OBJECT_URI);
@@ -282,9 +289,13 @@ async fn reads_inactive_source_and_runs_precheck_concurrently() {
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let started = Instant::now();
-    activate_adt_source(&mut client, &["Z*".to_owned()], &activation_request(None))
-        .await
-        .unwrap();
+    activate_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &activation_request(None),
+    )
+    .await
+    .unwrap();
 
     assert!(started.elapsed() < Duration::from_millis(850));
     server.verify().await;
@@ -314,9 +325,13 @@ async fn reads_active_source_and_probes_inactive_state_concurrently() {
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let started = Instant::now();
-    activate_adt_source(&mut client, &["Z*".to_owned()], &activation_request(None))
-        .await
-        .unwrap();
+    activate_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &activation_request(None),
+    )
+    .await
+    .unwrap();
 
     assert!(started.elapsed() < Duration::from_millis(850));
     server.verify().await;
@@ -333,9 +348,13 @@ async fn refuses_to_activate_when_no_inactive_version_exists() {
         .await;
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let error = activate_adt_source(&mut client, &["Z*".to_owned()], &activation_request(None))
-        .await
-        .unwrap_err();
+    let error = activate_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &activation_request(None),
+    )
+    .await
+    .unwrap_err();
 
     assert!(matches!(
         error,
@@ -377,7 +396,7 @@ async fn syntax_errors_stop_before_transport_or_activation() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let error = activate_adt_source(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &activation_request(Some("AB1K900575")),
     )
     .await
@@ -432,7 +451,11 @@ async fn reports_http_200_activation_refusal_and_messages() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let error = tokio::time::timeout(
         Duration::from_secs(2),
-        activate_adt_source(&mut client, &["Z*".to_owned()], &activation_request(None)),
+        activate_adt_source(
+            &mut client,
+            &EditPolicy::namespaces_only(&["Z*"]),
+            &activation_request(None),
+        ),
     )
     .await
     .expect("inactive refusal should not wait for the delayed active source")
@@ -463,9 +486,13 @@ async fn preserves_activation_http_failures_as_a_distinct_stage() {
     .await;
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let error = activate_adt_source(&mut client, &["Z*".to_owned()], &activation_request(None))
-        .await
-        .unwrap_err();
+    let error = activate_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &activation_request(None),
+    )
+    .await
+    .unwrap_err();
 
     assert!(matches!(
         error,
@@ -498,7 +525,7 @@ async fn transport_attachment_failure_stops_before_activation() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let error = activate_adt_source(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &activation_request(Some("AB1K900575")),
     )
     .await
@@ -527,9 +554,13 @@ async fn distinguishes_post_activation_source_mismatch() {
     mount_source_read(&server, "active", DIFFERENT_ACTIVE).await;
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let error = activate_adt_source(&mut client, &["Z*".to_owned()], &activation_request(None))
-        .await
-        .unwrap_err();
+    let error = activate_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &activation_request(None),
+    )
+    .await
+    .unwrap_err();
 
     let AdtSourceActivationError::VerificationMismatch {
         inactive_sha256,
@@ -581,7 +612,7 @@ async fn attaches_the_parent_transport_before_activation() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let result = activate_adt_source(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &activation_request(Some(" ab1k900575 ")),
     )
     .await
@@ -616,9 +647,13 @@ async fn verified_activation_survives_an_unparseable_success_body() {
     mount_source_read(&server, "active", SOURCE).await;
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let result = activate_adt_source(&mut client, &["Z*".to_owned()], &activation_request(None))
-        .await
-        .unwrap();
+    let result = activate_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &activation_request(None),
+    )
+    .await
+    .unwrap();
 
     assert!(!result.activation_response_parsed);
     assert_eq!(result.sap_reported_activation_executed, None);

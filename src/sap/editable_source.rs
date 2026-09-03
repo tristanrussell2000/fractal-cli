@@ -1,3 +1,4 @@
+use crate::config::EditPolicy;
 use std::string::FromUtf8Error;
 
 use reqwest::header::HeaderMap;
@@ -301,6 +302,9 @@ impl ReportableError for AdtEditTargetValidationError {
 pub(super) struct ValidatedAdtEditTarget {
     pub(super) identity: EditableAdtSourceIdentity,
     pub(super) transport: Option<String>,
+    /// Carried past validation because the package check is asynchronous: it
+    /// may need one request, so it cannot run inside this synchronous step.
+    pub(super) policy: EditPolicy,
 }
 
 /// A deterministic or remote failure while identifying or reading editable ADT source.
@@ -441,16 +445,17 @@ pub(super) async fn read_adt_source(
 pub(super) fn validate_adt_edit_target(
     object_type: EditableAdtObjectType,
     name: &str,
-    customer_namespaces: &[String],
+    policy: &EditPolicy,
     transport: Option<&str>,
 ) -> Result<ValidatedAdtEditTarget, AdtEditTargetValidationError> {
     let identity = editable_source_identity(object_type, name)
         .map_err(AdtEditTargetValidationError::InvalidObject)?;
-    validate_customer_namespace(&identity.name, customer_namespaces)?;
+    validate_customer_namespace(&identity.name, &policy.customer_namespaces)?;
     let transport = canonicalize_transport_request(transport)?;
     Ok(ValidatedAdtEditTarget {
         identity,
         transport,
+        policy: policy.clone(),
     })
 }
 
@@ -668,7 +673,7 @@ mod tests {
         let target = validate_adt_edit_target(
             EditableAdtObjectType::Class,
             " zcl_example ",
-            &["Z*".to_owned()],
+            &EditPolicy::namespaces_only(&["Z*"]),
             Some(" ab1k900575 "),
         )
         .unwrap();
@@ -682,7 +687,7 @@ mod tests {
         let namespace = validate_adt_edit_target(
             EditableAdtObjectType::Class,
             "SAP_STANDARD",
-            &["Z*".to_owned()],
+            &EditPolicy::namespaces_only(&["Z*"]),
             None,
         )
         .unwrap_err();
@@ -691,7 +696,7 @@ mod tests {
         let transport = validate_adt_edit_target(
             EditableAdtObjectType::Class,
             "ZCL_EXAMPLE",
-            &["Z*".to_owned()],
+            &EditPolicy::namespaces_only(&["Z*"]),
             Some("invalid request"),
         )
         .unwrap_err();

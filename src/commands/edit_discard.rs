@@ -63,8 +63,7 @@ pub async fn edit_source_discard(
         transport: args.transport.clone(),
     };
     let (profile_name, profile, mut client) = connect(explicit_profile).await?;
-    let result =
-        discard_inactive_adt_source(&mut client, &profile.customer_namespaces, &request).await?;
+    let result = discard_inactive_adt_source(&mut client, &profile.edit_policy(), &request).await?;
     Ok(map_source_discard_result(profile_name, result))
 }
 

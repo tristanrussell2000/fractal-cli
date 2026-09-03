@@ -57,7 +57,7 @@ pub async fn edit_object_create(
         AdtObjectFamily::Source(object_type) => {
             create_adt_object(
                 &mut client,
-                &profile.customer_namespaces,
+                &profile.edit_policy(),
                 &AdtObjectCreationRequest {
                     object_type,
                     name: args.name.clone(),
@@ -71,7 +71,7 @@ pub async fn edit_object_create(
         AdtObjectFamily::Metadata(object_type) => {
             create_metadata_object(
                 &mut client,
-                &profile.customer_namespaces,
+                &profile.edit_policy(),
                 &MetadataObjectCreationRequest {
                     object_type,
                     name: args.name.clone(),

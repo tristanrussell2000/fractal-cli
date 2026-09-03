@@ -1,6 +1,7 @@
 mod adt_edit_mock;
 
 use adt_edit_mock::{AdtEditSession, SequentialResponses};
+use fractal::config::EditPolicy;
 use fractal::reportable_error::ReportableError;
 use fractal::{
     config::Profile,
@@ -230,10 +231,13 @@ async fn restores_active_source_under_lock_then_activates_and_verifies_it() {
     mount_successful_discard(&server).await;
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let result =
-        discard_inactive_adt_source(&mut client, &["Z*".to_owned()], &discard_request(None))
-            .await
-            .unwrap();
+    let result = discard_inactive_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &discard_request(None),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(result.identity.name, "ZCL_SAMPLE");
     assert_eq!(result.discarded.sha256, source_sha256(INACTIVE_SOURCE));
@@ -266,10 +270,13 @@ async fn no_inactive_version_is_detected_after_lock_and_still_unlocks() {
     mount_unlock(&server, ResponseTemplate::new(200)).await;
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let error =
-        discard_inactive_adt_source(&mut client, &["Z*".to_owned()], &discard_request(None))
-            .await
-            .unwrap_err();
+    let error = discard_inactive_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &discard_request(None),
+    )
+    .await
+    .unwrap_err();
 
     assert!(matches!(
         error,
@@ -305,7 +312,7 @@ async fn uses_transport_for_restore_without_relocking_during_activation() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let result = discard_inactive_adt_source(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &discard_request(Some(TRANSPORT)),
     )
     .await
@@ -345,10 +352,13 @@ async fn restore_write_failure_wins_but_unlock_is_still_attempted() {
     mount_unlock(&server, ResponseTemplate::new(500)).await;
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let error =
-        discard_inactive_adt_source(&mut client, &["Z*".to_owned()], &discard_request(None))
-            .await
-            .unwrap_err();
+    let error = discard_inactive_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &discard_request(None),
+    )
+    .await
+    .unwrap_err();
 
     // Both the write and the unlock failed here. The write failure stays the
     // reported cause — same code, same message — and the abandoned lock is
@@ -379,10 +389,13 @@ async fn normalization_mismatch_stops_before_unlock_and_activation() {
     mount_unlock(&server, ResponseTemplate::new(200)).await;
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let error =
-        discard_inactive_adt_source(&mut client, &["Z*".to_owned()], &discard_request(None))
-            .await
-            .unwrap_err();
+    let error = discard_inactive_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &discard_request(None),
+    )
+    .await
+    .unwrap_err();
 
     assert!(matches!(
         error,
@@ -422,10 +435,13 @@ async fn activation_failure_is_reported_as_an_incomplete_restored_discard() {
     .await;
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let error =
-        discard_inactive_adt_source(&mut client, &["Z*".to_owned()], &discard_request(None))
-            .await
-            .unwrap_err();
+    let error = discard_inactive_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &discard_request(None),
+    )
+    .await
+    .unwrap_err();
 
     assert!(matches!(
         error,
@@ -443,7 +459,7 @@ async fn validates_transport_and_namespace_before_any_http_request() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let invalid_transport = discard_inactive_adt_source(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &discard_request(Some("not valid!")),
     )
     .await
@@ -455,10 +471,13 @@ async fn validates_transport_and_namespace_before_any_http_request() {
         ))
     ));
 
-    let namespace =
-        discard_inactive_adt_source(&mut client, &["Y*".to_owned()], &discard_request(None))
-            .await
-            .unwrap_err();
+    let namespace = discard_inactive_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Y*"]),
+        &discard_request(None),
+    )
+    .await
+    .unwrap_err();
     assert!(matches!(
         namespace,
         AdtInactiveSourceDiscardError::Validation(AdtEditTargetValidationError::Namespace(_))

@@ -16,6 +16,7 @@
 mod adt_edit_mock;
 
 use adt_edit_mock::AdtEditSession;
+use fractal::config::EditPolicy;
 use fractal::{
     config::Profile,
     reportable_error::ReportableError,
@@ -107,7 +108,7 @@ async fn creates_a_data_element_with_the_envelope_a_live_system_accepts() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let result = create_metadata_object(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &request(MetadataAdtObjectType::DataElement, "zsample_de"),
     )
     .await
@@ -156,7 +157,7 @@ async fn a_domain_uses_its_own_collection_envelope_and_media_type() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let result = create_metadata_object(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &request(MetadataAdtObjectType::Domain, "zsample_do"),
     )
     .await
@@ -198,7 +199,7 @@ async fn a_table_type_uses_its_own_collection_envelope_and_media_type() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let result = create_metadata_object(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &request(MetadataAdtObjectType::TableType, "zsample_tt"),
     )
     .await
@@ -241,7 +242,7 @@ async fn a_message_class_is_created_outside_the_ddic_collections() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let result = create_metadata_object(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &request(MetadataAdtObjectType::MessageClass, "zsample_msg"),
     )
     .await
@@ -291,7 +292,7 @@ async fn a_service_binding_sends_its_definition_and_protocol() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let result = create_metadata_object(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &MetadataObjectCreationRequest {
             binding: Some(ServiceBindingSpec {
                 service_definition: "ZSAMPLE_SD".to_owned(),
@@ -315,7 +316,7 @@ async fn a_binding_without_its_details_never_reaches_sap() {
 
     let error = create_metadata_object(
         &mut SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap(),
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &request(MetadataAdtObjectType::ServiceBinding, "zsample_sb"),
     )
     .await
@@ -331,7 +332,7 @@ async fn binding_details_on_another_type_are_refused_rather_than_ignored() {
 
     let error = create_metadata_object(
         &mut SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap(),
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &MetadataObjectCreationRequest {
             binding: Some(ServiceBindingSpec {
                 service_definition: "ZSAMPLE_SD".to_owned(),
@@ -373,7 +374,7 @@ async fn deleting_a_metadata_object_is_guarded_by_where_used_like_any_other() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let error = delete_metadata_object(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         MetadataAdtObjectType::DataElement,
         "zsample_de",
         None,
@@ -426,7 +427,7 @@ async fn a_deleted_metadata_object_must_read_back_as_gone() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let result = delete_metadata_object(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         MetadataAdtObjectType::DataElement,
         "zsample_de",
         None,
@@ -462,7 +463,7 @@ async fn a_creation_that_cannot_be_read_back_is_not_reported_as_success() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let error = create_metadata_object(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &request(MetadataAdtObjectType::DataElement, "zsample_de"),
     )
     .await
@@ -490,7 +491,7 @@ async fn a_taken_name_is_classified_for_this_family_too() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let error = create_metadata_object(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &request(MetadataAdtObjectType::DataElement, "zsample_de"),
     )
     .await
@@ -507,7 +508,7 @@ async fn a_name_outside_the_customer_namespaces_never_reaches_sap() {
 
     let error = create_metadata_object(
         &mut SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap(),
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &request(MetadataAdtObjectType::DataElement, "SFLIGHT_DE"),
     )
     .await

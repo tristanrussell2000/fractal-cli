@@ -21,6 +21,9 @@ struct ProfileSummary {
     username: String,
     insecure_tls: bool,
     customer_namespaces: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    edit_packages: Option<Vec<String>>,
+    allow_temporary_package: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -77,6 +80,8 @@ pub fn system_list() -> Result<SystemListResult, Reported> {
             username: profile.username.clone(),
             insecure_tls: profile.insecure_tls,
             customer_namespaces: profile.customer_namespaces.clone(),
+            edit_packages: profile.edit_packages.clone(),
+            allow_temporary_package: profile.allow_temporary_package,
         })
         .collect();
 

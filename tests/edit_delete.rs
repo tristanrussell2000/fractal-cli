@@ -4,6 +4,7 @@
 //! proceeds, or a delete that reports success while the object is still
 //! readable, are the two failures that would actually hurt someone.
 
+use fractal::config::EditPolicy;
 use fractal::{
     config::Profile,
     reportable_error::ReportableError,
@@ -32,6 +33,8 @@ fn profile(base_url: String) -> Profile {
         username: "developer".to_owned(),
         insecure_tls: false,
         password_command: None,
+        edit_packages: None,
+        allow_temporary_package: true,
         customer_namespaces: vec!["Z*".to_owned()],
     }
 }
@@ -128,7 +131,7 @@ async fn deletes_an_unreferenced_object_and_proves_it_is_gone() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let result = delete_adt_object(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &deletion_request(false, Some("AB1K900575")),
     )
     .await
@@ -149,7 +152,7 @@ async fn refuses_a_referenced_object_without_locking_or_deleting() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let error = delete_adt_object(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &deletion_request(false, None),
     )
     .await
@@ -196,7 +199,7 @@ async fn force_overrides_the_reference_guard_and_records_what_was_overridden() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let result = delete_adt_object(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &deletion_request(true, None),
     )
     .await
@@ -230,7 +233,7 @@ async fn a_delete_that_leaves_the_object_readable_is_not_success() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let error = delete_adt_object(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &deletion_request(false, None),
     )
     .await
@@ -269,7 +272,7 @@ async fn a_failed_delete_releases_the_lock_it_took() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let error = delete_adt_object(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &deletion_request(false, None),
     )
     .await
@@ -315,7 +318,7 @@ async fn a_delete_that_fails_and_cannot_unlock_reports_both() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let error = delete_adt_object(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &deletion_request(false, None),
     )
     .await
@@ -341,7 +344,7 @@ async fn a_dry_run_reports_the_refusal_without_locking() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let preview = preview_adt_object_deletion(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &deletion_request(false, None),
     )
     .await
@@ -366,7 +369,7 @@ async fn a_dry_run_with_force_reports_that_it_would_proceed() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let preview = preview_adt_object_deletion(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &deletion_request(true, None),
     )
     .await
@@ -385,7 +388,7 @@ async fn refuses_an_object_outside_the_customer_namespaces_before_any_request() 
     };
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let error = delete_adt_object(&mut client, &["Z*".to_owned()], &request)
+    let error = delete_adt_object(&mut client, &EditPolicy::namespaces_only(&["Z*"]), &request)
         .await
         .unwrap_err();
 

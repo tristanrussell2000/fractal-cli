@@ -13,6 +13,8 @@
 //! accepts. This codebase has been bitten by an assumption baked into its own
 //! fixtures before — see the package `nodestructure` field encoding.
 
+use super::package_authorization::{PackageAuthorizationError, authorize_known_package};
+use crate::config::EditPolicy;
 use reqwest::header::{HeaderMap, HeaderValue};
 use thiserror::Error;
 
@@ -53,6 +55,8 @@ pub struct AdtObjectCreationResult {
 pub enum AdtObjectCreationError {
     #[error(transparent)]
     Validation(#[from] AdtEditTargetValidationError),
+    #[error(transparent)]
+    PackageNotAllowed(#[from] PackageAuthorizationError),
     #[error("invalid package name '{0}'")]
     InvalidPackage(String),
     #[error("a new object needs a non-blank description")]
@@ -93,6 +97,7 @@ impl ReportableError for AdtObjectCreationError {
     fn code(&self) -> &'static str {
         match self {
             Self::Validation(error) => error.code(),
+            Self::PackageNotAllowed(error) => error.code(),
             Self::InvalidPackage(_) => "invalid_package_name",
             Self::BlankDescription => "blank_object_description",
             Self::UnusableMediaType(_) => "unusable_media_type",
@@ -116,6 +121,7 @@ impl ReportableError for AdtObjectCreationError {
     fn hint(&self) -> Option<String> {
         Some(match self {
             Self::Validation(error) => return error.hint(),
+            Self::PackageNotAllowed(error) => return error.hint(),
             Self::InvalidPackage(_) => {
                 "Use an existing package name containing letters, digits, underscore, or slash, or $TMP for local objects."
                     .to_owned()
@@ -155,6 +161,7 @@ impl ReportableError for AdtObjectCreationError {
 
     fn suggested_command(&self) -> Option<String> {
         match self {
+            Self::PackageNotAllowed(error) => error.suggested_command(),
             // A create that failed may mean the object already exists.
             Self::CreateRequest { identity, .. } => Some(suggested_command::object_search(
                 identity.object_type.as_str(),
@@ -212,13 +219,13 @@ fn reports_an_existing_object(error: &SapClientError) -> bool {
 /// creation request, or a failed read-back.
 pub async fn create_adt_object(
     sap: &mut SapClient,
-    customer_namespaces: &[String],
+    policy: &EditPolicy,
     request: &AdtObjectCreationRequest,
 ) -> Result<AdtObjectCreationResult, AdtObjectCreationError> {
     let target = validate_adt_edit_target(
         request.object_type,
         &request.name,
-        customer_namespaces,
+        policy,
         request.transport.as_deref(),
     )?;
     let identity = target.identity;
@@ -234,6 +241,7 @@ pub async fn create_adt_object(
 
     create_validated_adt_object(
         sap,
+        policy,
         identity.into(),
         AdtObjectCreatePayload {
             collection_path,
@@ -271,12 +279,15 @@ pub struct AdtObjectCreatePayload<'a> {
 /// back afterwards.
 pub async fn create_validated_adt_object(
     sap: &mut SapClient,
+    policy: &EditPolicy,
     identity: AdtObjectIdentity,
     payload: AdtObjectCreatePayload<'_>,
     package: &str,
     description: &str,
     transport: Option<String>,
 ) -> Result<AdtObjectCreationResult, AdtObjectCreationError> {
+    authorize_known_package(policy, &identity.name, package)?;
+
     let mut headers = HeaderMap::new();
     headers.insert(
         "Content-Type",

@@ -5,6 +5,7 @@
 //! accepts, so a payload for a new object type still needs a real create
 //! before it can be trusted.
 
+use fractal::config::EditPolicy;
 use fractal::{
     config::Profile,
     reportable_error::ReportableError,
@@ -30,6 +31,8 @@ fn profile(base_url: String) -> Profile {
         username: "developer".to_owned(),
         insecure_tls: false,
         password_command: None,
+        edit_packages: None,
+        allow_temporary_package: true,
         customer_namespaces: vec!["Z*".to_owned()],
     }
 }
@@ -97,9 +100,13 @@ async fn creates_a_program_shell_and_verifies_it_exists() {
     .await;
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let result = create_adt_object(&mut client, &["Z*".to_owned()], &creation_request(None))
-        .await
-        .unwrap();
+    let result = create_adt_object(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &creation_request(None),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(result.identity.name, "ZSAMPLE");
     assert_eq!(result.identity.object_uri, OBJECT_PATH);
@@ -130,7 +137,7 @@ async fn sends_the_transport_as_corr_nr_on_the_create_request() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let result = create_adt_object(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         &creation_request(Some("ab1k900575")),
     )
     .await
@@ -157,9 +164,13 @@ async fn creation_never_writes_source_or_activates() {
     .await;
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    create_adt_object(&mut client, &["Z*".to_owned()], &creation_request(None))
-        .await
-        .unwrap();
+    create_adt_object(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &creation_request(None),
+    )
+    .await
+    .unwrap();
 
     // The whole point of the shell shape: no PUT, no lock, no activation.
     let requests = server.received_requests().await.unwrap();
@@ -214,9 +225,13 @@ async fn an_existing_name_is_classified_rather_than_reported_as_a_generic_failur
             .await;
 
         let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-        let error = create_adt_object(&mut client, &["Z*".to_owned()], &creation_request(None))
-            .await
-            .unwrap_err();
+        let error = create_adt_object(
+            &mut client,
+            &EditPolicy::namespaces_only(&["Z*"]),
+            &creation_request(None),
+        )
+        .await
+        .unwrap_err();
 
         assert!(
             matches!(error, AdtObjectCreationError::AlreadyExists { .. }),
@@ -253,9 +268,13 @@ async fn a_rejected_creation_is_reported_without_a_read_back() {
         .await;
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let error = create_adt_object(&mut client, &["Z*".to_owned()], &creation_request(None))
-        .await
-        .unwrap_err();
+    let error = create_adt_object(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &creation_request(None),
+    )
+    .await
+    .unwrap_err();
 
     assert!(matches!(
         error,
@@ -291,9 +310,13 @@ async fn a_creation_that_cannot_be_read_back_is_not_reported_as_success() {
     .await;
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let error = create_adt_object(&mut client, &["Z*".to_owned()], &creation_request(None))
-        .await
-        .unwrap_err();
+    let error = create_adt_object(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &creation_request(None),
+    )
+    .await
+    .unwrap_err();
 
     assert!(matches!(error, AdtObjectCreationError::Verification { .. }));
     assert_eq!(error.code(), "edit_create_verification_failed");
@@ -329,7 +352,7 @@ async fn validates_everything_local_before_any_request() {
         (blank_description, "blank_object_description"),
         (bad_transport, "invalid_transport_request"),
     ] {
-        let error = create_adt_object(&mut client, &["Z*".to_owned()], &request)
+        let error = create_adt_object(&mut client, &EditPolicy::namespaces_only(&["Z*"]), &request)
             .await
             .unwrap_err();
         assert_eq!(error.code(), expected);

@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use fractal::reportable_error::ReportableError;
 
-use crate::cli::{LoginArgs, ProfileArgs};
+use crate::cli::{AuthSetArgs, LoginArgs, ProfileArgs};
 use crate::reported::Reported;
 use fractal::{config, credentials};
 
@@ -141,6 +141,10 @@ struct AuthProfileSummary {
     username: String,
     insecure_tls: bool,
     customer_namespaces: Vec<String>,
+    /// Absent when the profile grants every package.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    edit_packages: Option<Vec<String>>,
+    allow_temporary_package: bool,
     credential: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     credential_error: Option<String>,
@@ -177,6 +181,8 @@ pub fn auth_list() -> Result<AuthListResult, Reported> {
                 username: profile.username.clone(),
                 insecure_tls: profile.insecure_tls,
                 customer_namespaces: profile.customer_namespaces.clone(),
+                edit_packages: profile.edit_packages.clone(),
+                allow_temporary_package: profile.allow_temporary_package,
                 credential,
                 credential_error,
             }
@@ -189,6 +195,81 @@ pub fn auth_list() -> Result<AuthListResult, Reported> {
         default_profile: loaded.config.default_profile,
         profiles,
     })
+}
+
+#[derive(Debug, Serialize)]
+pub struct AuthSetResult {
+    ok: bool,
+    profile: String,
+    config_path: String,
+    customer_namespaces: Vec<String>,
+    /// Absent when the profile grants every package.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    edit_packages: Option<Vec<String>>,
+    allow_temporary_package: bool,
+    restricts_packages: bool,
+}
+
+/// Changes what a profile is allowed to edit, and nothing else.
+///
+/// Deliberately not part of `auth login`: that command rebuilds the whole
+/// profile from its flags, so using it to add a package pattern would reset the
+/// customer namespaces and drop `password_command`, and it would demand a
+/// password to change a permission.
+pub fn auth_set(
+    explicit_profile: Option<&str>,
+    args: &AuthSetArgs,
+) -> Result<AuthSetResult, Reported> {
+    let mut loaded = config::load()?;
+    let name = match args.name.as_deref() {
+        Some(name) => name.to_owned(),
+        None => config::resolve_profile(&loaded.config, explicit_profile)?
+            .0
+            .to_owned(),
+    };
+    let profile = loaded
+        .config
+        .profiles
+        .get_mut(&name)
+        .ok_or_else(|| AuthCommandError::ProfileNotFound(name.clone()))?;
+
+    apply_edit_policy_args(profile, args);
+    let policy = profile.edit_policy();
+    let config_path = config::save(&loaded.config).map_err(AuthCommandError::ConfigWrite)?;
+
+    Ok(AuthSetResult {
+        ok: true,
+        profile: name,
+        config_path: config_path.display().to_string(),
+        customer_namespaces: policy.customer_namespaces.clone(),
+        edit_packages: policy.edit_packages.clone(),
+        allow_temporary_package: policy.allow_temporary_package,
+        restricts_packages: policy.restricts_packages(),
+    })
+}
+
+/// Applies only the flags that were actually given.
+///
+/// Kept separate from the command so it can be tested without reading or
+/// writing the caller's real configuration file. Each field is independent, so
+/// one setting can be adjusted without restating the others.
+fn apply_edit_policy_args(profile: &mut config::Profile, args: &AuthSetArgs) {
+    if args.any_package {
+        // Back to unrestricted. Without this there is no way out of a
+        // restriction except hand-editing the file, which would make the
+        // setting feel like a trap rather than a preference.
+        profile.edit_packages = None;
+    } else if args.no_package {
+        profile.edit_packages = Some(Vec::new());
+    } else if !args.package.is_empty() {
+        profile.edit_packages = Some(args.package.clone());
+    }
+    if !args.namespace.is_empty() {
+        profile.customer_namespaces = args.namespace.clone();
+    }
+    if let Some(allow) = args.allow_temporary_package {
+        profile.allow_temporary_package = allow;
+    }
 }
 
 pub fn auth_remove(args: &ProfileArgs) -> Result<AuthRemoveResult, Reported> {
@@ -386,6 +467,8 @@ pub fn auth_login(args: &LoginArgs) -> Result<AuthLoginResult, Reported> {
             args.namespace.clone()
         },
         password_command: args.password_command.clone(),
+        edit_packages: (!args.package.is_empty()).then(|| args.package.clone()),
+        allow_temporary_package: true,
     };
     let became_default = config::update_profile(
         &mut loaded.config,
@@ -461,9 +544,126 @@ fn store_password(
 
 #[cfg(test)]
 mod tests {
+    use crate::cli::AuthSetArgs;
+
+    fn set_args() -> AuthSetArgs {
+        AuthSetArgs {
+            name: None,
+            package: Vec::new(),
+            no_package: false,
+            any_package: false,
+            namespace: Vec::new(),
+            allow_temporary_package: None,
+        }
+    }
+
+    fn configured_profile() -> config::Profile {
+        config::Profile {
+            base_url: "https://sap.example:8001".to_owned(),
+            client: "100".to_owned(),
+            username: "developer".to_owned(),
+            insecure_tls: false,
+            customer_namespaces: vec!["Z*".to_owned(), "Y*".to_owned()],
+            password_command: Some("pass show sap/dev".to_owned()),
+            edit_packages: None,
+            allow_temporary_package: true,
+        }
+    }
+
+    #[test]
+    fn setting_packages_leaves_every_other_profile_field_alone() {
+        let mut profile = configured_profile();
+        let args = AuthSetArgs {
+            package: vec!["ZPROJ*".to_owned()],
+            ..set_args()
+        };
+        apply_edit_policy_args(&mut profile, &args);
+
+        assert_eq!(profile.edit_packages, Some(vec!["ZPROJ*".to_owned()]));
+        // The reason this is not `auth login`: that command would have reset
+        // the namespaces to the defaults and dropped the password command.
+        assert_eq!(profile.customer_namespaces, vec!["Z*", "Y*"]);
+        assert_eq!(
+            profile.password_command.as_deref(),
+            Some("pass show sap/dev")
+        );
+        assert_eq!(profile.username, "developer");
+    }
+
+    #[test]
+    fn no_package_is_the_explicit_off_switch() {
+        let mut profile = configured_profile();
+        profile.edit_packages = Some(vec!["ZPROJ*".to_owned()]);
+        apply_edit_policy_args(
+            &mut profile,
+            &AuthSetArgs {
+                no_package: true,
+                ..set_args()
+            },
+        );
+
+        // Empty, not absent: absent would grant everything.
+        assert_eq!(profile.edit_packages, Some(Vec::new()));
+        assert!(profile.edit_policy().restricts_packages());
+    }
+
+    #[test]
+    fn a_restriction_can_be_lifted_again() {
+        let mut profile = configured_profile();
+        profile.edit_packages = Some(vec!["ZPROJ*".to_owned()]);
+        apply_edit_policy_args(
+            &mut profile,
+            &AuthSetArgs {
+                any_package: true,
+                ..set_args()
+            },
+        );
+
+        // Absent, not empty: empty would mean "nothing is editable".
+        assert_eq!(profile.edit_packages, None);
+        assert!(!profile.edit_policy().restricts_packages());
+    }
+
+    #[test]
+    fn omitted_flags_change_nothing() {
+        let mut profile = configured_profile();
+        profile.edit_packages = Some(vec!["ZPROJ*".to_owned()]);
+        profile.allow_temporary_package = false;
+        apply_edit_policy_args(&mut profile, &set_args());
+
+        assert_eq!(profile.edit_packages, Some(vec!["ZPROJ*".to_owned()]));
+        assert!(!profile.allow_temporary_package);
+        assert_eq!(profile.customer_namespaces, vec!["Z*", "Y*"]);
+    }
+
+    #[test]
+    fn scratch_access_can_be_turned_off_and_back_on() {
+        let mut profile = configured_profile();
+        apply_edit_policy_args(
+            &mut profile,
+            &AuthSetArgs {
+                allow_temporary_package: Some(false),
+                ..set_args()
+            },
+        );
+        assert!(!profile.allow_temporary_package);
+
+        apply_edit_policy_args(
+            &mut profile,
+            &AuthSetArgs {
+                allow_temporary_package: Some(true),
+                ..set_args()
+            },
+        );
+        assert!(profile.allow_temporary_package);
+    }
+
     use clap::Parser;
 
-    use super::{AuthCommandError, LoginArgs, LoginDetails, credentials, resolve_login_details};
+    use super::{
+        AuthCommandError, LoginArgs, LoginDetails, apply_edit_policy_args, config, credentials,
+        resolve_login_details,
+    };
     use crate::cli::{AuthCommand, Cli, Command};
     use fractal::reportable_error::ReportableError;
 
@@ -480,6 +680,7 @@ mod tests {
             username: username.map(str::to_owned),
             insecure_tls: false,
             namespace: Vec::new(),
+            package: Vec::new(),
             default: false,
             password_stdin: false,
             password_command: None,

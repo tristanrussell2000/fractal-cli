@@ -1,3 +1,5 @@
+use super::package_authorization::{PackageAuthorizationError, authorize_object_package};
+use crate::config::EditPolicy;
 use thiserror::Error;
 
 use super::{
@@ -58,6 +60,8 @@ pub struct AdtSourceReplacementWriteResult {
 pub enum AdtSourceReplacementError {
     #[error(transparent)]
     Validation(#[from] AdtEditTargetValidationError),
+    #[error(transparent)]
+    PackageNotAllowed(#[from] PackageAuthorizationError),
     #[error("ADT edit session failed during complete-source replacement: {0}")]
     Session(#[source] AdtEditSessionError),
     #[error("could not read current source while the replacement lock was held: {0}")]
@@ -88,6 +92,7 @@ impl AdtSourceReplacementError {
     #[must_use]
     pub fn sap_error(&self) -> Option<&SapClientError> {
         match self {
+            Self::PackageNotAllowed(error) => error.sap_error(),
             Self::AbandonedLock(primary) => primary.sap_error(),
             Self::LockedSourceRead(error)
             | Self::PreviewSourceRead(error)
@@ -103,6 +108,7 @@ impl ReportableError for AdtSourceReplacementError {
         match self {
             Self::AbandonedLock(primary) => primary.code(),
             Self::Validation(error) => error.code(),
+            Self::PackageNotAllowed(error) => error.code(),
             Self::Replacement { source, .. } => source.code(),
             Self::Session(
                 AdtEditSessionError::LockFailed { .. }
@@ -137,6 +143,7 @@ impl ReportableError for AdtSourceReplacementError {
             ),
             Self::LockedSourceRead(error) | Self::PreviewSourceRead(error) => error.hint()?,
             Self::Validation(error) => error.hint()?,
+            Self::PackageNotAllowed(error) => error.hint()?,
             // The pure planner cannot name the object; this layer validated it.
             Self::Replacement {
                 identity,
@@ -171,6 +178,7 @@ impl ReportableError for AdtSourceReplacementError {
     /// write, which must never appear in a field a caller may execute.
     fn suggested_command(&self) -> Option<String> {
         match self {
+            Self::PackageNotAllowed(error) => error.suggested_command(),
             Self::AbandonedLock(primary) => primary.suggested_command(),
             Self::Replacement {
                 identity,
@@ -202,10 +210,17 @@ impl ReportableError for AdtSourceReplacementError {
 /// revision, blank source, or no-change failures.
 pub async fn preview_adt_source_replacement(
     sap: &SapClient,
-    customer_namespaces: &[String],
+    policy: &EditPolicy,
     request: &AdtSourceReplacementRequest,
 ) -> Result<AdtSourceReplacementPreview, AdtSourceReplacementError> {
-    let target = validate_replacement_request(customer_namespaces, request)?;
+    let target = validate_replacement_request(policy, request)?;
+    authorize_object_package(
+        sap,
+        policy,
+        &target.identity.name,
+        &target.identity.object_uri,
+    )
+    .await?;
     let identity = target.identity;
     let transport = target.transport;
     let original = read_adt_source_for_edit(
@@ -244,10 +259,17 @@ pub async fn preview_adt_source_replacement(
 /// revision, blank or unchanged source, write, unlock, or verification failures.
 pub async fn replace_adt_source_atomically(
     sap: &mut SapClient,
-    customer_namespaces: &[String],
+    policy: &EditPolicy,
     request: &AdtSourceReplacementRequest,
 ) -> Result<AdtSourceReplacementWriteResult, AdtSourceReplacementError> {
-    let target = validate_replacement_request(customer_namespaces, request)?;
+    let target = validate_replacement_request(policy, request)?;
+    authorize_object_package(
+        sap,
+        policy,
+        &target.identity.name,
+        &target.identity.object_uri,
+    )
+    .await?;
     let saved = save_inactive_source_atomically(sap, &target, |original| {
         let plan = plan_source_replacement(
             &original.source,
@@ -281,13 +303,13 @@ pub async fn replace_adt_source_atomically(
 }
 
 fn validate_replacement_request(
-    customer_namespaces: &[String],
+    policy: &EditPolicy,
     request: &AdtSourceReplacementRequest,
 ) -> Result<ValidatedAdtEditTarget, AdtSourceReplacementError> {
     let target = validate_adt_edit_target(
         request.object_type,
         &request.name,
-        customer_namespaces,
+        policy,
         request.transport.as_deref(),
     )?;
     if request.replacement_source.trim().is_empty() {

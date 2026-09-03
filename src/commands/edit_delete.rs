@@ -47,7 +47,7 @@ pub async fn edit_object_delete(
 ) -> Result<EditObjectDeleteOutput, Reported> {
     let object_type = AdtObjectFamily::parse(&args.object_type)?;
     let (profile_name, profile, mut client) = connect(explicit_profile).await?;
-    let namespaces = &profile.customer_namespaces;
+    let policy = &profile.edit_policy();
 
     match object_type {
         AdtObjectFamily::Source(object_type) => {
@@ -58,18 +58,17 @@ pub async fn edit_object_delete(
                 force: args.force,
             };
             if args.dry_run {
-                let preview =
-                    preview_adt_object_deletion(&mut client, namespaces, &request).await?;
+                let preview = preview_adt_object_deletion(&mut client, policy, &request).await?;
                 return Ok(map_deletion_preview(profile_name, preview));
             }
-            let result = delete_adt_object(&mut client, namespaces, &request).await?;
+            let result = delete_adt_object(&mut client, policy, &request).await?;
             Ok(map_deletion_result(profile_name, result))
         }
         AdtObjectFamily::Metadata(object_type) => {
             if args.dry_run {
                 let preview = preview_metadata_object_deletion(
                     &mut client,
-                    namespaces,
+                    policy,
                     object_type,
                     &args.name,
                     args.transport.as_deref(),
@@ -80,7 +79,7 @@ pub async fn edit_object_delete(
             }
             let result = delete_metadata_object(
                 &mut client,
-                namespaces,
+                policy,
                 object_type,
                 &args.name,
                 args.transport.as_deref(),

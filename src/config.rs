@@ -81,6 +81,86 @@ pub struct Profile {
     /// pipes and redirections work as written.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password_command: Option<String>,
+    /// Packages whose objects this profile may mutate.
+    ///
+    /// `None` means unrestricted, so a profile written before this setting
+    /// existed keeps working. `Some([])` is the explicit off switch: nothing is
+    /// writable. The distinction is the whole point of the `Option` — an empty
+    /// list must not be silently equivalent to no list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit_packages: Option<Vec<String>>,
+    /// Whether `$TMP`, the per-user scratch package, is granted regardless of
+    /// [`Profile::edit_packages`]. Local throwaway objects are not shared code,
+    /// and an allowlist that blocked them would mostly be in the way.
+    #[serde(
+        default = "default_allow_temporary_package",
+        skip_serializing_if = "is_default_allow_temporary_package"
+    )]
+    pub allow_temporary_package: bool,
+}
+
+/// SAP's per-user local package. Objects in it are never transported.
+pub const TEMPORARY_PACKAGE: &str = "$TMP";
+
+const fn default_allow_temporary_package() -> bool {
+    true
+}
+
+/// Keeps the default out of the written file, so a config that never mentions
+/// this setting is not rewritten to mention it.
+const fn is_default_allow_temporary_package(value: &bool) -> bool {
+    *value
+}
+
+/// What one profile permits an edit to touch.
+///
+/// Carried instead of a bare namespace list so that every mutating operation
+/// receives the complete policy: adding a rule here reaches all of them without
+/// a signature change, and no path can accidentally authorize against half of
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditPolicy {
+    /// A floor on the object *name*.
+    pub customer_namespaces: Vec<String>,
+    /// A grant on the object's *package*. `None` is unrestricted.
+    pub edit_packages: Option<Vec<String>>,
+    pub allow_temporary_package: bool,
+}
+
+impl EditPolicy {
+    /// A policy that authorizes names only, granting every package.
+    ///
+    /// What a profile without `edit_packages` yields, and the starting point
+    /// for tests that are about something other than the allowlist.
+    #[must_use]
+    pub fn namespaces_only(customer_namespaces: &[&str]) -> Self {
+        Self {
+            customer_namespaces: customer_namespaces
+                .iter()
+                .map(|namespace| (*namespace).to_owned())
+                .collect(),
+            edit_packages: None,
+            allow_temporary_package: true,
+        }
+    }
+
+    /// Whether any package restriction is configured at all.
+    #[must_use]
+    pub const fn restricts_packages(&self) -> bool {
+        self.edit_packages.is_some()
+    }
+}
+
+impl Profile {
+    /// The edit policy this profile grants.
+    #[must_use]
+    pub fn edit_policy(&self) -> EditPolicy {
+        EditPolicy {
+            customer_namespaces: self.customer_namespaces.clone(),
+            edit_packages: self.edit_packages.clone(),
+            allow_temporary_package: self.allow_temporary_package,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -260,6 +340,8 @@ mod tests {
             username: "developer".to_owned(),
             insecure_tls: false,
             password_command: None,
+            edit_packages: None,
+            allow_temporary_package: true,
             customer_namespaces: vec!["Z*".to_owned(), "Y*".to_owned()],
         }
     }
@@ -273,6 +355,70 @@ mod tests {
                 ("explicit".to_owned(), profile()),
             ]),
         }
+    }
+
+    #[test]
+    fn a_config_written_before_the_allowlist_existed_stays_unrestricted() {
+        let toml = r#"
+[profiles.dev]
+base_url = "https://sap.example:8001"
+client = "100"
+username = "developer"
+customer_namespaces = ["Z*"]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let profile = &config.profiles["dev"];
+
+        // Absent means "every package", so an existing profile keeps working.
+        assert_eq!(profile.edit_packages, None);
+        assert!(!profile.edit_policy().restricts_packages());
+        // Scratch work is permitted unless a profile says otherwise.
+        assert!(profile.allow_temporary_package);
+    }
+
+    #[test]
+    fn an_empty_list_is_not_the_same_as_no_list() {
+        let toml = r#"
+[profiles.dev]
+base_url = "https://sap.example:8001"
+client = "100"
+username = "developer"
+edit_packages = []
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let profile = &config.profiles["dev"];
+
+        assert_eq!(profile.edit_packages, Some(Vec::new()));
+        // The explicit off switch has to survive the round trip, or it silently
+        // becomes "unrestricted" — the opposite of what was asked for.
+        assert!(profile.edit_policy().restricts_packages());
+    }
+
+    #[test]
+    fn saving_does_not_write_settings_the_profile_never_set() {
+        let mut profile = profile();
+        profile.edit_packages = None;
+        let rendered = toml::to_string_pretty(&profile).unwrap();
+
+        assert!(!rendered.contains("edit_packages"), "{rendered}");
+        assert!(!rendered.contains("allow_temporary_package"), "{rendered}");
+    }
+
+    #[test]
+    fn an_explicitly_disabled_scratch_package_is_written() {
+        let mut profile = profile();
+        profile.allow_temporary_package = false;
+        profile.edit_packages = Some(vec!["ZPROJ*".to_owned()]);
+        let rendered = toml::to_string_pretty(&profile).unwrap();
+
+        assert!(
+            rendered.contains("allow_temporary_package = false"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("ZPROJ*"), "{rendered}");
+        // And it round-trips, rather than reverting to the default on load.
+        let parsed: Profile = toml::from_str(&rendered).unwrap();
+        assert!(!parsed.allow_temporary_package);
     }
 
     #[test]

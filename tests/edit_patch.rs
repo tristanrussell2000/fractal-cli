@@ -125,10 +125,9 @@ async fn patches_under_lock_and_reports_the_source_sap_actually_stored() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let result =
-        patch_adt_source_atomically(&mut client, &profile.customer_namespaces, &patch_request())
-            .await
-            .unwrap();
+    let result = patch_adt_source_atomically(&mut client, &profile.edit_policy(), &patch_request())
+        .await
+        .unwrap();
 
     assert_eq!(result.identity.name, "ZSAMPLE");
     assert_eq!(result.original.sha256, source_sha256(ORIGINAL_SOURCE));
@@ -192,7 +191,7 @@ async fn previews_a_patch_without_csrf_lock_write_or_unlock_requests() {
     let mut request = patch_request();
     request.transport = Some(" ab1k900575 ".to_owned());
 
-    let preview = preview_adt_source_patch(&client, &profile.customer_namespaces, &request)
+    let preview = preview_adt_source_patch(&client, &profile.edit_policy(), &request)
         .await
         .unwrap();
 
@@ -234,7 +233,7 @@ async fn sends_the_transport_on_both_a_successful_lock_and_source_write() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let result = patch_adt_source_atomically(&mut client, &profile.customer_namespaces, &request)
+    let result = patch_adt_source_atomically(&mut client, &profile.edit_policy(), &request)
         .await
         .unwrap();
 
@@ -274,7 +273,7 @@ async fn retries_an_own_request_lock_without_corrnr_but_keeps_corrnr_on_put() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let result = patch_adt_source_atomically(&mut client, &profile.customer_namespaces, &request)
+    let result = patch_adt_source_atomically(&mut client, &profile.edit_policy(), &request)
         .await
         .unwrap();
 
@@ -301,7 +300,7 @@ async fn does_not_retry_a_lock_held_by_a_different_transport() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let error = patch_adt_source_atomically(&mut client, &profile.customer_namespaces, &request)
+    let error = patch_adt_source_atomically(&mut client, &profile.edit_policy(), &request)
         .await
         .unwrap_err();
 
@@ -322,7 +321,7 @@ async fn rejects_an_invalid_transport_before_any_http_request() {
     let mut request = patch_request();
     request.transport = Some("AB1 K900575".to_owned());
 
-    let error = patch_adt_source_atomically(&mut client, &profile.customer_namespaces, &request)
+    let error = patch_adt_source_atomically(&mut client, &profile.edit_policy(), &request)
         .await
         .unwrap_err();
 
@@ -353,10 +352,9 @@ async fn suggests_the_request_named_by_sap_when_transport_was_omitted() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let error =
-        patch_adt_source_atomically(&mut client, &profile.customer_namespaces, &patch_request())
-            .await
-            .unwrap_err();
+    let error = patch_adt_source_atomically(&mut client, &profile.edit_policy(), &patch_request())
+        .await
+        .unwrap_err();
 
     assert!(matches!(
         error,
@@ -375,7 +373,7 @@ async fn rejects_an_object_outside_customer_namespaces_before_locking() {
     let mut request = patch_request();
     request.name = "SAP_STANDARD".to_owned();
 
-    let error = patch_adt_source_atomically(&mut client, &profile.customer_namespaces, &request)
+    let error = patch_adt_source_atomically(&mut client, &profile.edit_policy(), &request)
         .await
         .unwrap_err();
 
@@ -404,10 +402,9 @@ async fn reports_lock_contention_without_reading_or_unlocking() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let error =
-        patch_adt_source_atomically(&mut client, &profile.customer_namespaces, &patch_request())
-            .await
-            .unwrap_err();
+    let error = patch_adt_source_atomically(&mut client, &profile.edit_policy(), &patch_request())
+        .await
+        .unwrap_err();
 
     assert!(matches!(
         error,
@@ -432,10 +429,9 @@ async fn rejects_a_successful_lock_response_that_contains_no_handle() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let error =
-        patch_adt_source_atomically(&mut client, &profile.customer_namespaces, &patch_request())
-            .await
-            .unwrap_err();
+    let error = patch_adt_source_atomically(&mut client, &profile.edit_policy(), &patch_request())
+        .await
+        .unwrap_err();
 
     assert!(matches!(
         error,
@@ -457,7 +453,7 @@ async fn stale_optional_hash_is_checked_under_lock_and_then_unlocked() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let error = patch_adt_source_atomically(&mut client, &profile.customer_namespaces, &request)
+    let error = patch_adt_source_atomically(&mut client, &profile.edit_policy(), &request)
         .await
         .unwrap_err();
 
@@ -492,7 +488,7 @@ async fn missing_patch_anchor_is_checked_under_lock_and_then_unlocked() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let error = patch_adt_source_atomically(&mut client, &profile.customer_namespaces, &request)
+    let error = patch_adt_source_atomically(&mut client, &profile.edit_policy(), &request)
         .await
         .unwrap_err();
 
@@ -536,10 +532,9 @@ async fn source_write_error_wins_even_when_cleanup_unlock_also_fails() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let error =
-        patch_adt_source_atomically(&mut client, &profile.customer_namespaces, &patch_request())
-            .await
-            .unwrap_err();
+    let error = patch_adt_source_atomically(&mut client, &profile.edit_policy(), &patch_request())
+        .await
+        .unwrap_err();
 
     // Both the write and the unlock failed. The write failure stays the
     // reported cause; the abandoned lock is carried, not dropped.
@@ -583,10 +578,9 @@ async fn a_stuck_lock_after_a_successful_write_is_reported_without_failing_the_w
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let result =
-        patch_adt_source_atomically(&mut client, &profile.customer_namespaces, &patch_request())
-            .await
-            .expect("the write landed, so this is not a failure");
+    let result = patch_adt_source_atomically(&mut client, &profile.edit_policy(), &patch_request())
+        .await
+        .expect("the write landed, so this is not a failure");
 
     assert!(
         result.still_locked,
@@ -623,10 +617,9 @@ async fn reports_when_a_completed_write_cannot_be_verified() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let error =
-        patch_adt_source_atomically(&mut client, &profile.customer_namespaces, &patch_request())
-            .await
-            .unwrap_err();
+    let error = patch_adt_source_atomically(&mut client, &profile.edit_policy(), &patch_request())
+        .await
+        .unwrap_err();
 
     assert!(matches!(
         error,

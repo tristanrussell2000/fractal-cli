@@ -116,13 +116,10 @@ async fn replaces_complete_source_under_lock_and_reports_sap_normalization() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let result = replace_adt_source_atomically(
-        &mut client,
-        &profile.customer_namespaces,
-        &replacement_request(),
-    )
-    .await
-    .unwrap();
+    let result =
+        replace_adt_source_atomically(&mut client, &profile.edit_policy(), &replacement_request())
+            .await
+            .unwrap();
 
     assert_eq!(result.identity.name, "ZSAMPLE");
     assert_eq!(result.original.sha256, source_sha256(ORIGINAL_SOURCE));
@@ -182,7 +179,7 @@ async fn previews_complete_source_with_one_read_and_no_mutating_requests() {
     let mut request = replacement_request();
     request.transport = Some(" ab1k900575 ".to_owned());
 
-    let preview = preview_adt_source_replacement(&client, &profile.customer_namespaces, &request)
+    let preview = preview_adt_source_replacement(&client, &profile.edit_policy(), &request)
         .await
         .unwrap();
 
@@ -212,7 +209,7 @@ async fn sends_transport_on_the_lock_and_complete_source_write() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let result = replace_adt_source_atomically(&mut client, &profile.customer_namespaces, &request)
+    let result = replace_adt_source_atomically(&mut client, &profile.edit_policy(), &request)
         .await
         .unwrap();
 
@@ -233,7 +230,7 @@ async fn stale_expected_hash_is_checked_under_lock_and_then_unlocked() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let error = replace_adt_source_atomically(&mut client, &profile.customer_namespaces, &request)
+    let error = replace_adt_source_atomically(&mut client, &profile.edit_policy(), &request)
         .await
         .unwrap_err();
 
@@ -267,7 +264,7 @@ async fn unchanged_source_is_rejected_under_lock_without_writing() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let error = replace_adt_source_atomically(&mut client, &profile.customer_namespaces, &request)
+    let error = replace_adt_source_atomically(&mut client, &profile.edit_policy(), &request)
         .await
         .unwrap_err();
 
@@ -301,7 +298,7 @@ async fn invalid_expected_hash_format_is_rejected_under_lock_without_writing() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let error = replace_adt_source_atomically(&mut client, &profile.customer_namespaces, &request)
+    let error = replace_adt_source_atomically(&mut client, &profile.edit_policy(), &request)
         .await
         .unwrap_err();
 
@@ -343,13 +340,10 @@ async fn failed_locked_source_read_still_unlocks() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let error = replace_adt_source_atomically(
-        &mut client,
-        &profile.customer_namespaces,
-        &replacement_request(),
-    )
-    .await
-    .unwrap_err();
+    let error =
+        replace_adt_source_atomically(&mut client, &profile.edit_policy(), &replacement_request())
+            .await
+            .unwrap_err();
 
     assert!(matches!(
         error,
@@ -377,13 +371,10 @@ async fn failed_preview_source_read_maps_to_preview_error_without_mutation() {
     let profile = profile(server.uri());
     let client = SapClient::new(&profile, "password".to_owned()).unwrap();
 
-    let error = preview_adt_source_replacement(
-        &client,
-        &profile.customer_namespaces,
-        &replacement_request(),
-    )
-    .await
-    .unwrap_err();
+    let error =
+        preview_adt_source_replacement(&client, &profile.edit_policy(), &replacement_request())
+            .await
+            .unwrap_err();
 
     assert!(matches!(
         error,
@@ -412,13 +403,10 @@ async fn write_failure_wins_even_when_unlock_also_fails() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let error = replace_adt_source_atomically(
-        &mut client,
-        &profile.customer_namespaces,
-        &replacement_request(),
-    )
-    .await
-    .unwrap_err();
+    let error =
+        replace_adt_source_atomically(&mut client, &profile.edit_policy(), &replacement_request())
+            .await
+            .unwrap_err();
 
     // Both the write and the unlock failed. The write failure stays the
     // reported cause; the abandoned lock is carried, not dropped.
@@ -455,13 +443,10 @@ async fn a_stuck_lock_after_a_successful_write_is_reported_without_failing_the_w
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let result = replace_adt_source_atomically(
-        &mut client,
-        &profile.customer_namespaces,
-        &replacement_request(),
-    )
-    .await
-    .expect("the write landed, so this is not a failure");
+    let result =
+        replace_adt_source_atomically(&mut client, &profile.edit_policy(), &replacement_request())
+            .await
+            .expect("the write landed, so this is not a failure");
 
     assert!(
         result.still_locked,
@@ -490,13 +475,10 @@ async fn failed_post_write_verification_maps_to_stored_source_read_error() {
 
     let profile = profile(server.uri());
     let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let error = replace_adt_source_atomically(
-        &mut client,
-        &profile.customer_namespaces,
-        &replacement_request(),
-    )
-    .await
-    .unwrap_err();
+    let error =
+        replace_adt_source_atomically(&mut client, &profile.edit_policy(), &replacement_request())
+            .await
+            .unwrap_err();
 
     assert!(matches!(
         error,
@@ -514,7 +496,7 @@ async fn validates_blank_source_namespace_and_transport_before_http() {
 
     let mut blank = replacement_request();
     blank.replacement_source = " \n\t".to_owned();
-    let error = replace_adt_source_atomically(&mut client, &profile.customer_namespaces, &blank)
+    let error = replace_adt_source_atomically(&mut client, &profile.edit_policy(), &blank)
         .await
         .unwrap_err();
     assert!(matches!(
@@ -527,13 +509,10 @@ async fn validates_blank_source_namespace_and_transport_before_http() {
 
     let mut invalid_transport = replacement_request();
     invalid_transport.transport = Some("AB1 K900575".to_owned());
-    let error = replace_adt_source_atomically(
-        &mut client,
-        &profile.customer_namespaces,
-        &invalid_transport,
-    )
-    .await
-    .unwrap_err();
+    let error =
+        replace_adt_source_atomically(&mut client, &profile.edit_policy(), &invalid_transport)
+            .await
+            .unwrap_err();
     assert!(matches!(
         error,
         AdtSourceReplacementError::Validation(AdtEditTargetValidationError::InvalidTransport(_))
@@ -541,7 +520,7 @@ async fn validates_blank_source_namespace_and_transport_before_http() {
 
     let mut standard = replacement_request();
     standard.name = "SAP_STANDARD".to_owned();
-    let error = replace_adt_source_atomically(&mut client, &profile.customer_namespaces, &standard)
+    let error = replace_adt_source_atomically(&mut client, &profile.edit_policy(), &standard)
         .await
         .unwrap_err();
     assert!(matches!(

@@ -73,6 +73,8 @@ pub enum AuthCommand {
     Login(LoginArgs),
     /// List saved profile names.
     List,
+    /// Change what a profile may edit, without touching its stored password.
+    Set(AuthSetArgs),
     /// Remove a saved profile and its keychain credential.
     Remove(ProfileArgs),
 }
@@ -102,6 +104,11 @@ pub struct LoginArgs {
     /// Customer namespace patterns. Repeat for multiple patterns; defaults to Z* and Y*.
     #[arg(long)]
     pub(crate) namespace: Vec<String>,
+    /// Packages whose objects this profile may edit. Repeat for multiple
+    /// patterns. Without this, every package is editable. `$TMP` stays editable
+    /// either way unless `auth set --allow-temporary-package false` says not.
+    #[arg(long)]
+    pub(crate) package: Vec<String>,
     /// Make this profile the default, replacing the current default.
     #[arg(long, default_value_t = false)]
     pub(crate) default: bool,
@@ -123,6 +130,33 @@ pub struct LoginArgs {
 pub struct ProfileArgs {
     /// Saved profile name.
     pub(crate) name: String,
+}
+
+#[derive(Debug, Args)]
+pub struct AuthSetArgs {
+    /// Profile to change. Defaults to the selected profile.
+    pub(crate) name: Option<String>,
+    /// Replace the packages this profile may edit. Repeat for multiple patterns.
+    #[arg(long)]
+    pub(crate) package: Vec<String>,
+    /// Grant no packages at all, making every object read-only for this
+    /// profile. Distinct from having never set a list, which grants everything.
+    #[arg(long, default_value_t = false, conflicts_with = "package")]
+    pub(crate) no_package: bool,
+    /// Remove the package restriction entirely, so every package is editable
+    /// again. The way back from --package or --no-package.
+    #[arg(
+        long,
+        default_value_t = false,
+        conflicts_with_all = ["package", "no_package"]
+    )]
+    pub(crate) any_package: bool,
+    /// Replace the customer namespace patterns. Repeat for multiple patterns.
+    #[arg(long)]
+    pub(crate) namespace: Vec<String>,
+    /// Whether the `$TMP` scratch package stays editable regardless of --package.
+    #[arg(long)]
+    pub(crate) allow_temporary_package: Option<bool>,
 }
 
 #[derive(Debug, Subcommand)]

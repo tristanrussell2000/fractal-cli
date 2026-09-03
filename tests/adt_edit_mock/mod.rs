@@ -53,6 +53,8 @@ impl AdtEditSession {
             username: "developer".to_owned(),
             insecure_tls: false,
             password_command: None,
+            edit_packages: None,
+            allow_temporary_package: true,
             customer_namespaces: customer_namespaces
                 .iter()
                 .map(|namespace| (*namespace).to_owned())

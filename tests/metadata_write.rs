@@ -14,6 +14,7 @@
 mod adt_edit_mock;
 
 use adt_edit_mock::AdtEditSession;
+use fractal::config::EditPolicy;
 use fractal::{
     config::Profile,
     reportable_error::ReportableError,
@@ -78,7 +79,7 @@ async fn write_error(
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     write_metadata_object(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         MetadataAdtObjectType::DataElement,
         "zsample_de",
         xml,
@@ -92,7 +93,7 @@ async fn write(server: &MockServer, xml: &str) -> Result<String, String> {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     write_metadata_object(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         MetadataAdtObjectType::DataElement,
         "zsample_de",
         xml,
@@ -179,7 +180,7 @@ async fn a_table_type_is_written_with_its_own_media_type() {
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let result = write_metadata_object(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         MetadataAdtObjectType::TableType,
         "zsample_tt",
         "<ttyp:tableType edited=\"1\"/>",
@@ -245,7 +246,7 @@ async fn a_stuck_lock_after_a_successful_write_is_reported_without_failing_the_w
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let result = write_metadata_object(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         MetadataAdtObjectType::DataElement,
         "zsample_de",
         &document("new"),
@@ -361,7 +362,7 @@ async fn a_name_outside_the_customer_namespaces_never_reaches_sap() {
 
     let error = write_metadata_object(
         &mut client,
-        &["Z*".to_owned()],
+        &EditPolicy::namespaces_only(&["Z*"]),
         MetadataAdtObjectType::DataElement,
         "SFLIGHT_DE",
         &document("new"),

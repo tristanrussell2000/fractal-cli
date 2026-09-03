@@ -1,3 +1,5 @@
+use super::package_authorization::{PackageAuthorizationError, authorize_object_package};
+use crate::config::EditPolicy;
 use thiserror::Error;
 
 use crate::suggested_command;
@@ -48,6 +50,8 @@ pub struct AdtInactiveSourceDiscardResult {
 pub enum AdtInactiveSourceDiscardError {
     #[error(transparent)]
     Validation(#[from] AdtEditTargetValidationError),
+    #[error(transparent)]
+    PackageNotAllowed(#[from] PackageAuthorizationError),
     #[error("ADT edit session failed while discarding inactive source: {0}")]
     Session(#[source] AdtEditSessionError),
     #[error("could not determine whether the locked object has inactive source: {0}")]
@@ -91,6 +95,7 @@ impl AdtInactiveSourceDiscardError {
     #[must_use]
     pub fn sap_error(&self) -> Option<&SapClientError> {
         match self {
+            Self::PackageNotAllowed(error) => error.sap_error(),
             Self::AbandonedLock(primary) => primary.sap_error(),
             Self::ActiveSourceRead(error)
             | Self::InactiveSourceRead(error)
@@ -111,6 +116,7 @@ impl ReportableError for AdtInactiveSourceDiscardError {
         match self {
             Self::AbandonedLock(primary) => primary.code(),
             Self::Validation(error) => error.code(),
+            Self::PackageNotAllowed(error) => error.code(),
             Self::Session(
                 AdtEditSessionError::LockFailed { .. }
                 | AdtEditSessionError::LockHandleMissing { .. },
@@ -148,6 +154,7 @@ impl ReportableError for AdtInactiveSourceDiscardError {
                     .to_owned()
             }
             Self::Validation(error) => error.hint()?,
+            Self::PackageNotAllowed(error) => error.hint()?,
             Self::Session(AdtEditSessionError::UnlockFailed(_)) => {
                 "The inactive source now contains the previous active source, but it was not activated. Release the lock, inspect the inactive version, and activate it to finish the discard."
                     .to_owned()
@@ -179,6 +186,7 @@ impl ReportableError for AdtInactiveSourceDiscardError {
     /// a mutation, so that instruction stays in prose where a caller decides.
     fn suggested_command(&self) -> Option<String> {
         match self {
+            Self::PackageNotAllowed(error) => error.suggested_command(),
             Self::AbandonedLock(primary) => primary.suggested_command(),
             Self::RestoreVerificationMismatch { identity, .. } => {
                 Some(suggested_command::edit_read(
@@ -227,15 +235,22 @@ struct PreparedDiscard {
 /// source restore, activation, verification, or cleanup failures.
 pub async fn discard_inactive_adt_source(
     sap: &mut SapClient,
-    customer_namespaces: &[String],
+    policy: &EditPolicy,
     request: &AdtInactiveSourceDiscardRequest,
 ) -> Result<AdtInactiveSourceDiscardResult, AdtInactiveSourceDiscardError> {
     let target = validate_adt_edit_target(
         request.object_type,
         &request.name,
-        customer_namespaces,
+        policy,
         request.transport.as_deref(),
     )?;
+    authorize_object_package(
+        sap,
+        policy,
+        &target.identity.name,
+        &target.identity.object_uri,
+    )
+    .await?;
     let identity = target.identity;
     let transport = target.transport;
 
@@ -266,6 +281,7 @@ pub async fn discard_inactive_adt_source(
         ValidatedAdtEditTarget {
             identity: identity.clone(),
             transport: None,
+            policy: policy.clone(),
         },
     )
     .await

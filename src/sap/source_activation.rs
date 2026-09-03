@@ -1,3 +1,5 @@
+use super::package_authorization::{PackageAuthorizationError, authorize_object_package};
+use crate::config::EditPolicy;
 use reqwest::header::{HeaderMap, HeaderValue};
 use thiserror::Error;
 
@@ -53,6 +55,8 @@ pub struct AdtSourceActivationResult {
 pub enum AdtSourceActivationError {
     #[error(transparent)]
     Validation(#[from] AdtEditTargetValidationError),
+    #[error(transparent)]
+    PackageNotAllowed(#[from] PackageAuthorizationError),
     #[error("could not determine whether the object has inactive source: {0}")]
     InactiveVersionProbe(#[source] AdtInactiveSourceProbeError),
     #[error("{} object '{}' has no inactive source to activate", identity.object_type.as_str(), identity.name)]
@@ -115,6 +119,7 @@ impl AdtSourceActivationError {
     #[must_use]
     pub const fn sap_error(&self) -> Option<&SapClientError> {
         match self {
+            Self::PackageNotAllowed(error) => error.sap_error(),
             Self::InactiveSourceRead(error) | Self::ActiveSourceRead { source: error, .. } => {
                 error.sap_error()
             }
@@ -138,6 +143,7 @@ impl ReportableError for AdtSourceActivationError {
     fn code(&self) -> &'static str {
         match self {
             Self::Validation(error) => error.code(),
+            Self::PackageNotAllowed(error) => error.code(),
             Self::InactiveVersionProbe(_) => "edit_activation_inactive_probe_failed",
             Self::NoInactiveVersion { .. } => "edit_activation_no_inactive_source",
             Self::InactiveSourceRead(_) => "edit_activation_inactive_read_failed",
@@ -164,6 +170,7 @@ impl ReportableError for AdtSourceActivationError {
                     .to_owned()
             }
             Self::Validation(error) => error.hint()?,
+            Self::PackageNotAllowed(error) => error.hint()?,
             Self::InactiveVersionProbe(error) => error.hint()?,
             Self::NoInactiveVersion { identity } => format!(
                 "Create or save an inactive change first. Run `{}` to inspect what is already live.",
@@ -212,6 +219,7 @@ impl ReportableError for AdtSourceActivationError {
     /// the activation with a different request, which is a mutation.
     fn suggested_command(&self) -> Option<String> {
         match self {
+            Self::PackageNotAllowed(error) => error.suggested_command(),
             Self::NoInactiveVersion { identity }
             | Self::ActiveSourceRead { identity, .. }
             | Self::PostActivationProbe { identity, .. }
@@ -256,15 +264,22 @@ impl ReportableError for AdtSourceActivationError {
 /// attachment, activation, or post-activation verification fails.
 pub async fn activate_adt_source(
     sap: &mut SapClient,
-    customer_namespaces: &[String],
+    policy: &EditPolicy,
     request: &AdtSourceActivationRequest,
 ) -> Result<AdtSourceActivationResult, AdtSourceActivationError> {
     let target = validate_adt_edit_target(
         request.object_type,
         &request.name,
-        customer_namespaces,
+        policy,
         request.transport.as_deref(),
     )?;
+    authorize_object_package(
+        sap,
+        policy,
+        &target.identity.name,
+        &target.identity.object_uri,
+    )
+    .await?;
     activate_validated_adt_source(sap, target).await
 }
 

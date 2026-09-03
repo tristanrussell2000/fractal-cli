@@ -8,7 +8,7 @@ use cli::{
     AuthCommand, Cli, Command, DdicCommand, EditCommand, ObjectCommand, PackageCommand,
     SystemCommand, TableCommand, TransportCommand,
 };
-use commands::auth::{auth_list, auth_login, auth_remove};
+use commands::auth::{auth_list, auth_login, auth_remove, auth_set};
 use commands::ddic::{ddic_show, print_ddic_show};
 use commands::edit_activate::{edit_source_activate, print_edit_source_activate};
 use commands::edit_check::{edit_source_check, print_edit_source_check};
@@ -53,6 +53,9 @@ async fn main() {
         Command::Auth {
             command: AuthCommand::List,
         } => run_and_print(auth_list, output),
+        Command::Auth {
+            command: AuthCommand::Set(args),
+        } => run_and_print(|| auth_set(cli.profile.as_deref(), args), output),
         Command::Auth {
             command: AuthCommand::Remove(args),
         } => run_and_print(|| auth_remove(args), output),

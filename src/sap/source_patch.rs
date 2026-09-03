@@ -1,3 +1,5 @@
+use super::package_authorization::{PackageAuthorizationError, authorize_object_package};
+use crate::config::EditPolicy;
 use thiserror::Error;
 
 use super::editable_source::{
@@ -61,6 +63,8 @@ pub enum AdtSourcePatchError {
     #[error(transparent)]
     Validation(#[from] AdtEditTargetValidationError),
     #[error(transparent)]
+    PackageNotAllowed(#[from] PackageAuthorizationError),
+    #[error(transparent)]
     Session(#[from] AdtEditSessionError),
     #[error("could not read the current editable source while its ADT lock was held: {0}")]
     LockedSourceRead(#[source] AdtSourceReadError),
@@ -90,6 +94,7 @@ impl AdtSourcePatchError {
     #[must_use]
     pub fn sap_error(&self) -> Option<&SapClientError> {
         match self {
+            Self::PackageNotAllowed(error) => error.sap_error(),
             Self::AbandonedLock(primary) => primary.sap_error(),
             Self::LockedSourceRead(error)
             | Self::PreviewSourceRead(error)
@@ -105,6 +110,7 @@ impl ReportableError for AdtSourcePatchError {
         match self {
             Self::AbandonedLock(primary) => primary.code(),
             Self::Validation(error) => error.code(),
+            Self::PackageNotAllowed(error) => error.code(),
             Self::Session(error) => error.code(),
             Self::Patch { source, .. } => source.code(),
             Self::LockedSourceRead(_) => "edit_locked_source_read_failed",
@@ -129,6 +135,7 @@ impl ReportableError for AdtSourcePatchError {
                 primary.hint().unwrap_or_default()
             ),
             Self::Validation(error) => error.hint()?,
+            Self::PackageNotAllowed(error) => error.hint()?,
             Self::Session(error) => error.hint()?,
             Self::LockedSourceRead(error) | Self::PreviewSourceRead(error) => error.hint()?,
             // The pure planner cannot name the object, so the operation error —
@@ -165,6 +172,7 @@ impl ReportableError for AdtSourcePatchError {
     /// write, which must never appear in a field a caller may execute.
     fn suggested_command(&self) -> Option<String> {
         match self {
+            Self::PackageNotAllowed(error) => error.suggested_command(),
             Self::AbandonedLock(primary) => primary.suggested_command(),
             Self::Patch {
                 identity,
@@ -206,15 +214,22 @@ impl ReportableError for AdtSourcePatchError {
 /// unlock failures, or failed post-write verification.
 pub async fn patch_adt_source_atomically(
     sap: &mut SapClient,
-    customer_namespaces: &[String],
+    policy: &EditPolicy,
     request: &AdtSourcePatchRequest,
 ) -> Result<AdtSourcePatchWriteResult, AdtSourcePatchError> {
     let target = validate_adt_edit_target(
         request.object_type,
         &request.name,
-        customer_namespaces,
+        policy,
         request.transport.as_deref(),
     )?;
+    authorize_object_package(
+        sap,
+        policy,
+        &target.identity.name,
+        &target.identity.object_uri,
+    )
+    .await?;
     let saved = save_inactive_source_atomically(sap, &target, |original| {
         let expected_sha256 = request
             .expected_sha256
@@ -264,15 +279,22 @@ pub async fn patch_adt_source_atomically(
 /// source reads, stale revisions, or unsafe patch anchors.
 pub async fn preview_adt_source_patch(
     sap: &SapClient,
-    customer_namespaces: &[String],
+    policy: &EditPolicy,
     request: &AdtSourcePatchRequest,
 ) -> Result<AdtSourcePatchPreview, AdtSourcePatchError> {
     let target = validate_adt_edit_target(
         request.object_type,
         &request.name,
-        customer_namespaces,
+        policy,
         request.transport.as_deref(),
     )?;
+    authorize_object_package(
+        sap,
+        policy,
+        &target.identity.name,
+        &target.identity.object_uri,
+    )
+    .await?;
     let identity = target.identity;
     let transport = target.transport;
     let original = read_adt_source_for_edit(

@@ -51,7 +51,7 @@ pub async fn edit_xml_set(
 
     let result = write_metadata_object(
         &mut client,
-        &profile.customer_namespaces,
+        &profile.edit_policy(),
         object_type,
         &args.name,
         &xml,

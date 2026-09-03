@@ -144,7 +144,7 @@ storing a password in the clear is always a choice you made.
 ## Commands
 
 ```text
-fractal auth       login | list | remove
+fractal auth       login | set | list | remove
 fractal system     list | test
 fractal package    tree | items
 fractal object     search | source | xml | info | usages | kinds

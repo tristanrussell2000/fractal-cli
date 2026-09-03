@@ -11,6 +11,10 @@
 //! [`super::object_creation`] and [`super::object_deletion`]); only the
 //! identity and the creation payload live here.
 
+use super::package_authorization::{
+    PackageAuthorizationError, authorize_known_package, package_of_object_xml,
+};
+use crate::config::EditPolicy;
 use thiserror::Error;
 
 use reqwest::header::HeaderValue;
@@ -192,6 +196,8 @@ impl ReportableError for MetadataObjectTypeError {
 pub enum MetadataObjectWriteError {
     #[error(transparent)]
     Validation(#[from] AdtEditTargetValidationError),
+    #[error(transparent)]
+    PackageNotAllowed(#[from] PackageAuthorizationError),
     #[error("the replacement document is empty")]
     BlankDocument,
     #[error("ADT edit session failed while writing: {0}")]
@@ -222,6 +228,7 @@ impl ReportableError for MetadataObjectWriteError {
         match self {
             Self::AbandonedLock(primary) => primary.code(),
             Self::Validation(error) => error.code(),
+            Self::PackageNotAllowed(error) => error.code(),
             Self::BlankDocument => "blank_xml_document",
             Self::Session(_) => "edit_xml_lock_failed",
             Self::Write(_) => "edit_xml_write_failed",
@@ -242,6 +249,7 @@ impl ReportableError for MetadataObjectWriteError {
 
     fn hint(&self) -> Option<String> {
         Some(match self {
+            Self::PackageNotAllowed(error) => return error.hint(),
             Self::AbandonedLock(primary) => format!(
                 "{} Releasing its lock also failed, so the object is still locked: clear the lock before retrying, or the next attempt will fail on the lock rather than the original cause.",
                 primary.hint().unwrap_or_default()
@@ -372,12 +380,12 @@ impl ReportableError for ServiceBindingTypeError {
 pub fn metadata_object_identity(
     object_type: MetadataAdtObjectType,
     name: &str,
-    customer_namespaces: &[String],
+    policy: &EditPolicy,
 ) -> Result<AdtObjectIdentity, AdtEditTargetValidationError> {
     let name = validate_object_name(name).map_err(|error: EditableAdtSourceTargetError| {
         AdtEditTargetValidationError::InvalidObject(error)
     })?;
-    validate_customer_namespace(&name, customer_namespaces)?;
+    validate_customer_namespace(&name, &policy.customer_namespaces)?;
     let path_name = name.to_ascii_lowercase().replace('/', "%2f");
 
     Ok(AdtObjectIdentity {
@@ -400,11 +408,10 @@ pub fn metadata_object_identity(
 /// new object that could not be read back.
 pub async fn create_metadata_object(
     sap: &mut SapClient,
-    customer_namespaces: &[String],
+    policy: &EditPolicy,
     request: &MetadataObjectCreationRequest,
 ) -> Result<AdtObjectCreationResult, AdtObjectCreationError> {
-    let identity =
-        metadata_object_identity(request.object_type, &request.name, customer_namespaces)?;
+    let identity = metadata_object_identity(request.object_type, &request.name, policy)?;
     let transport = canonicalize_transport_request(request.transport.as_deref())
         .map_err(AdtEditTargetValidationError::from)?;
     let package = validate_package_name(&request.package)?;
@@ -425,6 +432,7 @@ pub async fn create_metadata_object(
     };
     create_validated_adt_object(
         sap,
+        policy,
         identity,
         AdtObjectCreatePayload {
             collection_path: request.object_type.collection_path(),
@@ -451,17 +459,17 @@ pub async fn create_metadata_object(
 /// that is still readable afterwards.
 pub async fn delete_metadata_object(
     sap: &mut SapClient,
-    customer_namespaces: &[String],
+    policy: &EditPolicy,
     object_type: MetadataAdtObjectType,
     name: &str,
     transport: Option<&str>,
     force: bool,
 ) -> Result<AdtObjectDeletionResult, AdtObjectDeletionError> {
-    let identity = metadata_object_identity(object_type, name, customer_namespaces)?;
+    let identity = metadata_object_identity(object_type, name, policy)?;
     let transport =
         canonicalize_transport_request(transport).map_err(AdtEditTargetValidationError::from)?;
 
-    delete_validated_adt_object(sap, identity, transport, force).await
+    delete_validated_adt_object(sap, policy, identity, transport, force).await
 }
 
 /// Reports what deleting a metadata object would do, without doing any of it.
@@ -472,17 +480,17 @@ pub async fn delete_metadata_object(
 /// lookup that could not be completed.
 pub async fn preview_metadata_object_deletion(
     sap: &mut SapClient,
-    customer_namespaces: &[String],
+    policy: &EditPolicy,
     object_type: MetadataAdtObjectType,
     name: &str,
     transport: Option<&str>,
     force: bool,
 ) -> Result<AdtObjectDeletionPreview, AdtObjectDeletionError> {
-    let identity = metadata_object_identity(object_type, name, customer_namespaces)?;
+    let identity = metadata_object_identity(object_type, name, policy)?;
     let transport =
         canonicalize_transport_request(transport).map_err(AdtEditTargetValidationError::from)?;
 
-    preview_validated_deletion(sap, identity, transport, force).await
+    preview_validated_deletion(sap, policy, identity, transport, force).await
 }
 
 /// The result of writing a metadata object's XML back to SAP.
@@ -520,13 +528,13 @@ pub struct MetadataObjectWriteResult {
 /// afterwards.
 pub async fn write_metadata_object(
     sap: &mut SapClient,
-    customer_namespaces: &[String],
+    policy: &EditPolicy,
     object_type: MetadataAdtObjectType,
     name: &str,
     xml: &str,
     transport: Option<&str>,
 ) -> Result<MetadataObjectWriteResult, MetadataObjectWriteError> {
-    let identity = metadata_object_identity(object_type, name, customer_namespaces)
+    let identity = metadata_object_identity(object_type, name, policy)
         .map_err(MetadataObjectWriteError::Validation)?;
     let transport =
         canonicalize_transport_request(transport).map_err(AdtEditTargetValidationError::from)?;
@@ -535,6 +543,19 @@ pub async fn write_metadata_object(
     }
 
     let before = read_metadata_object(sap, &identity).await?;
+
+    if policy.restricts_packages() {
+        let package = package_of_object_xml(&before)
+            .map_err(|source| PackageAuthorizationError::Parse {
+                name: identity.name.clone(),
+                source,
+            })?
+            .ok_or_else(|| PackageAuthorizationError::PackageUnknown {
+                name: identity.name.clone(),
+                object_uri: identity.object_uri.clone(),
+            })?;
+        authorize_known_package(policy, &identity.name, &package)?;
+    }
     let lock = acquire_adt_object_lock(sap, &identity.object_uri, transport.as_deref())
         .await
         .map_err(MetadataObjectWriteError::Session)?;
@@ -777,7 +798,7 @@ mod tests {
         let identity = metadata_object_identity(
             MetadataAdtObjectType::DataElement,
             "ZSAMPLE_DE",
-            &["Z*".to_owned()],
+            &EditPolicy::namespaces_only(&["Z*"]),
         )
         .unwrap();
 
@@ -792,9 +813,12 @@ mod tests {
 
     #[test]
     fn refuses_a_name_outside_the_customer_namespaces() {
-        let error =
-            metadata_object_identity(MetadataAdtObjectType::Domain, "SFLIGHT", &["Z*".to_owned()])
-                .unwrap_err();
+        let error = metadata_object_identity(
+            MetadataAdtObjectType::Domain,
+            "SFLIGHT",
+            &EditPolicy::namespaces_only(&["Z*"]),
+        )
+        .unwrap_err();
 
         assert_eq!(error.code(), "object_outside_customer_namespaces");
     }

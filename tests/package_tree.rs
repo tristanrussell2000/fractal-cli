@@ -16,6 +16,8 @@ fn profile(base_url: String) -> Profile {
         username: "developer".to_owned(),
         insecure_tls: false,
         password_command: None,
+        edit_packages: None,
+        allow_temporary_package: true,
         customer_namespaces: vec!["Z*", "Y*"].into_iter().map(str::to_owned).collect(),
     }
 }

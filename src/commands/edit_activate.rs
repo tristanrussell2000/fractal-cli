@@ -69,7 +69,7 @@ pub async fn edit_source_activate(
         transport: args.transport.clone(),
     };
     let (profile_name, profile, mut client) = connect(explicit_profile).await?;
-    let result = activate_adt_source(&mut client, &profile.customer_namespaces, &request).await?;
+    let result = activate_adt_source(&mut client, &profile.edit_policy(), &request).await?;
     Ok(map_source_activation_result(profile_name, result))
 }
 

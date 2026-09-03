@@ -675,6 +675,8 @@ mod tests {
             insecure_tls: false,
             customer_namespaces: vec!["Z*".to_owned()],
             password_command: command.map(str::to_owned),
+            edit_packages: None,
+            allow_temporary_package: true,
         }
     }
 

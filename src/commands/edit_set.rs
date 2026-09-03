@@ -74,7 +74,7 @@ pub async fn edit_source_set(
 
     if args.dry_run {
         let preview =
-            preview_adt_source_replacement(&client, &profile.customer_namespaces, &request).await?;
+            preview_adt_source_replacement(&client, &profile.edit_policy(), &request).await?;
         return Ok(map_set_preview(
             profile_name,
             args.source_file.clone(),
@@ -83,7 +83,7 @@ pub async fn edit_source_set(
     }
 
     let result =
-        replace_adt_source_atomically(&mut client, &profile.customer_namespaces, &request).await?;
+        replace_adt_source_atomically(&mut client, &profile.edit_policy(), &request).await?;
     Ok(map_applied_set(
         profile_name,
         args.source_file.clone(),
