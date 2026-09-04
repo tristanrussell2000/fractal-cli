@@ -149,7 +149,7 @@ impl ReportableError for AdtObjectCreationError {
             // Deliberately no "retry" advice: the name is taken, and it will
             // still be taken next time.
             Self::AlreadyExists { .. } => {
-                "The name is already in use, so creating it again cannot succeed. Use `fractal edit set` to change the existing object, or `fractal edit delete` to remove it first."
+                "The name is already in use, so creating it again cannot succeed. Use `fractal edit set` to change the existing object, or `fractal delete` to remove it first."
                     .to_owned()
             }
             Self::Verification { identity, .. } => format!(

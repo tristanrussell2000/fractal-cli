@@ -243,7 +243,7 @@ async fn an_existing_name_is_classified_rather_than_reported_as_a_generic_failur
         // Retrying cannot help, so the hint must not invite it.
         assert!(!hint.contains("retry"));
         assert!(hint.contains("fractal edit set"));
-        assert!(hint.contains("fractal edit delete"));
+        assert!(hint.contains("fractal delete"));
         // The object is known to exist, so this points at it rather than at a
         // search for it — and stays read-only.
         assert_eq!(

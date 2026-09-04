@@ -5,24 +5,25 @@ mod reported;
 
 use clap::Parser;
 use cli::{
-    AuthCommand, Cli, Command, DdicCommand, EditCommand, ObjectCommand, PackageCommand,
-    SystemCommand, TableCommand, TransportCommand,
+    AuthCommand, Cli, Command, DdicCommand, EditCommand, GuardCommand, ObjectCommand,
+    PackageCommand, SystemCommand, TableCommand, TransportCommand,
 };
 use commands::auth::{auth_list, auth_login, auth_remove, auth_set};
 use commands::ddic::{ddic_show, print_ddic_show};
 use commands::edit_activate::{edit_source_activate, print_edit_source_activate};
 use commands::edit_check::{edit_source_check, print_edit_source_check};
 use commands::edit_create::{edit_object_create, print_edit_object_create};
-use commands::edit_delete::{edit_object_delete, print_edit_object_delete};
 use commands::edit_discard::{edit_source_discard, print_edit_source_discard};
 use commands::edit_patch::{edit_source_patch, print_edit_source_patch};
 use commands::edit_read::{edit_source_read, print_edit_source_read};
 use commands::edit_set::{edit_source_set, print_edit_source_set};
 use commands::edit_set_xml::{edit_xml_set, print_edit_xml_set};
+use commands::guard::{guard_install, print_guard_install};
 use commands::object::{
     object_info, object_kinds, object_search, object_source, object_usages, object_xml,
     print_object_kinds,
 };
+use commands::object_delete::{object_delete, print_object_delete};
 use commands::package::{package_items, package_tree};
 use commands::query::{print_query, query};
 use commands::system::{print_system_list, system_list, system_test};
@@ -163,12 +164,13 @@ async fn main() {
             )
             .await
         }
-        Command::Edit {
-            command: EditCommand::Delete(args),
-        } => {
+        Command::Guard {
+            command: GuardCommand::Install(args),
+        } => run_and_print_with(|| guard_install(args), print_guard_install, output),
+        Command::Delete(args) => {
             run_and_print_with_async(
-                || edit_object_delete(cli.profile.as_deref(), args),
-                print_edit_object_delete,
+                || object_delete(cli.profile.as_deref(), args),
+                print_object_delete,
                 output,
             )
             .await

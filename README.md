@@ -152,7 +152,9 @@ fractal ddic       show
 fractal table      data | metadata
 fractal query      <complete SELECT, or - for stdin>
 fractal transport  list | show | create
-fractal edit       create | delete | read | patch | set | set-xml | check | activate | discard
+fractal edit       create | read | patch | set | set-xml | check | activate | discard
+fractal delete     <one destructive verb, kept out of `edit` on purpose>
+fractal guard      install
 ```
 
 Every command and subcommand accepts `--help`.
@@ -172,8 +174,37 @@ Errors are written to stderr with a nonzero exit code. In JSON mode an error has
 The `edit` commands only touch objects in your profile's customer namespaces (`Z*` and `Y*`
 by default). `edit patch` and `edit set` save inactive source and never activate.
 Activation is a separate, explicit `edit activate` step that syntax-checks first and
-verifies the result. `edit delete` refuses when other objects still reference the target
+verifies the result. `fractal delete` refuses when other objects still reference the target
 unless `--force` is given.
+
+A profile can also restrict editing to particular packages, which is checked against the
+object's own package on every mutation:
+
+```bash
+fractal auth set <profile> --package 'ZPROJ*' --package ZUTIL
+fractal auth set <profile> --any-package          # remove the restriction
+```
+
+`$TMP` stays editable regardless, since local scratch objects are not shared code; turn that
+off with `--allow-temporary-package false`. Deletion lives at `fractal delete` rather than
+under `edit` so that a single prefix identifies the one irreversible verb.
+
+### Running Fractal under a coding agent
+
+Be clear about where the boundary is: **nothing this CLI checks about its own invocation can
+stop the agent that invoked it.** The caller supplies the arguments, the environment and the
+config file, so any confirmation flag is a flag the caller simply passes. The layer that can
+refuse is your agent harness's permission system, which decides before the command runs.
+
+`fractal guard install` writes those rules for you:
+
+```bash
+fractal guard install            # .claude/settings.json in the current project
+fractal guard install --dry-run  # show the rules without writing them
+```
+
+It denies the irreversible commands, asks for the ones that write, leaves read-only commands
+alone, and merges into an existing settings file without removing anything already there.
 
 ## Building from source
 

@@ -60,6 +60,17 @@ pub enum Command {
         #[command(subcommand)]
         command: TransportCommand,
     },
+    /// Write agent-harness permission rules for Fractal's mutating commands.
+    Guard {
+        #[command(subcommand)]
+        command: GuardCommand,
+    },
+    /// Delete a repository object.
+    ///
+    /// Kept out of `edit` deliberately. This is the one irreversible verb, and
+    /// a permission rule in an agent harness matches `fractal delete` by
+    /// prefix, with nothing read-only sharing that prefix.
+    Delete(ObjectDeleteArgs),
     /// Read and safely edit supported source-based repository objects.
     Edit {
         #[command(subcommand)]
@@ -157,6 +168,39 @@ pub struct AuthSetArgs {
     /// Whether the `$TMP` scratch package stays editable regardless of --package.
     #[arg(long)]
     pub(crate) allow_temporary_package: Option<bool>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum GuardCommand {
+    /// Write the rules into an agent harness's settings file.
+    Install(GuardInstallArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct GuardInstallArgs {
+    /// Agent harness to configure. Defaults to Claude Code.
+    #[arg(long, value_enum)]
+    pub(crate) harness: Option<GuardHarnessArg>,
+    /// Project directory to write into. Defaults to the current directory.
+    #[arg(long)]
+    pub(crate) dir: Option<std::path::PathBuf>,
+    /// Write to the personal, gitignored settings file instead of the shared
+    /// project one.
+    #[arg(long, default_value_t = false)]
+    pub(crate) local: bool,
+    /// Prompt for every mutating command instead of refusing the destructive
+    /// ones outright.
+    #[arg(long, default_value_t = false)]
+    pub(crate) ask_only: bool,
+    /// Show what would be written without writing it.
+    #[arg(long, default_value_t = false)]
+    pub(crate) dry_run: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum GuardHarnessArg {
+    /// Claude Code, via `.claude/settings.json`.
+    Claude,
 }
 
 #[derive(Debug, Subcommand)]
@@ -267,8 +311,6 @@ pub struct TransportListArgs {
 pub enum EditCommand {
     /// Create an empty object shell. Fill it with `edit set`; does not activate.
     Create(EditObjectCreateArgs),
-    /// Delete an object. Refuses while anything still references it.
-    Delete(EditObjectDeleteArgs),
     /// Read complete source and revision metadata for a future edit.
     Read(EditSourceReadArgs),
     /// Replace one exact fragment and save inactive source. Does not activate.
@@ -313,7 +355,7 @@ pub struct EditObjectCreateArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct EditObjectDeleteArgs {
+pub struct ObjectDeleteArgs {
     /// Object type to delete.
     #[arg(long = "type")]
     pub(crate) object_type: String,

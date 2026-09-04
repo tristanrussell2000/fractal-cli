@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use super::{connect, edit_object_identity::EditObjectIdentityOutput};
 use crate::{
-    cli::EditObjectDeleteArgs,
+    cli::ObjectDeleteArgs,
     output::{OutputFormat, print_result},
     reported::Reported,
 };
@@ -41,9 +41,9 @@ pub struct EditObjectDeleteOutput {
 ///
 /// Returns [`Reported`] when the type is unknown, validation fails, the object
 /// is still referenced, or SAP rejects or fails to complete the delete.
-pub async fn edit_object_delete(
+pub async fn object_delete(
     explicit_profile: Option<&str>,
-    args: &EditObjectDeleteArgs,
+    args: &ObjectDeleteArgs,
 ) -> Result<EditObjectDeleteOutput, Reported> {
     let object_type = AdtObjectFamily::parse(&args.object_type)?;
     let (profile_name, profile, mut client) = connect(explicit_profile).await?;
@@ -91,7 +91,7 @@ pub async fn edit_object_delete(
     }
 }
 
-pub fn print_edit_object_delete(result: &EditObjectDeleteOutput, output: OutputFormat) {
+pub fn print_object_delete(result: &EditObjectDeleteOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
         print_result(result, output);
         return;
@@ -177,18 +177,15 @@ mod tests {
     use clap::Parser;
 
     use super::*;
-    use crate::cli::{Cli, Command, EditCommand};
+    use crate::cli::{Cli, Command};
     use fractal::sap::{
         adt_object_identity::AdtObjectIdentity,
         editable_source::{EditableAdtObjectType, EditableAdtSourceIdentity},
     };
 
-    fn delete_args(cli: Cli) -> EditObjectDeleteArgs {
-        let Command::Edit {
-            command: EditCommand::Delete(args),
-        } = cli.command
-        else {
-            panic!("expected edit delete command");
+    fn delete_args(cli: Cli) -> ObjectDeleteArgs {
+        let Command::Delete(args) = cli.command else {
+            panic!("expected delete command");
         };
         args
     }
@@ -206,10 +203,8 @@ mod tests {
     #[test]
     fn defaults_to_a_guarded_non_dry_delete() {
         let args = delete_args(
-            Cli::try_parse_from([
-                "fractal", "edit", "delete", "--type", "PROG", "--name", "ZSAMPLE",
-            ])
-            .unwrap(),
+            Cli::try_parse_from(["fractal", "delete", "--type", "PROG", "--name", "ZSAMPLE"])
+                .unwrap(),
         );
 
         assert!(!args.force);
@@ -222,7 +217,6 @@ mod tests {
         let args = delete_args(
             Cli::try_parse_from([
                 "fractal",
-                "edit",
                 "delete",
                 "--type",
                 "CLAS",
