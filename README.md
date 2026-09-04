@@ -177,6 +177,10 @@ Activation is a separate, explicit `edit activate` step that syntax-checks first
 verifies the result. `fractal delete` refuses when other objects still reference the target
 unless `--force` is given.
 
+`edit set-xml` replaces a whole DDIC document, and SAP keeps no retrievable version history for
+those objects, so pass `--expected-sha256` (from `fractal object xml`) to refuse the write if the
+document changed since you read it.
+
 A profile can also restrict editing to particular packages, which is checked against the
 object's own package on every mutation:
 

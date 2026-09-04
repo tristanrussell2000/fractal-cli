@@ -12,6 +12,7 @@ use crate::{
     reported::Reported,
 };
 use fractal::sap::metadata_object::{MetadataAdtObjectType, write_metadata_object};
+use fractal::source_change::source_sha256;
 
 #[derive(Debug, Serialize)]
 pub struct EditXmlSetOutput {
@@ -25,6 +26,9 @@ pub struct EditXmlSetOutput {
     /// Whether the stored document actually differs from the one before.
     changed: bool,
     stored_bytes: usize,
+    /// SHA-256 of what SAP holds now: the value to pass as
+    /// `--expected-sha256` on the next write to this object.
+    stored_sha256: String,
     /// What SAP holds now, read back rather than assumed.
     stored_xml: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -56,6 +60,7 @@ pub async fn edit_xml_set(
         &args.name,
         &xml,
         args.transport.as_deref(),
+        args.expected_sha256.as_deref(),
     )
     .await?;
 
@@ -88,6 +93,7 @@ pub async fn edit_xml_set(
         transport: result.transport,
         changed: result.changed,
         stored_bytes: result.stored_xml.len(),
+        stored_sha256: source_sha256(&result.stored_xml),
         stored_xml: result.stored_xml,
         warning,
     })

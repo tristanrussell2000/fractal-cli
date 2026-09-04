@@ -15,6 +15,7 @@ mod adt_edit_mock;
 
 use adt_edit_mock::AdtEditSession;
 use fractal::config::EditPolicy;
+use fractal::source_change::source_sha256;
 use fractal::{
     config::Profile,
     reportable_error::ReportableError,
@@ -84,6 +85,7 @@ async fn write_error(
         "zsample_de",
         xml,
         None,
+        None,
     )
     .await
     .expect_err("expected the write to fail")
@@ -97,6 +99,7 @@ async fn write(server: &MockServer, xml: &str) -> Result<String, String> {
         MetadataAdtObjectType::DataElement,
         "zsample_de",
         xml,
+        None,
         None,
     )
     .await
@@ -185,6 +188,7 @@ async fn a_table_type_is_written_with_its_own_media_type() {
         "zsample_tt",
         "<ttyp:tableType edited=\"1\"/>",
         None,
+        None,
     )
     .await
     .unwrap();
@@ -250,6 +254,7 @@ async fn a_stuck_lock_after_a_successful_write_is_reported_without_failing_the_w
         MetadataAdtObjectType::DataElement,
         "zsample_de",
         &document("new"),
+        None,
         None,
     )
     .await
@@ -367,10 +372,133 @@ async fn a_name_outside_the_customer_namespaces_never_reaches_sap() {
         "SFLIGHT_DE",
         &document("new"),
         None,
+        None,
     )
     .await
     .unwrap_err();
 
     assert_eq!(error.code(), "object_outside_customer_namespaces");
     assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_matching_expected_hash_lets_the_write_through() {
+    let server = MockServer::start().await;
+    let session = session();
+    session.mount_csrf_session(&server).await;
+    session.mount_lock(&server, None).await;
+    session
+        .unlock_request()
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(OBJECT_PATH))
+        .and(query_param("lockHandle", LOCK_HANDLE))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    mount_reads(&server, &document("old"), &document("new")).await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let result = write_metadata_object(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        MetadataAdtObjectType::DataElement,
+        "zsample_de",
+        &document("new"),
+        None,
+        Some(&source_sha256(&document("old"))),
+    )
+    .await
+    .unwrap();
+
+    assert!(result.changed);
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn a_stale_expected_hash_refuses_the_write_and_still_releases_the_lock() {
+    let server = MockServer::start().await;
+    let session = session();
+    session.mount_csrf_session(&server).await;
+    session.mount_lock(&server, None).await;
+    // The lock is taken before the document is read, so a refusal here still
+    // has to give it back.
+    session
+        .unlock_request()
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // No PUT is mounted: an attempted write would fail the test, which is the
+    // assertion that matters most here.
+    Mock::given(method("GET"))
+        .and(path(OBJECT_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_string(document("old")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let error = write_metadata_object(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        MetadataAdtObjectType::DataElement,
+        "zsample_de",
+        &document("new"),
+        None,
+        // The hash of a document somebody else already replaced.
+        Some(&source_sha256(&document("what the caller last read"))),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), "source_hash_mismatch");
+    assert!(
+        error.hint().unwrap().contains("Re-read"),
+        "the remedy is to re-read and reapply"
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn the_document_is_read_under_the_lock_not_before_it() {
+    // A hash checked against an unlocked read proves nothing: the document
+    // could change between that read and the lock. Exactly one GET happens on
+    // an unrestricted profile, and it comes after the lock.
+    let server = MockServer::start().await;
+    let session = session();
+    session.mount_csrf_session(&server).await;
+    session.mount_lock(&server, None).await;
+    session
+        .unlock_request()
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(OBJECT_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_string(document("old")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let error = write_metadata_object(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        MetadataAdtObjectType::DataElement,
+        "zsample_de",
+        &document("new"),
+        None,
+        Some("not-a-hash"),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), "invalid_expected_sha256");
+    server.verify().await;
 }

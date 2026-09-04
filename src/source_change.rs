@@ -90,6 +90,37 @@ impl ReportableError for SourceChangePlanError {
     }
 }
 
+/// Verifies an optional expected SHA-256 against content just read from SAP.
+///
+/// The stale-read guard on its own, separated from patch and replacement
+/// planning because a whole-document write has no plan: it only needs to know
+/// that nobody changed the document between the read and the write.
+///
+/// # Errors
+///
+/// Returns [`SourceChangePlanError::InvalidExpectedSha256`] for a malformed
+/// hash, or [`SourceChangePlanError::SourceHashMismatch`] when the content has
+/// changed since the caller read it.
+pub fn verify_expected_sha256(
+    expected_sha256: Option<&str>,
+    content: &str,
+) -> Result<(), SourceChangePlanError> {
+    let Some(expected_sha256) = expected_sha256 else {
+        return Ok(());
+    };
+    if !is_sha256(expected_sha256) {
+        return Err(SourceChangePlanError::InvalidExpectedSha256);
+    }
+    let actual = source_sha256(content);
+    if !expected_sha256.eq_ignore_ascii_case(&actual) {
+        return Err(SourceChangePlanError::SourceHashMismatch {
+            expected: expected_sha256.to_ascii_lowercase(),
+            actual,
+        });
+    }
+    Ok(())
+}
+
 /// Returns the lowercase SHA-256 of a UTF-8 source string.
 #[must_use]
 pub fn source_sha256(source: &str) -> String {
@@ -206,6 +237,43 @@ fn is_sha256(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_absent_expected_hash_is_no_constraint() {
+        assert!(verify_expected_sha256(None, "anything at all").is_ok());
+    }
+
+    #[test]
+    fn a_matching_hash_passes_whatever_its_case() {
+        let content = "<doma:domain/>";
+        let hash = source_sha256(content);
+        assert!(verify_expected_sha256(Some(&hash), content).is_ok());
+        assert!(verify_expected_sha256(Some(&hash.to_ascii_uppercase()), content).is_ok());
+    }
+
+    #[test]
+    fn a_changed_document_is_refused_and_names_both_hashes() {
+        let hash = source_sha256("<doma:domain>old</doma:domain>");
+        let error =
+            verify_expected_sha256(Some(&hash), "<doma:domain>new</doma:domain>").unwrap_err();
+
+        assert_eq!(error.code(), "source_hash_mismatch");
+        let SourceChangePlanError::SourceHashMismatch { expected, actual } = &error else {
+            panic!("expected a hash mismatch");
+        };
+        assert_eq!(expected, &hash);
+        assert_ne!(actual, &hash);
+    }
+
+    #[test]
+    fn a_malformed_hash_is_refused_before_it_is_compared() {
+        // Too short, non-hex, and empty must all fail as malformed rather than
+        // as a mismatch: the caller made a different mistake.
+        for bad in ["abc", &"z".repeat(64), ""] {
+            let error = verify_expected_sha256(Some(bad), "content").unwrap_err();
+            assert_eq!(error.code(), "invalid_expected_sha256", "{bad}");
+        }
+    }
+
     use super::*;
 
     const SOURCE: &str = "REPORT zsample.\nWRITE 'before'.\n";

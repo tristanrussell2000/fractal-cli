@@ -10,6 +10,7 @@ use fractal::sap::{
     object_usages::get_object_usages,
     repository_kind::RepositoryKind,
 };
+use fractal::source_change::source_sha256;
 
 #[derive(Debug, Serialize)]
 pub struct ObjectSearchResultOutput {
@@ -56,6 +57,9 @@ pub struct ObjectXmlResultOutput {
     ok: bool,
     profile: String,
     uri: String,
+    /// SHA-256 of the document as read, so a later `edit set-xml` can pass it
+    /// as `--expected-sha256` and refuse to overwrite a changed document.
+    sha256: String,
     xml: String,
 }
 
@@ -226,6 +230,7 @@ pub async fn object_xml(
         ok: true,
         profile: profile_name,
         uri: args.uri.clone(),
+        sha256: source_sha256(&result.content),
         xml: result.content,
     })
 }

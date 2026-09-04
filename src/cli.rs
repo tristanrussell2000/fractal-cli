@@ -508,6 +508,13 @@ pub struct EditXmlSetArgs {
     /// Parent CTS change request to associate with the write.
     #[arg(long)]
     pub(crate) transport: Option<String>,
+    /// Refuse the write unless the stored document still has this SHA-256.
+    ///
+    /// Take it from `fractal object xml`, which reports the hash of what it
+    /// read. SAP does not keep retrievable version content for these objects,
+    /// so an overwrite based on a stale read is unrecoverable.
+    #[arg(long)]
+    pub(crate) expected_sha256: Option<String>,
 }
 
 #[derive(Debug, Args)]

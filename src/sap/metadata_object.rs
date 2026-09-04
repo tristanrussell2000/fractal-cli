@@ -15,6 +15,7 @@ use super::package_authorization::{
     PackageAuthorizationError, authorize_known_package, package_of_object_xml,
 };
 use crate::config::EditPolicy;
+use crate::source_change::{SourceChangePlanError, verify_expected_sha256};
 use thiserror::Error;
 
 use reqwest::header::HeaderValue;
@@ -198,6 +199,9 @@ pub enum MetadataObjectWriteError {
     Validation(#[from] AdtEditTargetValidationError),
     #[error(transparent)]
     PackageNotAllowed(#[from] PackageAuthorizationError),
+    /// The document changed between the caller reading it and this write.
+    #[error(transparent)]
+    Stale(#[from] SourceChangePlanError),
     #[error("the replacement document is empty")]
     BlankDocument,
     #[error("ADT edit session failed while writing: {0}")]
@@ -229,6 +233,7 @@ impl ReportableError for MetadataObjectWriteError {
             Self::AbandonedLock(primary) => primary.code(),
             Self::Validation(error) => error.code(),
             Self::PackageNotAllowed(error) => error.code(),
+            Self::Stale(error) => error.code(),
             Self::BlankDocument => "blank_xml_document",
             Self::Session(_) => "edit_xml_lock_failed",
             Self::Write(_) => "edit_xml_write_failed",
@@ -250,6 +255,7 @@ impl ReportableError for MetadataObjectWriteError {
     fn hint(&self) -> Option<String> {
         Some(match self {
             Self::PackageNotAllowed(error) => return error.hint(),
+            Self::Stale(error) => return error.hint(),
             Self::AbandonedLock(primary) => format!(
                 "{} Releasing its lock also failed, so the object is still locked: clear the lock before retrying, or the next attempt will fail on the lock rather than the original cause.",
                 primary.hint().unwrap_or_default()
@@ -397,6 +403,27 @@ pub fn metadata_object_identity(
     })
 }
 
+/// Releases a lock after a failure, wrapping the cause when the lock sticks.
+///
+/// The failure that stopped the operation stays the reported cause; only the
+/// hint gains the stuck lock, because that changes what the caller has to do
+/// next.
+async fn abandon_lock_if_stuck(
+    sap: &mut SapClient,
+    identity: &AdtObjectIdentity,
+    lock: &AdtObjectLock,
+    primary: MetadataObjectWriteError,
+) -> MetadataObjectWriteError {
+    if release_adt_object_lock(sap, &identity.object_uri, lock)
+        .await
+        .is_err()
+    {
+        MetadataObjectWriteError::AbandonedLock(Box::new(primary))
+    } else {
+        primary
+    }
+}
+
 /// Creates an empty metadata object and confirms that it exists.
 ///
 /// The object is a shell: SAP accepts a data element with no type information
@@ -533,6 +560,7 @@ pub async fn write_metadata_object(
     name: &str,
     xml: &str,
     transport: Option<&str>,
+    expected_sha256: Option<&str>,
 ) -> Result<MetadataObjectWriteResult, MetadataObjectWriteError> {
     let identity = metadata_object_identity(object_type, name, policy)
         .map_err(MetadataObjectWriteError::Validation)?;
@@ -542,10 +570,12 @@ pub async fn write_metadata_object(
         return Err(MetadataObjectWriteError::BlankDocument);
     }
 
-    let before = read_metadata_object(sap, &identity).await?;
-
+    // The package guard has to answer before the lock, so a refusal never
+    // leaves one behind. That costs its own read, and only when a profile
+    // actually restricts packages.
     if policy.restricts_packages() {
-        let package = package_of_object_xml(&before)
+        let current = read_metadata_object(sap, &identity).await?;
+        let package = package_of_object_xml(&current)
             .map_err(|source| PackageAuthorizationError::Parse {
                 name: identity.name.clone(),
                 source,
@@ -559,6 +589,18 @@ pub async fn write_metadata_object(
     let lock = acquire_adt_object_lock(sap, &identity.object_uri, transport.as_deref())
         .await
         .map_err(MetadataObjectWriteError::Session)?;
+
+    // Read the document under the lock, not before it. A hash checked against
+    // an unlocked read proves nothing: the document could change between that
+    // read and the lock, which is the exact race this guard exists to close.
+    let before = match read_metadata_object(sap, &identity).await {
+        Ok(before) => before,
+        Err(primary) => return Err(abandon_lock_if_stuck(sap, &identity, &lock, primary).await),
+    };
+    if let Err(stale) = verify_expected_sha256(expected_sha256, &before) {
+        // Nothing has been written, so the only cleanup is the lock.
+        return Err(abandon_lock_if_stuck(sap, &identity, &lock, stale.into()).await);
+    }
 
     let written = write_locked_xml(sap, &identity, object_type, &lock, xml).await;
     // The object still exists either way, so its lock always has to come off.
