@@ -19,6 +19,7 @@ use commands::edit_read::{edit_source_read, print_edit_source_read};
 use commands::edit_set::{edit_source_set, print_edit_source_set};
 use commands::edit_set_xml::{edit_xml_set, print_edit_xml_set};
 use commands::guard::{guard_install, print_guard_install};
+use commands::guard_hook::guard_hook;
 use commands::object::{
     object_info, object_kinds, object_search, object_source, object_usages, object_xml,
     print_object_kinds,
@@ -167,6 +168,9 @@ async fn main() {
         Command::Guard {
             command: GuardCommand::Install(args),
         } => run_and_print_with(|| guard_install(args), print_guard_install, output),
+        Command::Guard {
+            command: GuardCommand::Hook(args),
+        } => run_and_print_with(|| guard_hook(args), |(), _| {}, output),
         Command::Delete(args) => {
             run_and_print_with_async(
                 || object_delete(cli.profile.as_deref(), args),

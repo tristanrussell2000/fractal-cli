@@ -25,7 +25,7 @@ use fractal::reportable_error::ReportableError;
 
 /// The one verb that destroys committed work, and the only one refused
 /// outright. Everything else here can be redone; a deleted object cannot.
-const DENIED: &[&str] = &["fractal delete"];
+pub(super) const DENIED: &[&str] = &["fractal delete"];
 
 /// Real changes with a bounded blast radius: they write source, create
 /// objects, or move transports. Worth a prompt, not a refusal.
@@ -33,7 +33,7 @@ const DENIED: &[&str] = &["fractal delete"];
 /// `edit discard` sits here rather than with the refusals: it throws away
 /// inactive changes, which is somebody's work in progress, but the active
 /// version is untouched and the blast radius stops there.
-const ASKED: &[&str] = &[
+pub(super) const ASKED: &[&str] = &[
     "fractal edit create",
     "fractal edit set",
     "fractal edit set-xml",
@@ -43,6 +43,11 @@ const ASKED: &[&str] = &[
     "fractal transport create",
     "fractal auth",
 ];
+
+/// What the Codex hook runs. Fractal is its own hook program, so the rule lists
+/// above stay the single source of truth instead of being copied into a
+/// generated script that then drifts.
+const CODEX_HOOK_COMMAND: &str = "fractal guard hook";
 
 #[derive(Debug, Error)]
 pub enum GuardError {
@@ -99,6 +104,9 @@ pub struct GuardInstallResult {
     added_deny: Vec<String>,
     added_ask: Vec<String>,
     already_present: usize,
+    /// Anything the caller needs to know that the rule lists do not say.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    notes: Vec<String>,
 }
 
 pub fn guard_install(args: &GuardInstallArgs) -> Result<GuardInstallResult, Reported> {
@@ -107,6 +115,9 @@ pub fn guard_install(args: &GuardInstallArgs) -> Result<GuardInstallResult, Repo
         .dir
         .clone()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    if matches!(harness, GuardHarnessArg::Codex) {
+        return codex_install(&directory, args);
+    }
     let settings_path = claude_settings_path(&directory, args.local);
 
     let mut settings = read_settings(&settings_path)?;
@@ -131,15 +142,14 @@ pub fn guard_install(args: &GuardInstallArgs) -> Result<GuardInstallResult, Repo
 
     Ok(GuardInstallResult {
         ok: true,
-        harness: match harness {
-            GuardHarnessArg::Claude => "claude-code",
-        },
+        harness: "claude-code",
         settings_path: settings_path.display().to_string(),
         written: changed && !args.dry_run,
         dry_run: args.dry_run,
         added_deny,
         added_ask,
         already_present,
+        notes: Vec::new(),
     })
 }
 
@@ -165,6 +175,9 @@ pub fn print_guard_install(result: &GuardInstallResult, output: OutputFormat) {
             result.already_present
         );
     }
+    for note in &result.notes {
+        let _ = writeln!(rendered, "note: {note}");
+    }
     let _ = writeln!(
         rendered,
         "{}",
@@ -177,6 +190,95 @@ pub fn print_guard_install(result: &GuardInstallResult, output: OutputFormat) {
         }
     );
     print!("{rendered}");
+}
+
+/// Codex has no declarative allow/deny list. Its permission layer is a hook
+/// program that is handed each tool call, so what gets installed is a pointer
+/// back at this binary rather than a set of rules.
+///
+/// Codex parses the `ask` decision but does not yet act on it, so only the
+/// refusals are enforceable there. The result says so rather than implying a
+/// coverage the harness will not deliver.
+fn codex_install(
+    directory: &Path,
+    args: &GuardInstallArgs,
+) -> Result<GuardInstallResult, Reported> {
+    let hooks_path = directory.join(".codex").join("hooks.json");
+    let mut settings = read_settings(&hooks_path)?;
+    let added = merge_codex_hook(&mut settings);
+
+    if added && !args.dry_run {
+        write_settings(&hooks_path, &settings)?;
+    }
+
+    Ok(GuardInstallResult {
+        ok: true,
+        harness: "codex",
+        settings_path: hooks_path.display().to_string(),
+        written: added && !args.dry_run,
+        dry_run: args.dry_run,
+        added_deny: if added {
+            DENIED.iter().map(|rule| (*rule).to_owned()).collect()
+        } else {
+            Vec::new()
+        },
+        // Codex parses `ask` and does not act on it. Reporting these as
+        // installed would claim protection that is not there.
+        added_ask: Vec::new(),
+        already_present: usize::from(!added),
+        notes: vec![
+            "Codex parses the `ask` decision but does not act on it yet, so only the refusals are enforced. The commands that would merely prompt are unguarded here."
+                .to_owned(),
+            "The hook runs `fractal guard hook`, so `fractal` has to be on the PATH Codex runs commands with."
+                .to_owned(),
+        ],
+    })
+}
+
+/// Adds a `PreToolUse` hook for Bash tool calls, if one pointing at Fractal is
+/// not already there. Returns whether anything changed.
+fn merge_codex_hook(settings: &mut Map<String, Value>) -> bool {
+    let hooks = settings
+        .entry("hooks".to_owned())
+        .or_insert_with(|| json!({}));
+    let Some(hooks) = hooks.as_object_mut() else {
+        return false;
+    };
+    let events = hooks
+        .entry("PreToolUse".to_owned())
+        .or_insert_with(|| json!([]));
+    let Some(events) = events.as_array_mut() else {
+        return false;
+    };
+
+    if events.iter().any(is_fractal_hook) {
+        return false;
+    }
+    events.push(json!({
+        "matcher": "Bash",
+        "hooks": [{
+            "type": "command",
+            "command": format!("{CODEX_HOOK_COMMAND} --no-ask"),
+            "statusMessage": "Checking Fractal command",
+            "timeout": 30
+        }]
+    }));
+    true
+}
+
+/// Whether a matcher group already runs Fractal's hook, so that installing
+/// twice does not stack duplicates.
+fn is_fractal_hook(group: &Value) -> bool {
+    group
+        .get("hooks")
+        .and_then(Value::as_array)
+        .is_some_and(|hooks| {
+            hooks.iter().any(|hook| {
+                hook.get("command")
+                    .and_then(Value::as_str)
+                    .is_some_and(|command| command.contains(CODEX_HOOK_COMMAND))
+            })
+        })
 }
 
 /// Project settings by default; `--local` targets the personal, gitignored
@@ -343,6 +445,46 @@ mod tests {
             assert!(!rule.contains("read"), "{rule}");
             assert!(!rule.contains("search"), "{rule}");
         }
+    }
+
+    #[test]
+    fn the_codex_hook_points_back_at_this_binary() {
+        let mut settings = Map::new();
+        assert!(merge_codex_hook(&mut settings));
+
+        let group = &settings["hooks"]["PreToolUse"][0];
+        assert_eq!(group["matcher"], json!("Bash"));
+        let hook = &group["hooks"][0];
+        assert_eq!(hook["type"], json!("command"));
+        // `--no-ask` because Codex parses that decision but does not act on it.
+        assert_eq!(hook["command"], json!("fractal guard hook --no-ask"));
+    }
+
+    #[test]
+    fn installing_the_codex_hook_twice_does_not_stack_it() {
+        let mut settings = Map::new();
+        assert!(merge_codex_hook(&mut settings));
+        assert!(!merge_codex_hook(&mut settings));
+        assert_eq!(settings["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_codex_hook_someone_else_wrote_is_left_alone() {
+        let mut settings = Map::new();
+        settings.insert(
+            "hooks".to_owned(),
+            json!({ "PreToolUse": [
+                { "matcher": "Bash", "hooks": [{ "type": "command", "command": "/usr/local/bin/house-rules" }] }
+            ]}),
+        );
+        assert!(merge_codex_hook(&mut settings));
+
+        let groups = settings["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(
+            groups[0]["hooks"][0]["command"],
+            json!("/usr/local/bin/house-rules")
+        );
     }
 
     #[test]

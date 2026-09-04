@@ -11,6 +11,7 @@ pub mod edit_read;
 pub mod edit_set;
 pub mod edit_set_xml;
 pub mod guard;
+pub mod guard_hook;
 pub mod object;
 pub mod object_delete;
 pub mod package;

@@ -199,12 +199,19 @@ refuse is your agent harness's permission system, which decides before the comma
 `fractal guard install` writes those rules for you:
 
 ```bash
-fractal guard install            # .claude/settings.json in the current project
-fractal guard install --dry-run  # show the rules without writing them
+fractal guard install                    # .claude/settings.json in the current project
+fractal guard install --harness codex    # .codex/hooks.json instead
+fractal guard install --dry-run          # show what would be written
 ```
 
 It denies the irreversible commands, asks for the ones that write, leaves read-only commands
 alone, and merges into an existing settings file without removing anything already there.
+
+The two harnesses work differently. Claude Code takes a list of rules. Codex instead runs a
+`PreToolUse` hook program, so the installed hook calls `fractal guard hook` — which means
+`fractal` has to be on the PATH Codex runs commands with. Codex also parses but does not yet act
+on the `ask` decision, so only the refusals are enforced there; `guard install` says so rather
+than claiming coverage it cannot deliver.
 
 ## Building from source
 

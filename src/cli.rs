@@ -174,6 +174,20 @@ pub struct AuthSetArgs {
 pub enum GuardCommand {
     /// Write the rules into an agent harness's settings file.
     Install(GuardInstallArgs),
+    /// Decide one tool call, reading a `PreToolUse` payload from stdin.
+    ///
+    /// Not meant to be run by hand: `guard install --harness codex` points the
+    /// harness at this, because Codex's permission layer is a hook program
+    /// rather than a list of rules.
+    Hook(GuardHookArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct GuardHookArgs {
+    /// Never answer `ask`, for a harness that parses that decision but cannot
+    /// act on it. Those commands get no opinion instead.
+    #[arg(long, default_value_t = false)]
+    pub(crate) no_ask: bool,
 }
 
 #[derive(Debug, Args)]
@@ -201,6 +215,8 @@ pub struct GuardInstallArgs {
 pub enum GuardHarnessArg {
     /// Claude Code, via `.claude/settings.json`.
     Claude,
+    /// Codex, via a `PreToolUse` hook in `.codex/hooks.json`.
+    Codex,
 }
 
 #[derive(Debug, Subcommand)]
