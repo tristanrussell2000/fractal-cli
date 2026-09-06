@@ -1,5 +1,6 @@
 pub mod config;
 pub mod credentials;
+pub mod journal;
 pub mod reportable_error;
 pub mod sap;
 pub mod source_change;
