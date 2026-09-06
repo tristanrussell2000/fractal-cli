@@ -10,7 +10,7 @@ use cli::{
 };
 use commands::auth::{auth_list, auth_login, auth_remove, auth_set};
 use commands::ddic::{ddic_show, print_ddic_show};
-use commands::edit_activate::{edit_source_activate, print_edit_source_activate};
+use commands::edit_activate::{edit_object_activate, print_edit_object_activate};
 use commands::edit_check::{edit_source_check, print_edit_source_check};
 use commands::edit_create::{edit_object_create, print_edit_object_create};
 use commands::edit_discard::{edit_source_discard, print_edit_source_discard};
@@ -233,8 +233,8 @@ async fn main() {
             command: EditCommand::Activate(args),
         } => {
             run_and_print_with_async(
-                || edit_source_activate(cli.profile.as_deref(), args),
-                print_edit_source_activate,
+                || edit_object_activate(cli.profile.as_deref(), args),
+                print_edit_object_activate,
                 output,
             )
             .await

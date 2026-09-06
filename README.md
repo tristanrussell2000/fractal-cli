@@ -174,7 +174,9 @@ Errors are written to stderr with a nonzero exit code. In JSON mode an error has
 The `edit` commands only touch objects in your profile's customer namespaces (`Z*` and `Y*`
 by default). `edit patch` and `edit set` save inactive source and never activate.
 Activation is a separate, explicit `edit activate` step that syntax-checks first and
-verifies the result. `fractal delete` refuses when other objects still reference the target
+verifies the result. It works for metadata objects too (`DTEL`, `DOMA`, `TTYP`, `MSAG`,
+`SRVB`), where there is no source to check and success is proved by reading the document
+back as active. `fractal delete` refuses when other objects still reference the target
 unless `--force` is given.
 
 `edit set-xml` replaces a whole DDIC document, and SAP keeps no retrievable version history for

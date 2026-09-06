@@ -339,7 +339,7 @@ pub enum EditCommand {
     /// Run SAP's syntax checker against a stored source version.
     Check(EditSourceCheckArgs),
     /// Activate and verify an object's stored inactive source.
-    Activate(EditSourceActivateArgs),
+    Activate(EditActivateArgs),
     /// Discard inactive changes while preserving the current active source.
     Discard(EditSourceDiscardArgs),
 }
@@ -422,8 +422,10 @@ pub struct EditSourceCheckArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct EditSourceActivateArgs {
-    /// Source object type: CLAS, INTF, PROG, DDLS, TABL, STRU, BDEF, SRVD, DDLX, or DCLS.
+pub struct EditActivateArgs {
+    /// Object type to activate: a source type (CLAS, INTF, PROG, DDLS, TABL,
+    /// STRU, BDEF, SRVD, DDLX, DCLS) or a metadata type (DTEL, DOMA, TTYP,
+    /// MSAG, SRVB).
     #[arg(long = "type")]
     pub(crate) object_type: String,
     /// ABAP repository object name.

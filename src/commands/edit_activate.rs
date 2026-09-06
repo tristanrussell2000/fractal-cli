@@ -4,21 +4,25 @@ use serde::Serialize;
 
 use super::{connect, edit_object_identity::EditObjectIdentityOutput};
 use crate::{
-    cli::EditSourceActivateArgs,
+    cli::EditActivateArgs,
     output::{OutputFormat, print_result},
     reported::Reported,
 };
 use fractal::sap::{
-    editable_source::EditableAdtObjectType,
+    activation_request::AdtActivationMessage,
+    metadata_activation::{
+        MetadataObjectActivationRequest, MetadataObjectActivationResult, activate_metadata_object,
+    },
+    object_family::AdtObjectFamily,
     source_activation::{
-        AdtSourceActivationMessage, AdtSourceActivationRequest, AdtSourceActivationResult,
-        activate_adt_source,
+        AdtSourceActivationRequest, AdtSourceActivationResult, activate_adt_source,
     },
     source_check::AdtSourceCheckMessage,
 };
+use fractal::source_change::source_sha256;
 
 #[derive(Debug, Serialize)]
-pub struct EditSourceActivationDiagnosticOutput {
+pub struct EditActivationDiagnosticOutput {
     severity: String,
     text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -27,13 +31,14 @@ pub struct EditSourceActivationDiagnosticOutput {
     object_description: Option<String>,
 }
 
-// The flags are the agent-facing JSON contract: `dry_run`, `wrote_source`, and
-// `activated` are separately meaningful because a caller must be able to tell a
-// preview from a save from an activation without parsing prose. Collapsing them
-// into a state enum would change the emitted schema.
-#[allow(clippy::struct_excessive_bools)]
+/// One activation, of either object family.
+///
+/// The fields only a source activation can report are grouped into
+/// `source_details` and omitted entirely for a metadata object, rather than
+/// being filled with plausible-looking defaults: a caller must never read
+/// `precheck_errors: 0` and conclude a check passed when none was possible.
 #[derive(Debug, Serialize)]
-pub struct EditSourceActivationOutput {
+pub struct EditActivationOutput {
     ok: bool,
     profile: String,
     status: String,
@@ -42,50 +47,74 @@ pub struct EditSourceActivationOutput {
     #[serde(flatten)]
     object: EditObjectIdentityOutput,
     transport: Option<String>,
+    active_sha256_after: String,
+    active_bytes_after: usize,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    source_details: Option<SourceActivationDetails>,
+    sap_reported_activation_executed: Option<bool>,
+    activation_response_parsed: bool,
+    activation_messages: Vec<EditActivationDiagnosticOutput>,
+}
+
+/// What only a source activation can report: a metadata object has no source
+/// to pre-check and no inactive snapshot to compare against.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Serialize)]
+pub struct SourceActivationDetails {
     precheck_clean: bool,
     precheck_errors: usize,
     precheck_warnings: usize,
     precheck_infos: usize,
-    precheck_messages: Vec<EditSourceActivationDiagnosticOutput>,
+    precheck_messages: Vec<EditActivationDiagnosticOutput>,
     inactive_sha256_before: String,
     inactive_bytes_before: usize,
-    active_sha256_after: String,
-    active_bytes_after: usize,
     active_matches_inactive: bool,
     inactive_version_exists_after: bool,
-    sap_reported_activation_executed: Option<bool>,
-    activation_response_parsed: bool,
-    activation_messages: Vec<EditSourceActivationDiagnosticOutput>,
 }
 
-pub async fn edit_source_activate(
+pub async fn edit_object_activate(
     explicit_profile: Option<&str>,
-    args: &EditSourceActivateArgs,
-) -> Result<EditSourceActivationOutput, Reported> {
-    let object_type = EditableAdtObjectType::parse(&args.object_type)?;
-    let request = AdtSourceActivationRequest {
-        object_type,
-        name: args.name.clone(),
-        transport: args.transport.clone(),
-    };
+    args: &EditActivateArgs,
+) -> Result<EditActivationOutput, Reported> {
+    let object_type = AdtObjectFamily::parse(&args.object_type)?;
     let (profile_name, profile, mut client) = connect(explicit_profile).await?;
-    let result = activate_adt_source(&mut client, &profile.edit_policy(), &request).await?;
-    Ok(map_source_activation_result(profile_name, result))
+    let policy = profile.edit_policy();
+
+    match object_type {
+        AdtObjectFamily::Source(object_type) => {
+            let request = AdtSourceActivationRequest {
+                object_type,
+                name: args.name.clone(),
+                transport: args.transport.clone(),
+            };
+            let result = activate_adt_source(&mut client, &policy, &request).await?;
+            Ok(map_source_activation_result(profile_name, result))
+        }
+        AdtObjectFamily::Metadata(object_type) => {
+            let request = MetadataObjectActivationRequest {
+                object_type,
+                name: args.name.clone(),
+                transport: args.transport.clone(),
+            };
+            let result = activate_metadata_object(&mut client, &policy, &request).await?;
+            Ok(map_metadata_activation_result(profile_name, result))
+        }
+    }
 }
 
-pub fn print_edit_source_activate(result: &EditSourceActivationOutput, output: OutputFormat) {
+pub fn print_edit_object_activate(result: &EditActivationOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
         print_result(result, output);
         return;
     }
-    print!("{}", render_source_activation_readable(result));
+    print!("{}", render_activation_readable(result));
 }
 
 fn map_source_activation_result(
     profile: String,
     result: AdtSourceActivationResult,
-) -> EditSourceActivationOutput {
-    EditSourceActivationOutput {
+) -> EditActivationOutput {
+    EditActivationOutput {
         ok: true,
         profile,
         status: "activated_verified".to_owned(),
@@ -93,22 +122,24 @@ fn map_source_activation_result(
         verified: true,
         object: result.identity.into(),
         transport: result.transport,
-        precheck_clean: result.precheck.clean,
-        precheck_errors: result.precheck.errors,
-        precheck_warnings: result.precheck.warnings,
-        precheck_infos: result.precheck.infos,
-        precheck_messages: result
-            .precheck
-            .messages
-            .into_iter()
-            .map(map_precheck_message)
-            .collect(),
-        inactive_sha256_before: result.inactive.sha256,
-        inactive_bytes_before: result.inactive.bytes,
         active_sha256_after: result.active.sha256,
         active_bytes_after: result.active.bytes,
-        active_matches_inactive: true,
-        inactive_version_exists_after: false,
+        source_details: Some(SourceActivationDetails {
+            precheck_clean: result.precheck.clean,
+            precheck_errors: result.precheck.errors,
+            precheck_warnings: result.precheck.warnings,
+            precheck_infos: result.precheck.infos,
+            precheck_messages: result
+                .precheck
+                .messages
+                .into_iter()
+                .map(map_precheck_message)
+                .collect(),
+            inactive_sha256_before: result.inactive.sha256,
+            inactive_bytes_before: result.inactive.bytes,
+            active_matches_inactive: true,
+            inactive_version_exists_after: false,
+        }),
         sap_reported_activation_executed: result.sap_reported_activation_executed,
         activation_response_parsed: result.activation_response_parsed,
         activation_messages: result
@@ -119,8 +150,34 @@ fn map_source_activation_result(
     }
 }
 
-fn map_precheck_message(message: AdtSourceCheckMessage) -> EditSourceActivationDiagnosticOutput {
-    EditSourceActivationDiagnosticOutput {
+fn map_metadata_activation_result(
+    profile: String,
+    result: MetadataObjectActivationResult,
+) -> EditActivationOutput {
+    EditActivationOutput {
+        ok: true,
+        profile,
+        status: "activated_verified".to_owned(),
+        activated: true,
+        verified: true,
+        object: result.identity.into(),
+        transport: result.transport,
+        active_sha256_after: source_sha256(&result.active_xml),
+        active_bytes_after: result.active_xml.len(),
+        // No source to pre-check and no inactive snapshot to compare against.
+        source_details: None,
+        sap_reported_activation_executed: result.sap_reported_activation_executed,
+        activation_response_parsed: result.activation_response_parsed,
+        activation_messages: result
+            .activation_messages
+            .into_iter()
+            .map(map_activation_message)
+            .collect(),
+    }
+}
+
+fn map_precheck_message(message: AdtSourceCheckMessage) -> EditActivationDiagnosticOutput {
+    EditActivationDiagnosticOutput {
         severity: message.severity.as_str().to_owned(),
         text: message.text,
         line: message.line,
@@ -128,10 +185,8 @@ fn map_precheck_message(message: AdtSourceCheckMessage) -> EditSourceActivationD
     }
 }
 
-fn map_activation_message(
-    message: AdtSourceActivationMessage,
-) -> EditSourceActivationDiagnosticOutput {
-    EditSourceActivationDiagnosticOutput {
+fn map_activation_message(message: AdtActivationMessage) -> EditActivationDiagnosticOutput {
+    EditActivationDiagnosticOutput {
         severity: message.severity.as_str().to_owned(),
         text: message.text,
         line: message.line,
@@ -139,7 +194,7 @@ fn map_activation_message(
     }
 }
 
-fn render_source_activation_readable(result: &EditSourceActivationOutput) -> String {
+fn render_activation_readable(result: &EditActivationOutput) -> String {
     let mut output = String::new();
     let _ = writeln!(output, "profile: {}", result.profile);
     let _ = writeln!(
@@ -151,23 +206,27 @@ fn render_source_activation_readable(result: &EditSourceActivationOutput) -> Str
     if let Some(transport) = &result.transport {
         let _ = writeln!(output, "transport: {transport}");
     }
-    let _ = writeln!(
-        output,
-        "precheck: {} error(s), {} warning(s), {} info message(s)",
-        result.precheck_errors, result.precheck_warnings, result.precheck_infos
-    );
-    let _ = writeln!(
-        output,
-        "inactive SHA-256 before: {}",
-        result.inactive_sha256_before
-    );
+    if let Some(details) = &result.source_details {
+        let _ = writeln!(
+            output,
+            "precheck: {} error(s), {} warning(s), {} info message(s)",
+            details.precheck_errors, details.precheck_warnings, details.precheck_infos
+        );
+        let _ = writeln!(
+            output,
+            "inactive SHA-256 before: {}",
+            details.inactive_sha256_before
+        );
+    }
     let _ = writeln!(
         output,
         "active SHA-256 after: {}",
         result.active_sha256_after
     );
-    let _ = writeln!(output, "active source matches inactive source: true");
-    let _ = writeln!(output, "inactive version exists after: false");
+    if result.source_details.is_some() {
+        let _ = writeln!(output, "active source matches inactive source: true");
+        let _ = writeln!(output, "inactive version exists after: false");
+    }
     let reported = result
         .sap_reported_activation_executed
         .map_or(
@@ -182,12 +241,14 @@ fn render_source_activation_readable(result: &EditSourceActivationOutput) -> Str
     );
     if result.sap_reported_activation_executed == Some(false) {
         output.push_str(
-            "note: SAP reported activationExecuted=false, but the inactive version disappeared and the verified active source matches.\n",
+            "note: SAP reported activationExecuted=false, but the object was read back as active.\n",
         );
     }
-    if !result.precheck_messages.is_empty() {
+    if let Some(details) = &result.source_details
+        && !details.precheck_messages.is_empty()
+    {
         output.push_str("precheck messages:\n");
-        render_diagnostics(&mut output, &result.precheck_messages);
+        render_diagnostics(&mut output, &details.precheck_messages);
     }
     if !result.activation_messages.is_empty() {
         output.push_str("activation messages:\n");
@@ -196,7 +257,7 @@ fn render_source_activation_readable(result: &EditSourceActivationOutput) -> Str
     output
 }
 
-fn render_diagnostics(output: &mut String, messages: &[EditSourceActivationDiagnosticOutput]) {
+fn render_diagnostics(output: &mut String, messages: &[EditActivationDiagnosticOutput]) {
     for message in messages {
         let location = match (&message.object_description, message.line) {
             (Some(object), Some(line)) => format!(" {object}, line {line}"),
@@ -215,11 +276,12 @@ mod tests {
     use super::*;
     use crate::cli::{Cli, Command, EditCommand};
     use fractal::sap::{
+        activation_request::AdtActivationMessage,
         adt_message_severity::AdtMessageSeverity,
         editable_source::{
             AdtSourceSnapshot, AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceIdentity,
         },
-        source_activation::{AdtSourceActivationMessage, AdtSourceActivationResult},
+        source_activation::AdtSourceActivationResult,
         source_check::AdtSourceCheckResult,
     };
 
@@ -293,7 +355,7 @@ mod tests {
                 ),
                 sap_reported_activation_executed: Some(true),
                 activation_response_parsed: true,
-                activation_messages: vec![AdtSourceActivationMessage {
+                activation_messages: vec![AdtActivationMessage {
                     severity: AdtMessageSeverity::Info,
                     text: "Activation completed".to_owned(),
                     line: None,
@@ -308,7 +370,7 @@ mod tests {
         assert_eq!(json["verified"], true);
         assert_eq!(json["precheck_warnings"], 1);
         assert_eq!(json["sap_reported_activation_executed"], true);
-        let readable = render_source_activation_readable(&output);
+        let readable = render_activation_readable(&output);
         assert!(readable.contains("status: activated and verified"));
         assert!(readable.contains("warning line 8: Obsolete statement"));
         assert!(readable.contains("info Class ZCL_SAMPLE: Activation completed"));

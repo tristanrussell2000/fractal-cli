@@ -1,12 +1,14 @@
 use super::package_authorization::{PackageAuthorizationError, authorize_object_package};
 use crate::config::EditPolicy;
-use reqwest::header::{HeaderMap, HeaderValue};
 use thiserror::Error;
 
 use crate::suggested_command;
 
 use super::{
-    adt_message_severity::AdtMessageSeverity,
+    activation_request::{
+        AdtActivationMessage, ParsedActivationResponse, first_message_hint,
+        parse_activation_response, post_activation,
+    },
     client::{SapClient, SapClientError},
     edit_session::{AdtEditSessionError, attach_adt_object_to_transport},
     editable_source::{
@@ -14,7 +16,6 @@ use super::{
         AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
         read_adt_source_for_edit, validate_adt_edit_target,
     },
-    find_attribute_value, find_non_empty_attribute,
     source_check::{
         AdtInactiveSourceProbeError, AdtSourceCheckError, AdtSourceCheckMessage,
         AdtSourceCheckResult, check_adt_source_by_identity, probe_inactive_adt_source,
@@ -22,21 +23,11 @@ use super::{
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
 
-const ACTIVATION_PATH: &str = "/sap/bc/adt/activation";
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdtSourceActivationRequest {
     pub object_type: EditableAdtObjectType,
     pub name: String,
     pub transport: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AdtSourceActivationMessage {
-    pub severity: AdtMessageSeverity,
-    pub text: String,
-    pub line: Option<usize>,
-    pub object_description: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,7 +39,7 @@ pub struct AdtSourceActivationResult {
     pub active: AdtSourceSnapshot,
     pub sap_reported_activation_executed: Option<bool>,
     pub activation_response_parsed: bool,
-    pub activation_messages: Vec<AdtSourceActivationMessage>,
+    pub activation_messages: Vec<AdtActivationMessage>,
 }
 
 #[derive(Debug, Error)]
@@ -87,7 +78,7 @@ pub enum AdtSourceActivationError {
     #[error("SAP did not remove the inactive version, so activation was not completed")]
     ActivationRefused {
         sap_reported_activation_executed: Option<bool>,
-        messages: Vec<AdtSourceActivationMessage>,
+        messages: Vec<AdtActivationMessage>,
     },
     #[error(
         "SAP accepted the activation request, but the active source could not be read: {source}"
@@ -314,17 +305,7 @@ pub(super) async fn activate_validated_adt_source(
             .map_err(AdtSourceActivationError::TransportAttachment)?;
     }
 
-    let body = build_activation_request(&identity.object_uri, &identity.name);
-    let mut headers = HeaderMap::new();
-    headers.insert("Content-Type", HeaderValue::from_static("application/xml"));
-    headers.insert("Accept", HeaderValue::from_static("application/xml"));
-    let response = sap
-        .post_text(
-            ACTIVATION_PATH,
-            &[("method", "activate"), ("preauditRequested", "true")],
-            Some(&body),
-            headers,
-        )
+    let response = post_activation(sap, &identity.object_uri, &identity.name)
         .await
         .map_err(|source| AdtSourceActivationError::ActivationRequest {
             identity: Box::new(identity.clone()),
@@ -458,126 +439,4 @@ async fn verify_activation_post_state(
             }
         }
     })
-}
-
-fn build_activation_request(object_uri: &str, name: &str) -> String {
-    format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><adtcore:objectReferences xmlns:adtcore=\"http://www.sap.com/adt/core\"><adtcore:objectReference adtcore:uri=\"{object_uri}\" adtcore:name=\"{name}\"/></adtcore:objectReferences>"
-    )
-}
-
-#[derive(Default)]
-struct ParsedActivationResponse {
-    activation_executed: Option<bool>,
-    messages: Vec<AdtSourceActivationMessage>,
-}
-
-fn parse_activation_response(response: &str) -> Result<ParsedActivationResponse, roxmltree::Error> {
-    let document = roxmltree::Document::parse(response)?;
-    let activation_executed = document.descendants().find_map(|node| {
-        find_attribute_value(node, "activationExecuted").and_then(|value| {
-            if value.eq_ignore_ascii_case("true") {
-                Some(true)
-            } else if value.eq_ignore_ascii_case("false") {
-                Some(false)
-            } else {
-                None
-            }
-        })
-    });
-    let messages = document
-        .descendants()
-        .filter(|node| node.is_element() && node.tag_name().name() == "msg")
-        .filter_map(parse_activation_message)
-        .collect();
-    Ok(ParsedActivationResponse {
-        activation_executed,
-        messages,
-    })
-}
-
-fn parse_activation_message(node: roxmltree::Node<'_, '_>) -> Option<AdtSourceActivationMessage> {
-    let text = find_attribute_value(node, "shortText")
-        .map(str::to_owned)
-        .or_else(|| descendant_text(node, "shortText"))
-        .or_else(|| descendant_text(node, "txt"))?;
-    let text = text.trim();
-    if text.is_empty() {
-        return None;
-    }
-    // Activation messages have been observed carrying the severity code on
-    // either attribute; checkrun messages only ever use `type`.
-    let severity = AdtMessageSeverity::from_sap_code(
-        find_attribute_value(node, "type")
-            .or_else(|| find_attribute_value(node, "severity"))
-            .unwrap_or_default(),
-    );
-    Some(AdtSourceActivationMessage {
-        severity,
-        text: text.to_owned(),
-        line: find_attribute_value(node, "line").and_then(|line| line.parse().ok()),
-        object_description: find_non_empty_attribute(node, "objDescr"),
-    })
-}
-
-fn descendant_text(node: roxmltree::Node<'_, '_>, name: &str) -> Option<String> {
-    let descendant = node
-        .descendants()
-        .find(|descendant| descendant.is_element() && descendant.tag_name().name() == name)?;
-    let text = descendant
-        .descendants()
-        .filter(roxmltree::Node::is_text)
-        .filter_map(|node| node.text())
-        .collect();
-    Some(text)
-}
-
-fn first_message_hint<'a>(messages: impl Iterator<Item = &'a str>, fallback: &str) -> String {
-    let summary = messages
-        .filter(|message| !message.trim().is_empty())
-        .take(3)
-        .collect::<Vec<_>>()
-        .join(" | ");
-    if summary.is_empty() {
-        fallback.to_owned()
-    } else {
-        format!("{summary}. {fallback}")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_activation_flag_and_nested_messages() {
-        let parsed = parse_activation_response(
-            r#"<act:activationResult xmlns:act="http://www.sap.com/adt/activation" activationExecuted="false">
-                <msg type="E" objDescr="Class ZCL_SAMPLE" line="17">
-                    <shortText><txt>Expected &lt;identifier&gt;</txt></shortText>
-                </msg>
-                <msg severity="warning" shortText="Obsolete statement"/>
-            </act:activationResult>"#,
-        )
-        .unwrap();
-
-        assert_eq!(parsed.activation_executed, Some(false));
-        assert_eq!(parsed.messages.len(), 2);
-        assert_eq!(parsed.messages[0].severity, AdtMessageSeverity::Error);
-        assert_eq!(parsed.messages[0].text, "Expected <identifier>");
-        assert_eq!(parsed.messages[0].line, Some(17));
-        assert_eq!(
-            parsed.messages[0].object_description.as_deref(),
-            Some("Class ZCL_SAMPLE")
-        );
-        assert_eq!(parsed.messages[1].severity, AdtMessageSeverity::Warning);
-    }
-
-    #[test]
-    fn treats_an_omitted_activation_flag_as_unknown() {
-        let parsed = parse_activation_response("<activationResult/>").unwrap();
-
-        assert_eq!(parsed.activation_executed, None);
-        assert!(parsed.messages.is_empty());
-    }
 }

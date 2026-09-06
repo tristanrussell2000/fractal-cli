@@ -1,3 +1,4 @@
+pub mod activation_request;
 pub mod adt_message_severity;
 pub mod adt_object_identity;
 pub mod adt_object_uri;
@@ -7,6 +8,7 @@ pub mod ddic_type;
 pub mod edit_session;
 pub mod editable_source;
 mod inactive_source_save;
+pub mod metadata_activation;
 pub mod metadata_object;
 pub mod object_creation;
 pub mod object_deletion;
