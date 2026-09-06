@@ -8,6 +8,7 @@
 //! can only ever be removed by sweeping from the surviving entries.
 
 pub mod blobs;
+pub mod entry;
 pub mod paths;
 
 use std::path::PathBuf;

@@ -9,6 +9,7 @@
 //! source-based path builds a `source/main` URI that 404s, and the failure
 //! surfaces late — after the object has already been created.
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
 use super::{editable_source::EditableAdtObjectType, metadata_object::MetadataAdtObjectType};
@@ -39,6 +40,30 @@ impl AdtObjectFamily {
             },
             |source| Ok(Self::Source(source)),
         )
+    }
+}
+
+impl AdtObjectFamily {
+    /// The logical type name, spelled once in [`RepositoryKind`].
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Source(object_type) => object_type.as_str(),
+            Self::Metadata(object_type) => object_type.as_str(),
+        }
+    }
+}
+
+impl Serialize for AdtObjectFamily {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AdtObjectFamily {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -81,6 +106,25 @@ mod tests {
             AdtObjectFamily::parse("DOMA").unwrap(),
             AdtObjectFamily::Metadata(MetadataAdtObjectType::Domain)
         );
+    }
+
+    #[test]
+    fn round_trips_through_its_type_name() {
+        for name in ["PROG", "CLAS", "DTEL", "SRVB"] {
+            let family = AdtObjectFamily::parse(name).unwrap();
+            assert_eq!(family.as_str(), name);
+            let json = serde_json::to_string(&family).unwrap();
+            assert_eq!(json, format!("\"{name}\""));
+            assert_eq!(
+                serde_json::from_str::<AdtObjectFamily>(&json).unwrap(),
+                family
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_stored_type_fails_to_deserialize_rather_than_defaulting() {
+        assert!(serde_json::from_str::<AdtObjectFamily>("\"FUGR\"").is_err());
     }
 
     #[test]
