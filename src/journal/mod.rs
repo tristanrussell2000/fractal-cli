@@ -10,6 +10,7 @@
 pub mod blobs;
 pub mod entry;
 pub mod paths;
+pub mod store;
 
 use std::path::PathBuf;
 
@@ -37,6 +38,15 @@ pub enum JournalError {
     BlobMissing { sha256: String },
     #[error("the content stored under {sha256} now hashes to {actual}")]
     BlobCorrupt { sha256: String, actual: String },
+    #[error("no journal entry {id}")]
+    EntryMissing { id: String },
+    #[error("journal entry {id} is not valid JSON: {source}")]
+    EntryInvalid {
+        id: String,
+        source: serde_json::Error,
+    },
+    #[error("too many journal entries claim {stamp}")]
+    IdExhausted { stamp: String },
 }
 
 impl ReportableError for JournalError {
@@ -48,6 +58,9 @@ impl ReportableError for JournalError {
             Self::Read { .. } => "journal_read_error",
             Self::BlobMissing { .. } => "journal_blob_missing",
             Self::BlobCorrupt { .. } => "journal_blob_corrupt",
+            Self::EntryMissing { .. } => "journal_entry_missing",
+            Self::EntryInvalid { .. } => "journal_entry_invalid",
+            Self::IdExhausted { .. } => "journal_id_exhausted",
         }
     }
 
@@ -74,6 +87,16 @@ impl ReportableError for JournalError {
             }
             Self::BlobCorrupt { .. } => {
                 "The stored content no longer matches its hash, so it has been altered or damaged and will not be restored from the journal."
+                    .to_owned()
+            }
+            Self::EntryMissing { .. } => {
+                "List what the journal holds with `fractal journal list`.".to_owned()
+            }
+            Self::EntryInvalid { .. } => {
+                "The entry file is damaged. Other entries are unaffected and still listed.".to_owned()
+            }
+            Self::IdExhausted { .. } => {
+                "Too many entries landed in one millisecond, which suggests something is retrying in a loop."
                     .to_owned()
             }
         })
