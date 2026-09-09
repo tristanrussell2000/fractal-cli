@@ -10,6 +10,7 @@
 pub mod blobs;
 pub mod entry;
 pub mod paths;
+pub mod recorder;
 pub mod retention;
 pub mod store;
 

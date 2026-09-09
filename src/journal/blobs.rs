@@ -12,6 +12,7 @@
 //! from the surviving entries, never as a side effect of removing one.
 
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use sha2::{Digest, Sha256};
 
@@ -63,6 +64,16 @@ impl BlobStore {
         let sha256 = source_sha256(content);
         let destination = self.path_of(&sha256);
         if destination.is_file() {
+            // Touch it. A caller that stores content it did not write is still
+            // taking a reference, and a sweep has no other way to see that: the
+            // dedup writes nothing. Best effort — a sweep that misses the touch
+            // deletes a blob the caller then rewrites.
+            let _ = std::fs::File::options()
+                .write(true)
+                .open(&destination)
+                .and_then(|file| {
+                    file.set_times(std::fs::FileTimes::new().set_modified(SystemTime::now()))
+                });
             return Ok(sha256);
         }
 
@@ -109,6 +120,17 @@ impl BlobStore {
                 actual,
             })
         }
+    }
+
+    /// When a blob was last stored or re-referenced.
+    ///
+    /// Read immediately before deleting it, never collected up front: a blob
+    /// re-referenced mid-sweep must be seen as fresh.
+    #[must_use]
+    pub fn modified_at(&self, sha256: &str) -> Option<SystemTime> {
+        std::fs::metadata(self.path_of(sha256))
+            .and_then(|metadata| metadata.modified())
+            .ok()
     }
 
     /// Every hash currently stored, for the sweep that collects unreferenced

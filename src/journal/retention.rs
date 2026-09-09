@@ -57,6 +57,10 @@ pub fn run_retention(
     policy: RetentionPolicy,
     now: SystemTime,
 ) -> Result<PruneOutcome, JournalError> {
+    // Captured before anything is listed. Everything the sweep learns is a
+    // snapshot from this instant, so a blob touched at or after it may be
+    // referenced by an entry the snapshot could not see.
+    let mark_started = SystemTime::now();
     let stores = entry_stores(journal_root)?;
     let mut outcome = PruneOutcome::default();
     for store in &stores {
@@ -69,7 +73,7 @@ pub fn run_retention(
     for store in &stores {
         live.extend(referenced_blobs(&store.list()?));
     }
-    outcome.blobs_removed = sweep_blobs(blobs, &live)?;
+    outcome.blobs_removed = sweep_blobs(blobs, &live, mark_started)?;
     outcome.temporaries_removed = sweep_temporaries(blobs, TEMPORARY_GRACE, now)?;
     Ok(outcome)
 }
@@ -108,24 +112,48 @@ pub fn prune_entries(
     Ok(removed)
 }
 
-/// Deletes every blob no live reference claims.
+/// Deletes every blob no live reference claims and nothing has touched since
+/// `mark_started`.
 ///
 /// The set of live hashes is supplied rather than discovered, because one blob
 /// store is shared by every system and will later be shared by the read cache.
 /// A sweep that gathered its own references would need to know every source
 /// that exists, and would quietly delete the content of any it did not.
 ///
+/// `mark_started` must be read **before** the live set is gathered. It closes
+/// the race the live set alone cannot: a process referencing existing content
+/// writes nothing, so its reference is invisible until its entry lands, which
+/// may be after the snapshot. Its confirming `put` touches the blob, and a
+/// touch at or after `mark_started` means the snapshot cannot be trusted about
+/// that blob.
+///
 /// # Errors
 ///
 /// Returns [`JournalError::Read`] when the store cannot be listed, or
 /// [`JournalError::Write`] when a blob cannot be removed.
-pub fn sweep_blobs(blobs: &BlobStore, live: &HashSet<String>) -> Result<usize, JournalError> {
+pub fn sweep_blobs(
+    blobs: &BlobStore,
+    live: &HashSet<String>,
+    mark_started: SystemTime,
+) -> Result<usize, JournalError> {
     let mut removed = 0;
     for hash in blobs.hashes()? {
-        if !live.contains(&hash) {
-            remove_file(&blobs.path_of(&hash))?;
-            removed += 1;
+        if live.contains(&hash) {
+            continue;
         }
+        // Read the mtime here rather than up front, as late as the filesystem
+        // allows before the unlink. A blob a concurrent write re-referenced
+        // after marking began looks fresh and is left alone; the remaining
+        // window is the gap between this stat and the unlink, and a write that
+        // loses it rewrites the blob on its confirming `put`.
+        let touched_since_marking = blobs
+            .modified_at(&hash)
+            .is_some_and(|modified| modified >= mark_started);
+        if touched_since_marking {
+            continue;
+        }
+        remove_file(&blobs.path_of(&hash))?;
+        removed += 1;
     }
     Ok(removed)
 }
@@ -364,7 +392,7 @@ mod tests {
         blobs.put("orphan").unwrap();
 
         let live = HashSet::from([kept.clone()]);
-        assert_eq!(sweep_blobs(&blobs, &live).unwrap(), 1);
+        assert_eq!(sweep_blobs(&blobs, &live, SystemTime::now()).unwrap(), 1);
         assert!(blobs.contains(&kept));
         assert_eq!(blobs.hashes().unwrap(), vec![kept]);
     }
@@ -391,7 +419,7 @@ mod tests {
             live.extend(referenced_blobs(&store.list().unwrap()));
         }
 
-        assert_eq!(sweep_blobs(&blobs, &live).unwrap(), 0);
+        assert_eq!(sweep_blobs(&blobs, &live, SystemTime::now()).unwrap(), 0);
         assert!(blobs.contains(&mine));
         assert!(blobs.contains(&theirs));
     }
@@ -405,7 +433,10 @@ mod tests {
         blobs.put("one").unwrap();
         blobs.put("two").unwrap();
 
-        assert_eq!(sweep_blobs(&blobs, &HashSet::new()).unwrap(), 2);
+        assert_eq!(
+            sweep_blobs(&blobs, &HashSet::new(), SystemTime::now()).unwrap(),
+            2
+        );
         assert!(blobs.hashes().unwrap().is_empty());
     }
 
@@ -424,7 +455,7 @@ mod tests {
         prune_entries(&store, RetentionPolicy::default(), much_later).unwrap();
         let live = referenced_blobs(&store.list().unwrap());
 
-        assert_eq!(sweep_blobs(&blobs, &live).unwrap(), 0);
+        assert_eq!(sweep_blobs(&blobs, &live, SystemTime::now()).unwrap(), 0);
         assert!(blobs.contains(&shared));
     }
 
@@ -521,6 +552,51 @@ mod tests {
         assert_eq!(outcome.blobs_removed, 0);
         assert!(blobs.contains(&mine));
         assert!(blobs.contains(&theirs));
+    }
+
+    #[test]
+    fn a_blob_referenced_after_marking_began_survives_the_sweep() {
+        // The race the mark timestamp exists for: a write references content
+        // the mark phase already decided was dead. Its confirming `put` touches
+        // the blob, and a touch at or after `mark_started` means the snapshot
+        // cannot be trusted about it.
+        use crate::journal::recorder::{EntryDraft, Journal};
+
+        let dir = tempfile::tempdir().unwrap();
+        let journal_root = dir.path().join("journal");
+        let blobs = BlobStore::new(dir.path().join("blobs"));
+        let orphan = blobs.put("about to be referenced").unwrap();
+
+        // A sweep starts and finds nothing referencing it.
+        let mark_started = SystemTime::now();
+        std::thread::sleep(Duration::from_millis(20));
+        let live = HashSet::new();
+
+        // Meanwhile another process records an operation over that content.
+        let journal = Journal::with_roots(dir.path().join("blobs"), journal_root.join("qe2"));
+        journal
+            .begin(EntryDraft {
+                system: crate::journal::entry::EntrySystem {
+                    host: "sap.example".to_owned(),
+                    profile: "dev".to_owned(),
+                    client: "100".to_owned(),
+                    user: "developer".to_owned(),
+                },
+                object: EntryObject {
+                    object_type: AdtObjectFamily::parse("PROG").unwrap(),
+                    name: "ZSAMPLE".to_owned(),
+                    uri: "/a".to_owned(),
+                    source_part: None,
+                },
+                operation: JournalOperation::Activate,
+                transport: None,
+                active_before: Some("about to be referenced".to_owned()),
+                inactive_before: None,
+            })
+            .unwrap();
+
+        assert_eq!(sweep_blobs(&blobs, &live, mark_started).unwrap(), 0);
+        assert!(blobs.contains(&orphan));
     }
 
     #[test]
