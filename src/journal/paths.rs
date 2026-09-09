@@ -44,6 +44,16 @@ pub fn blob_root() -> Result<PathBuf, JournalError> {
     Ok(journal_home()?.join("blobs"))
 }
 
+/// Where every system's entries live.
+///
+/// # Errors
+///
+/// Returns [`JournalError::NoDataDirectory`] when the platform exposes no
+/// per-user data directory.
+pub fn journal_root() -> Result<PathBuf, JournalError> {
+    Ok(journal_home()?.join("journal"))
+}
+
 /// Where one system's entries live.
 ///
 /// # Errors
@@ -52,7 +62,7 @@ pub fn blob_root() -> Result<PathBuf, JournalError> {
 /// per-user data directory, or [`JournalError::UnusableBaseUrl`] when the
 /// profile's URL has no host to key on.
 pub fn entry_root(base_url: &str) -> Result<PathBuf, JournalError> {
-    Ok(journal_home()?.join("journal").join(system_key(base_url)?))
+    Ok(journal_root()?.join(system_key(base_url)?))
 }
 
 /// The directory name for one SAP system.

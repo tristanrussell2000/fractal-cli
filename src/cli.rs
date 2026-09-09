@@ -60,6 +60,11 @@ pub enum Command {
         #[command(subcommand)]
         command: TransportCommand,
     },
+    /// Inspect what Fractal recorded before it changed an object.
+    Journal {
+        #[command(subcommand)]
+        command: JournalCommand,
+    },
     /// Write agent-harness permission rules for Fractal's mutating commands.
     Guard {
         #[command(subcommand)]
@@ -168,6 +173,54 @@ pub struct AuthSetArgs {
     /// Whether the `$TMP` scratch package stays editable regardless of --package.
     #[arg(long)]
     pub(crate) allow_temporary_package: Option<bool>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum JournalCommand {
+    /// List recorded operations, newest first.
+    List(JournalListArgs),
+    /// Show one entry and the paths of the content it holds.
+    Show(JournalShowArgs),
+    /// Apply the retention policy, then delete content nothing references.
+    Clear(JournalClearArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct JournalListArgs {
+    /// Only entries for objects of this type.
+    #[arg(long = "type")]
+    pub(crate) object_type: Option<String>,
+    /// Only entries for this object name.
+    #[arg(long)]
+    pub(crate) name: Option<String>,
+    /// Most recent entries to show.
+    #[arg(long, default_value_t = 20)]
+    pub(crate) limit: usize,
+    /// List every system's entries, not only the selected profile's.
+    #[arg(long, default_value_t = false)]
+    pub(crate) all_systems: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct JournalShowArgs {
+    /// Entry id, as printed by `fractal journal list`.
+    pub(crate) id: String,
+    /// Search every system, not only the selected profile's.
+    #[arg(long, default_value_t = false)]
+    pub(crate) all_systems: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct JournalClearArgs {
+    /// Drop entries older than this many days.
+    #[arg(long)]
+    pub(crate) older_than: Option<u64>,
+    /// Entries to keep per object.
+    #[arg(long)]
+    pub(crate) keep: Option<usize>,
+    /// Report what would be removed without removing it.
+    #[arg(long, default_value_t = false)]
+    pub(crate) dry_run: bool,
 }
 
 #[derive(Debug, Subcommand)]

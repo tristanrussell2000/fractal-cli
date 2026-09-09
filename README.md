@@ -154,6 +154,7 @@ fractal query      <complete SELECT, or - for stdin>
 fractal transport  list | show | create
 fractal edit       create | read | patch | set | set-xml | check | activate | discard
 fractal delete     <one destructive verb, kept out of `edit` on purpose>
+fractal journal    list | show | clear
 fractal guard      install
 ```
 
