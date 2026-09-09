@@ -9,6 +9,7 @@ pub mod edit_session;
 pub mod editable_source;
 mod inactive_source_save;
 pub mod metadata_activation;
+pub mod metadata_document;
 pub mod metadata_object;
 pub mod object_creation;
 pub mod object_deletion;

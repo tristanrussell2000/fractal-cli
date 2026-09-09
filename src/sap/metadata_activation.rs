@@ -38,6 +38,7 @@ use super::{
     edit_session::{AdtEditSessionError, attach_adt_object_to_transport},
     editable_source::{AdtEditTargetValidationError, canonicalize_transport_request},
     find_non_empty_attribute,
+    metadata_document::strip_navigation_links,
     metadata_object::{MetadataAdtObjectType, metadata_object_identity},
     package_authorization::{PackageAuthorizationError, authorize_object_package},
     source_check::{AdtInactiveSourceProbeError, probe_inactive_adt_source},
@@ -64,7 +65,11 @@ pub struct MetadataObjectActivationRequest {
 pub struct MetadataObjectActivationResult {
     pub identity: AdtObjectIdentity,
     pub transport: Option<String>,
-    /// The document SAP holds now, read back rather than assumed.
+    /// The document SAP holds now, read back rather than assumed, and
+    /// stripped of its `atom:link` decoration — see
+    /// [`super::metadata_document`]. That is the form the journal stores and
+    /// the form an undo compares against, so a caller hashing this reads the
+    /// same number `journal show` prints for the same operation.
     pub active_xml: String,
     /// Reported, never trusted. See the module docs.
     pub sap_reported_activation_executed: Option<bool>,
@@ -408,7 +413,8 @@ async fn read_active_document_if_any(
         .then_some(document)
 }
 
-/// One version of the document, or `None` when there is none to read.
+/// One version of the document, canonical, or `None` when there is none to
+/// read.
 async fn read_document(
     sap: &SapClient,
     identity: &AdtObjectIdentity,
@@ -417,9 +423,10 @@ async fn read_document(
     sap.get_text_with_query(&identity.object_uri, &[("version", version)])
         .await
         .ok()
+        .map(|xml| strip_navigation_links(&xml))
 }
 
-/// Reads the **active** document.
+/// Reads the **active** document, canonical.
 ///
 /// The explicit selector matters: a plain GET serves the *inactive* document
 /// whenever one exists, so verifying an activation without it would read the
@@ -431,6 +438,7 @@ async fn read_active_metadata_object(
 ) -> Result<String, MetadataObjectActivationError> {
     sap.get_text_with_query(&identity.object_uri, &[("version", ACTIVE_VERSION)])
         .await
+        .map(|xml| strip_navigation_links(&xml))
         .map_err(|source| MetadataObjectActivationError::Verification {
             object_type: object_type.as_str(),
             name: identity.name.clone(),

@@ -502,3 +502,65 @@ async fn the_document_is_read_under_the_lock_not_before_it() {
     assert_eq!(error.code(), "invalid_expected_sha256");
     server.verify().await;
 }
+
+const NAVIGATION_LINK: &str = r#"<atom:link href="versions" rel="http://www.sap.com/adt/relations/versions" xmlns:atom="http://www.w3.org/2005/Atom"/>"#;
+
+/// The journal stores metadata documents with their `atom:link` navigation
+/// stripped, so that is what an undo will hand back to `set-xml`. This pins the
+/// two halves of that being safe: the document is sent exactly as given, links
+/// and all absent, and a read-back in which SAP has regenerated them is still
+/// read back rather than assumed.
+///
+/// That a real SAP accepts such a document was established live; a mock cannot
+/// prove it, and this does not claim to.
+#[tokio::test]
+async fn a_document_with_its_links_stripped_is_sent_verbatim() {
+    let server = MockServer::start().await;
+    let session = session();
+    session.mount_csrf_session(&server).await;
+    session.mount_lock(&server, None).await;
+    session
+        .unlock_request()
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(OBJECT_PATH))
+        .and(query_param("lockHandle", LOCK_HANDLE))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // The read-back has the links SAP regenerated; the document sent did not.
+    let stored = document("new").replace(
+        "<dtel:dataElement>",
+        &format!("{NAVIGATION_LINK}<dtel:dataElement>"),
+    );
+    mount_reads(&server, &document("old"), &stored).await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let result = write_metadata_object(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        MetadataAdtObjectType::DataElement,
+        "zsample_de",
+        &document("new"),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert!(result.changed);
+    assert!(result.stored_xml.contains("atom:link"));
+    let sent = &server.received_requests().await.unwrap();
+    let put = sent
+        .iter()
+        .find(|request| request.method == wiremock::http::Method::PUT)
+        .expect("the write was sent");
+    let body = String::from_utf8(put.body.clone()).unwrap();
+    assert!(!body.contains("atom:link"), "{body}");
+    assert_eq!(body, document("new"));
+    server.verify().await;
+}

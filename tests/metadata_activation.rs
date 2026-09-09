@@ -9,6 +9,8 @@ mod adt_edit_mock;
 
 use adt_edit_mock::AdtEditSession;
 use fractal::config::{EditPolicy, Profile};
+use fractal::journal::entry::EntrySystem;
+use fractal::journal::recorder::Journal;
 use fractal::reportable_error::ReportableError;
 use fractal::sap::{
     client::SapClient,
@@ -48,13 +50,24 @@ fn request() -> MetadataObjectActivationRequest {
 }
 
 fn document(version: &str) -> String {
+    document_with_links(version, "")
+}
+
+/// ADT decorates every document it serves with `atom:link` navigation, and one
+/// of those links is conditional: it appears on the active document only while
+/// somebody has pending work on the object. Tests that care pass it here.
+fn document_with_links(version: &str, links: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <blue:wbobj xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core"
     adtcore:name="ZSAMPLE_DE" adtcore:type="DTEL/DE" adtcore:version="{version}"
-    adtcore:description="Sample"/>"#
+    adtcore:description="Sample">{links}</blue:wbobj>"#
     )
 }
+
+const VERSIONS_LINK: &str = r#"<atom:link href="versions" rel="http://www.sap.com/adt/relations/versions" title="Historic versions" xmlns:atom="http://www.w3.org/2005/Atom"/>"#;
+/// The conditional one, and the reason the journal stores stripped documents.
+const STATES_LINK: &str = r#"<atom:link href="./zsample_de?version=inactive" rel="http://www.sap.com/adt/relations/objectstates" title="Complementary active/inactive version" xmlns:atom="http://www.w3.org/2005/Atom"/>"#;
 
 fn inactive_list(listed: bool) -> String {
     if listed {
@@ -325,5 +338,204 @@ async fn a_failed_activation_on_an_already_active_object_is_not_success() {
     .unwrap_err();
 
     assert_eq!(error.code(), "edit_activate_refused");
+    server.verify().await;
+}
+
+// --- Journaling -----------------------------------------------------------
+//
+// The journal stores metadata documents stripped of their `atom:link`
+// navigation. One of those links is conditional — SAP adds it to the active
+// document as soon as a complementary inactive version exists — so hashing the
+// raw bytes would report the active version as changed whenever somebody has
+// pending work, which is exactly when an undo is wanted.
+
+/// A journal over a temporary directory, so a test never touches the real one.
+fn journal(dir: &tempfile::TempDir) -> Journal {
+    Journal::with_roots(
+        dir.path().join("blobs"),
+        dir.path().join("journal/de3"),
+        EntrySystem {
+            base_url: "https://sap.example:8001".to_owned(),
+            profile: "dev".to_owned(),
+            client: "100".to_owned(),
+            user: "developer".to_owned(),
+        },
+    )
+}
+
+/// Answers `?version=active` with each document in turn, then repeats the last.
+async fn mount_active_reads(server: &MockServer, documents: &[String]) {
+    for document in documents {
+        Mock::given(method("GET"))
+            .and(path(OBJECT_PATH))
+            .and(query_param("version", "active"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(document.clone()))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+}
+
+/// The pending document, read only when there is a journal to record it in.
+async fn mount_inactive_read(server: &MockServer, document: &str) {
+    Mock::given(method("GET"))
+        .and(path(OBJECT_PATH))
+        .and(query_param("version", "inactive"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(document.to_owned()))
+        .mount(server)
+        .await;
+}
+
+/// The list is probed once before and once after each activation.
+async fn mount_inactive_list_sequence(server: &MockServer, listed: &[bool]) {
+    for listed in listed {
+        Mock::given(method("GET"))
+            .and(path(INACTIVE_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_string(inactive_list(*listed)))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+}
+
+#[tokio::test]
+async fn a_journalled_activation_stores_documents_without_their_links() {
+    let server = MockServer::start().await;
+    session().mount_csrf_session(&server).await;
+    mount_inactive_list_sequence(&server, &[true, false]).await;
+    mount_activation(&server, succeeded()).await;
+    mount_active_reads(
+        &server,
+        &[
+            // The before-image carries the conditional link, because the
+            // pending version being activated is what puts it there.
+            document_with_links("active", &format!("{VERSIONS_LINK}{STATES_LINK}")),
+            document_with_links("active", VERSIONS_LINK),
+        ],
+    )
+    .await;
+    mount_inactive_read(&server, &document_with_links("inactive", VERSIONS_LINK)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let journal = journal(&dir);
+
+    let result = activate_metadata_object(
+        &mut client(&server).await,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &request(),
+        Some(&journal),
+    )
+    .await
+    .unwrap();
+
+    let entry = journal
+        .entries()
+        .latest_for(OBJECT_PATH)
+        .unwrap()
+        .expect("an entry was written");
+    for hash in entry.referenced_blobs() {
+        let stored = journal.blobs().read(hash).unwrap();
+        assert!(
+            !stored.contains("atom:link"),
+            "{hash} kept its links: {stored}"
+        );
+        // Stripped, not emptied: the document itself is still there.
+        assert!(stored.contains(r#"adtcore:name="ZSAMPLE_DE""#), "{stored}");
+    }
+    // What the command reports is the same document the journal stored, so the
+    // hash a caller sees is the one `journal show` prints.
+    assert!(!result.active_xml.contains("atom:link"));
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn an_inactive_write_does_not_move_the_recorded_active_hash() {
+    // Two activations of one object. Between them somebody staged pending
+    // work, so SAP adds the complementary-states link to the active document
+    // and its raw bytes change while the object does not. The second entry's
+    // before-image must still be the first entry's after-image, or undo's gate
+    // would refuse every object that has pending work.
+    let server = MockServer::start().await;
+    session().mount_csrf_session(&server).await;
+    mount_inactive_list_sequence(&server, &[true, false, true, false]).await;
+    Mock::given(method("POST"))
+        .and(path(ACTIVATION_PATH))
+        .and(query_param("method", "activate"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(succeeded()))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let plain = document_with_links("active", VERSIONS_LINK);
+    let decorated = document_with_links("active", &format!("{VERSIONS_LINK}{STATES_LINK}"));
+    assert_ne!(
+        plain, decorated,
+        "the two reads must differ, or this proves nothing"
+    );
+    mount_active_reads(
+        &server,
+        &[
+            plain.clone(),
+            // Activation 1's after-image: nothing pending, no states link.
+            plain.clone(),
+            // Activation 2's before-image: the same active document, now with
+            // the link, because a new inactive version exists.
+            decorated.clone(),
+            decorated,
+        ],
+    )
+    .await;
+    mount_inactive_read(&server, &document_with_links("inactive", VERSIONS_LINK)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let journal = journal(&dir);
+
+    // One client for both, so the CSRF session is established once.
+    let mut client = client(&server).await;
+    for _ in 0..2 {
+        activate_metadata_object(
+            &mut client,
+            &EditPolicy::namespaces_only(&["Z*"]),
+            &request(),
+            Some(&journal),
+        )
+        .await
+        .unwrap();
+    }
+
+    let entries = journal.entries().list().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(
+        entries[0].active_after.as_ref().unwrap().sha256(),
+        entries[1].active_before.sha256(),
+        "the active document was recorded as having changed when it had not"
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn without_a_journal_neither_before_image_is_read() {
+    let server = MockServer::start().await;
+    session().mount_csrf_session(&server).await;
+    mount_inactive_list_before_and_after(&server, true, false).await;
+    mount_activation(&server, succeeded()).await;
+    // Exactly one active read — the verification — and no inactive read at all.
+    mount_active_read(&server, "active", 1).await;
+    Mock::given(method("GET"))
+        .and(path(OBJECT_PATH))
+        .and(query_param("version", "inactive"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    activate_metadata_object(
+        &mut client(&server).await,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &request(),
+        None,
+    )
+    .await
+    .unwrap();
+
     server.verify().await;
 }
