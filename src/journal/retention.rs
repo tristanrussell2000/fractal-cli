@@ -97,17 +97,23 @@ pub fn prune_entries(
     policy: RetentionPolicy,
     now: SystemTime,
 ) -> Result<usize, JournalError> {
-    let all = entries.list()?;
     let mut removed = 0;
-    for (index, entry) in all.iter().enumerate() {
-        if is_newest_for_its_object(&all, index) {
-            continue;
+    for object_key in entries.object_keys()? {
+        // Entries are filed per object, so "keep the last N for this object" is
+        // a directory listing rather than a grouping pass over the system.
+        let all = entries.entries_for(&object_key)?;
+        for (index, entry) in all.iter().enumerate() {
+            let newest = index + 1 == all.len();
+            if newest {
+                continue;
+            }
+            let too_many = all.len() - index > policy.keep_per_object;
+            if too_many || is_older_than(entries, &object_key, entry, policy.max_age, now) {
+                entries.remove(&object_key, &entry.id)?;
+                removed += 1;
+            }
         }
-        let too_many = newer_for_same_object(&all, index) >= policy.keep_per_object;
-        if too_many || is_older_than(entries, entry, policy.max_age, now) {
-            entries.remove(&entry.id)?;
-            removed += 1;
-        }
+        entries.remove_if_empty(&object_key)?;
     }
     Ok(removed)
 }
@@ -262,28 +268,9 @@ fn remove_file(path: &Path) -> Result<(), JournalError> {
     }
 }
 
-/// Entries are listed oldest first, so "newest for its object" means nothing
-/// after it shares its URI.
-fn is_newest_for_its_object(all: &[JournalEntry], index: usize) -> bool {
-    !all[index + 1..]
-        .iter()
-        .any(|later| same_object(later, &all[index]))
-}
-
-fn newer_for_same_object(all: &[JournalEntry], index: usize) -> usize {
-    all[index + 1..]
-        .iter()
-        .filter(|later| same_object(later, &all[index]))
-        .count()
-}
-
-fn same_object(left: &JournalEntry, right: &JournalEntry) -> bool {
-    left.object.uri.eq_ignore_ascii_case(&right.object.uri)
-        && left.object.source_part == right.object.source_part
-}
-
 fn is_older_than(
     entries: &EntryStore,
+    object_key: &str,
     entry: &JournalEntry,
     max_age: Duration,
     now: SystemTime,
@@ -291,7 +278,7 @@ fn is_older_than(
     // An entry whose age cannot be read is treated as young, so the doubtful
     // case keeps it.
     entries
-        .modified_at(&entry.id)
+        .modified_at(object_key, &entry.id)
         .is_some_and(|modified| now.duration_since(modified).is_ok_and(|age| age >= max_age))
 }
 

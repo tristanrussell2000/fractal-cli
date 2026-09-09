@@ -81,6 +81,30 @@ pub fn system_key(base_url: &str) -> Result<String, JournalError> {
     Ok(key)
 }
 
+/// The directory name for one object inside a system's journal.
+///
+/// A readable prefix and a digest, for the same reasons as [`system_key`]: ADT
+/// URIs contain `/`, and a registered namespace contains more of them.
+///
+/// Keyed on the object URI alone. `source_part` is deliberately not in it: a
+/// change spanning several of a class's includes is one activation and wants
+/// one entry, not one per include.
+#[must_use]
+pub fn object_key(object_uri: &str) -> String {
+    let uri = object_uri.trim().to_ascii_lowercase();
+    let prefix = uri
+        .rsplit('/')
+        .find(|segment| !segment.is_empty())
+        .unwrap_or("object");
+    let mut key = sanitize(prefix);
+    key.push('-');
+    let digest = Sha256::digest(uri.as_bytes());
+    for byte in digest.iter().take(HOST_DIGEST_LENGTH / 2) {
+        let _ = write!(key, "{byte:02x}");
+    }
+    key
+}
+
 fn host_of(base_url: &str) -> Result<String, JournalError> {
     let url = url::Url::parse(base_url.trim())
         .map_err(|_| JournalError::UnusableBaseUrl(base_url.to_owned()))?;
@@ -154,6 +178,29 @@ mod tests {
                 "a Windows filesystem would reject this: {key}"
             );
         }
+    }
+
+    #[test]
+    fn one_object_keys_the_same_whatever_case_it_is_written_in() {
+        let key = object_key("/sap/bc/adt/oo/classes/zcl_sample");
+        assert_eq!(object_key("/sap/bc/adt/oo/classes/ZCL_SAMPLE"), key);
+        assert!(key.starts_with("zcl_sample-"), "{key}");
+    }
+
+    #[test]
+    fn different_objects_and_families_stay_apart() {
+        // Same name, different collection, so a different object.
+        assert_ne!(
+            object_key("/sap/bc/adt/oo/classes/zsample"),
+            object_key("/sap/bc/adt/programs/programs/zsample")
+        );
+    }
+
+    #[test]
+    fn a_registered_namespace_produces_no_separators() {
+        let key = object_key("/sap/bc/adt/oo/classes/%2facme%2fzsample");
+        assert!(!key.contains('/'), "{key}");
+        assert!(!key.contains('%'), "{key}");
     }
 
     #[test]

@@ -299,7 +299,7 @@ mod tests {
         assert_eq!(resolved.status, EntryStatus::Succeeded);
         assert_eq!(resolved.etag_after.as_deref(), Some("etag"));
         assert_eq!(
-            journal.entries().read(&resolved.id).unwrap().status,
+            journal.entries().find(&resolved.id).unwrap().status,
             EntryStatus::Succeeded
         );
     }
@@ -365,7 +365,10 @@ mod tests {
     fn entry_written_at(journal: &Journal, entry: &JournalEntry) -> std::time::SystemTime {
         journal
             .entries()
-            .modified_at(&entry.id)
+            .modified_at(
+                &crate::journal::paths::object_key(&entry.object.uri),
+                &entry.id,
+            )
             .expect("entry exists")
     }
 
