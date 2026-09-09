@@ -1,5 +1,9 @@
 use super::package_authorization::{PackageAuthorizationError, authorize_object_package};
 use crate::config::EditPolicy;
+use crate::journal::JournalError;
+use crate::journal::entry::{EntryObject, JournalEntry, JournalOperation};
+use crate::journal::recorder::Journal;
+use crate::sap::object_family::AdtObjectFamily;
 use thiserror::Error;
 
 use crate::suggested_command;
@@ -46,6 +50,10 @@ pub struct AdtSourceActivationResult {
 pub enum AdtSourceActivationError {
     #[error(transparent)]
     Validation(#[from] AdtEditTargetValidationError),
+    /// The journal could not be written. Fatal before the activation, because
+    /// an operation with no before-image has no recovery at all.
+    #[error(transparent)]
+    Journal(#[from] JournalError),
     #[error(transparent)]
     PackageNotAllowed(#[from] PackageAuthorizationError),
     #[error("could not determine whether the object has inactive source: {0}")]
@@ -110,6 +118,7 @@ impl AdtSourceActivationError {
     #[must_use]
     pub const fn sap_error(&self) -> Option<&SapClientError> {
         match self {
+            Self::Journal(_) => None,
             Self::PackageNotAllowed(error) => error.sap_error(),
             Self::InactiveSourceRead(error) | Self::ActiveSourceRead { source: error, .. } => {
                 error.sap_error()
@@ -134,6 +143,7 @@ impl ReportableError for AdtSourceActivationError {
     fn code(&self) -> &'static str {
         match self {
             Self::Validation(error) => error.code(),
+            Self::Journal(error) => error.code(),
             Self::PackageNotAllowed(error) => error.code(),
             Self::InactiveVersionProbe(_) => "edit_activation_inactive_probe_failed",
             Self::NoInactiveVersion { .. } => "edit_activation_no_inactive_source",
@@ -161,6 +171,7 @@ impl ReportableError for AdtSourceActivationError {
                     .to_owned()
             }
             Self::Validation(error) => error.hint()?,
+            Self::Journal(error) => error.hint()?,
             Self::PackageNotAllowed(error) => error.hint()?,
             Self::InactiveVersionProbe(error) => error.hint()?,
             Self::NoInactiveVersion { identity } => format!(
@@ -210,6 +221,7 @@ impl ReportableError for AdtSourceActivationError {
     /// the activation with a different request, which is a mutation.
     fn suggested_command(&self) -> Option<String> {
         match self {
+            Self::Journal(_) => None,
             Self::PackageNotAllowed(error) => error.suggested_command(),
             Self::NoInactiveVersion { identity }
             | Self::ActiveSourceRead { identity, .. }
@@ -257,6 +269,7 @@ pub async fn activate_adt_source(
     sap: &mut SapClient,
     policy: &EditPolicy,
     request: &AdtSourceActivationRequest,
+    journal: Option<&Journal>,
 ) -> Result<AdtSourceActivationResult, AdtSourceActivationError> {
     let target = validate_adt_edit_target(
         request.object_type,
@@ -271,12 +284,13 @@ pub async fn activate_adt_source(
         &target.identity.object_uri,
     )
     .await?;
-    activate_validated_adt_source(sap, target).await
+    activate_validated_adt_source(sap, target, journal).await
 }
 
 pub(super) async fn activate_validated_adt_source(
     sap: &mut SapClient,
     target: ValidatedAdtEditTarget,
+    journal: Option<&Journal>,
 ) -> Result<AdtSourceActivationResult, AdtSourceActivationError> {
     let identity = target.identity;
     let transport = target.transport;
@@ -305,12 +319,35 @@ pub(super) async fn activate_validated_adt_source(
             .map_err(AdtSourceActivationError::TransportAttachment)?;
     }
 
-    let response = post_activation(sap, &identity.object_uri, &identity.name)
-        .await
-        .map_err(|source| AdtSourceActivationError::ActivationRequest {
-            identity: Box::new(identity.clone()),
-            source,
-        })?;
+    let entry = match journal {
+        Some(journal) => Some(
+            // The one thing an undo of this activation needs, and the one thing
+            // nothing read before: what the active version was beforehand.
+            // Costs a request, so it is only made when it will be recorded.
+            journal
+                .begin(
+                    journal_object(&identity),
+                    JournalOperation::Activate,
+                    transport.clone(),
+                    read_active_source_if_any(sap, &identity).await,
+                    Some(inactive.snapshot.source.clone()),
+                )
+                .map_err(AdtSourceActivationError::Journal)?,
+        ),
+        None => None,
+    };
+
+    let response = match post_activation(sap, &identity.object_uri, &identity.name).await {
+        Ok(response) => response,
+        Err(source) => {
+            // Nothing was published, so the entry records a refusal.
+            resolve_entry(journal, entry, Outcome::Failed)?;
+            return Err(AdtSourceActivationError::ActivationRequest {
+                identity: Box::new(identity),
+                source,
+            });
+        }
+    };
 
     // SAP's activation response is advisory: activationExecuted="false" has
     // been observed after a successful activation, and malformed XML does not
@@ -318,9 +355,17 @@ pub(super) async fn activate_validated_adt_source(
     // source checks establish whether a response problem is fatal.
     let parsed_response = parse_activation_response(&response);
 
-    let active_result = verify_activation_post_state(sap, &identity).await?;
+    let active_result = match verify_activation_post_state(sap, &identity).await {
+        Ok(active_result) => active_result,
+        Err(error) => {
+            // SAP accepted it and the post-state could not be established.
+            resolve_entry(journal, entry, Outcome::Unverified)?;
+            return Err(error);
+        }
+    };
 
     let Some(active_result) = active_result else {
+        resolve_entry(journal, entry, Outcome::Failed)?;
         return match parsed_response {
             Ok(parsed) => Err(AdtSourceActivationError::ActivationRefused {
                 sap_reported_activation_executed: parsed.activation_executed,
@@ -329,17 +374,29 @@ pub(super) async fn activate_validated_adt_source(
             Err(error) => Err(AdtSourceActivationError::ActivationResponseInvalid(error)),
         };
     };
-    let active = active_result.map_err(|source| AdtSourceActivationError::ActiveSourceRead {
-        identity: Box::new(identity.clone()),
-        source,
-    })?;
+    let active = match active_result {
+        Ok(active) => active,
+        Err(source) => {
+            resolve_entry(journal, entry, Outcome::Unverified)?;
+            return Err(AdtSourceActivationError::ActiveSourceRead {
+                identity: Box::new(identity),
+                source,
+            });
+        }
+    };
     if active.snapshot.sha256 != inactive.snapshot.sha256 {
+        resolve_entry(journal, entry, Outcome::Unverified)?;
         return Err(AdtSourceActivationError::VerificationMismatch {
-            identity: Box::new(identity.clone()),
+            identity: Box::new(identity),
             inactive_sha256: inactive.snapshot.sha256,
             active_sha256: active.snapshot.sha256,
         });
     }
+    resolve_entry(
+        journal,
+        entry,
+        Outcome::Succeeded(active.snapshot.source.clone()),
+    )?;
 
     // Post-state now proves success, so preserve malformed response XML as metadata.
     let (activation_response_parsed, parsed) = parsed_response.map_or_else(
@@ -362,6 +419,63 @@ pub(super) async fn activate_validated_adt_source(
 ///
 /// Refuses before any mutation when the check reports errors: activation must
 /// never be attempted on source that will not compile.
+/// How an activation ended, from the journal's point of view.
+enum Outcome {
+    Succeeded(String),
+    /// SAP refused it; nothing was published.
+    Failed,
+    /// SAP accepted it and the result could not be confirmed — the case where
+    /// the before-image matters most.
+    Unverified,
+}
+
+fn resolve_entry(
+    journal: Option<&Journal>,
+    entry: Option<JournalEntry>,
+    outcome: Outcome,
+) -> Result<(), AdtSourceActivationError> {
+    let (Some(journal), Some(entry)) = (journal, entry) else {
+        return Ok(());
+    };
+    match outcome {
+        Outcome::Succeeded(active) => journal.succeeded(entry, Some(&active), None),
+        Outcome::Failed => journal.failed(entry),
+        Outcome::Unverified => journal.unverified(entry, None),
+    }
+    .map(|_| ())
+    .map_err(AdtSourceActivationError::Journal)
+}
+
+fn journal_object(identity: &EditableAdtSourceIdentity) -> EntryObject {
+    EntryObject {
+        object_type: AdtObjectFamily::Source(identity.object_type),
+        name: identity.name.clone(),
+        uri: identity.object_uri.clone(),
+        // Fractal reads and writes a class's `main` include only.
+        source_part: None,
+    }
+}
+
+/// The active source, or `None` when the object has never been activated.
+///
+/// A missing active version is an ordinary state for a newly created object,
+/// not a failure, so it is recorded as an absence rather than stopping the
+/// activation.
+async fn read_active_source_if_any(
+    sap: &SapClient,
+    identity: &EditableAdtSourceIdentity,
+) -> Option<String> {
+    read_adt_source_for_edit(
+        sap,
+        identity.object_type,
+        &identity.name,
+        AdtSourceVersion::Active,
+    )
+    .await
+    .ok()
+    .map(|read| read.snapshot.source)
+}
+
 async fn read_and_precheck_inactive_source(
     sap: &SapClient,
     identity: &EditableAdtSourceIdentity,

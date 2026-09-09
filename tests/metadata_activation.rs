@@ -154,6 +154,7 @@ async fn activates_a_data_element_and_proves_it_is_active() {
         &mut client(&server).await,
         &EditPolicy::namespaces_only(&["Z*"]),
         &request(),
+        None,
     )
     .await
     .unwrap();
@@ -177,6 +178,7 @@ async fn a_failed_activation_that_claims_it_executed_is_still_a_failure() {
         &mut client(&server).await,
         &EditPolicy::namespaces_only(&["Z*"]),
         &request(),
+        None,
     )
     .await
     .unwrap_err();
@@ -201,6 +203,7 @@ async fn an_object_read_back_as_inactive_is_not_reported_as_activated() {
         &mut client(&server).await,
         &EditPolicy::namespaces_only(&["Z*"]),
         &request(),
+        None,
     )
     .await
     .unwrap_err();
@@ -226,6 +229,7 @@ async fn an_object_with_no_pending_changes_is_never_posted() {
         &mut client(&server).await,
         &EditPolicy::namespaces_only(&["Z*"]),
         &request(),
+        None,
     )
     .await
     .unwrap_err();
@@ -252,6 +256,7 @@ async fn a_name_outside_the_customer_namespaces_never_reaches_sap() {
             name: "sapsample_de".to_owned(),
             ..request()
         },
+        None,
     )
     .await
     .unwrap_err();
@@ -287,6 +292,7 @@ async fn a_package_outside_the_allowlist_is_refused_before_activating() {
             allow_temporary_package: true,
         },
         &request(),
+        None,
     )
     .await
     .unwrap_err();
@@ -313,6 +319,7 @@ async fn a_failed_activation_on_an_already_active_object_is_not_success() {
         &mut client(&server).await,
         &EditPolicy::namespaces_only(&["Z*"]),
         &request(),
+        None,
     )
     .await
     .unwrap_err();

@@ -67,11 +67,11 @@ impl ContentRef {
     }
 }
 
-/// Which system the entry belongs to. Only the host keys the directory; the
-/// rest is information.
+/// Which system the entry belongs to. Only the host part of `base_url` keys the
+/// directory; the rest is information.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntrySystem {
-    pub host: String,
+    pub base_url: String,
     pub profile: String,
     pub client: String,
     pub user: String,
@@ -175,7 +175,7 @@ mod tests {
             recorded_at: "2026-09-05T22:15:03.412Z".to_owned(),
             status: EntryStatus::Pending,
             system: EntrySystem {
-                host: "sap.example".to_owned(),
+                base_url: "https://sap.example:8001".to_owned(),
                 profile: "dev".to_owned(),
                 client: "100".to_owned(),
                 user: "developer".to_owned(),

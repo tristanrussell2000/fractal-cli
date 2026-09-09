@@ -5,6 +5,8 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use fractal::config::EditPolicy;
+use fractal::journal::entry::{EntryStatus, EntrySystem, JournalOperation};
+use fractal::journal::recorder::Journal;
 use fractal::reportable_error::ReportableError;
 use fractal::{
     config::Profile,
@@ -240,6 +242,7 @@ async fn activates_and_verifies_the_exact_inactive_source() {
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
         &activation_request(None),
+        None,
     )
     .await
     .unwrap();
@@ -293,6 +296,7 @@ async fn reads_inactive_source_and_runs_precheck_concurrently() {
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
         &activation_request(None),
+        None,
     )
     .await
     .unwrap();
@@ -329,6 +333,7 @@ async fn reads_active_source_and_probes_inactive_state_concurrently() {
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
         &activation_request(None),
+        None,
     )
     .await
     .unwrap();
@@ -352,6 +357,7 @@ async fn refuses_to_activate_when_no_inactive_version_exists() {
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
         &activation_request(None),
+        None,
     )
     .await
     .unwrap_err();
@@ -398,6 +404,7 @@ async fn syntax_errors_stop_before_transport_or_activation() {
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
         &activation_request(Some("AB1K900575")),
+        None,
     )
     .await
     .unwrap_err();
@@ -455,6 +462,7 @@ async fn reports_http_200_activation_refusal_and_messages() {
             &mut client,
             &EditPolicy::namespaces_only(&["Z*"]),
             &activation_request(None),
+            None,
         ),
     )
     .await
@@ -490,6 +498,7 @@ async fn preserves_activation_http_failures_as_a_distinct_stage() {
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
         &activation_request(None),
+        None,
     )
     .await
     .unwrap_err();
@@ -527,6 +536,7 @@ async fn transport_attachment_failure_stops_before_activation() {
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
         &activation_request(Some("AB1K900575")),
+        None,
     )
     .await
     .unwrap_err();
@@ -558,6 +568,7 @@ async fn distinguishes_post_activation_source_mismatch() {
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
         &activation_request(None),
+        None,
     )
     .await
     .unwrap_err();
@@ -614,6 +625,7 @@ async fn attaches_the_parent_transport_before_activation() {
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
         &activation_request(Some(" ab1k900575 ")),
+        None,
     )
     .await
     .unwrap();
@@ -651,6 +663,7 @@ async fn verified_activation_survives_an_unparseable_success_body() {
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
         &activation_request(None),
+        None,
     )
     .await
     .unwrap();
@@ -658,5 +671,154 @@ async fn verified_activation_survives_an_unparseable_success_body() {
     assert!(!result.activation_response_parsed);
     assert_eq!(result.sap_reported_activation_executed, None);
     assert!(result.activation_messages.is_empty());
+    server.verify().await;
+}
+
+const PREVIOUS_ACTIVE: &str = "CLASS zcl_sample DEFINITION.\n\" old\nENDCLASS.\n";
+
+/// A journal over a temporary directory, so a test never touches the real
+/// journal.
+fn journal(dir: &tempfile::TempDir) -> Journal {
+    Journal::with_roots(
+        dir.path().join("blobs"),
+        dir.path().join("journal/de3"),
+        EntrySystem {
+            base_url: "https://sap.example:8001".to_owned(),
+            profile: "dev".to_owned(),
+            client: "100".to_owned(),
+            user: "developer".to_owned(),
+        },
+    )
+}
+
+/// Journaling adds a read of the active version before the activation, so the
+/// same URI answers twice: the previous active source, then the activated one.
+async fn mount_active_reads_before_and_after(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path(SOURCE_URI))
+        .and(query_param("version", "active"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(PREVIOUS_ACTIVE))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(SOURCE_URI))
+        .and(query_param("version", "active"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(SOURCE))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn a_journalled_activation_records_the_previous_active_source() {
+    let server = MockServer::start().await;
+    mount_clean_preflight(&server).await;
+    mount_activation(
+        &server,
+        ResponseTemplate::new(200).set_body_string("<activationResult/>"),
+    )
+    .await;
+    mount_active_reads_before_and_after(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let journal = journal(&dir);
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    activate_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &activation_request(None),
+        Some(&journal),
+    )
+    .await
+    .unwrap();
+
+    let entry = journal
+        .entries()
+        .latest_for(OBJECT_URI)
+        .unwrap()
+        .expect("an entry was written");
+
+    assert_eq!(entry.status, EntryStatus::Succeeded);
+    assert_eq!(entry.operation, JournalOperation::Activate);
+    // The before-image is what nothing read before this feature, and the only
+    // thing an undo of this activation could restore.
+    let before = entry.active_before.sha256().expect("had an active version");
+    assert_eq!(journal.blobs().read(before).unwrap(), PREVIOUS_ACTIVE);
+    let after = entry.active_after.as_ref().unwrap().sha256().unwrap();
+    assert_eq!(journal.blobs().read(after).unwrap(), SOURCE);
+}
+
+#[tokio::test]
+async fn a_refused_activation_is_recorded_as_failed_with_its_before_image() {
+    let server = MockServer::start().await;
+    // The inactive version survives the activation, which is how a refusal is
+    // detected.
+    mount_inactive_sequence(&server, true).await;
+    mount_source_read(&server, "inactive", SOURCE).await;
+    mount_csrf_session(&server).await;
+    mount_checkrun(&server, "<checkMessageList/>").await;
+    mount_activation(
+        &server,
+        ResponseTemplate::new(200).set_body_string("<activationResult/>"),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path(SOURCE_URI))
+        .and(query_param("version", "active"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(PREVIOUS_ACTIVE))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let journal = journal(&dir);
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    activate_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &activation_request(None),
+        Some(&journal),
+    )
+    .await
+    .unwrap_err();
+
+    let entry = journal
+        .entries()
+        .latest_for(OBJECT_URI)
+        .unwrap()
+        .expect("an entry was written");
+
+    // Nothing was published, so there is no after-image — but the before-image
+    // is still true and the entry is kept rather than deleted.
+    assert_eq!(entry.status, EntryStatus::Failed);
+    assert_eq!(entry.active_after, None);
+    assert!(entry.active_before.sha256().is_some());
+}
+
+#[tokio::test]
+async fn without_a_journal_the_extra_active_read_never_happens() {
+    let server = MockServer::start().await;
+    mount_clean_preflight(&server).await;
+    mount_activation(
+        &server,
+        ResponseTemplate::new(200).set_body_string("<activationResult/>"),
+    )
+    .await;
+    // Exactly one active read: the verification. The before-image read exists
+    // only to be recorded, so it must not happen when nothing is journal.
+    mount_source_read(&server, "active", SOURCE).await;
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    activate_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &activation_request(None),
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert!(!dir.path().join("journal").exists());
     server.verify().await;
 }

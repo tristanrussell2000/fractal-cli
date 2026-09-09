@@ -30,44 +30,47 @@ use super::entry::{
 use super::paths;
 use super::store::EntryStore;
 
-/// What a caller knows before an operation runs.
-pub struct EntryDraft {
-    pub system: EntrySystem,
-    pub object: EntryObject,
-    pub operation: JournalOperation,
-    pub transport: Option<String>,
-    /// The active version being replaced. `None` records that there was none.
-    pub active_before: Option<String>,
-    /// Pending work that the operation will consume. `None` records that the
-    /// caller had none, which is different from having had an empty one.
-    pub inactive_before: Option<String>,
-}
-
+/// The journal for one SAP system.
+///
+/// Its entry store *is* that system's directory, so the identity it stamps on
+/// entries describes the same system its location does.
 pub struct Journal {
     blobs: BlobStore,
     entries: EntryStore,
+    system: EntrySystem,
 }
 
 impl Journal {
-    /// Opens the journal for one system.
+    /// Opens the journal for a profile's system.
     ///
     /// # Errors
     ///
-    /// Returns [`JournalError::NoDataDirectory`] when the platform has no data
-    /// directory, or [`JournalError::UnusableBaseUrl`] when the profile's URL
-    /// has no host to key on.
-    pub fn open(base_url: &str) -> Result<Self, JournalError> {
+    /// Returns [`JournalError`] when the platform has no data directory, or
+    /// when the profile's URL has no host to key on.
+    pub fn open(
+        profile_name: &str,
+        profile: &crate::config::Profile,
+    ) -> Result<Self, JournalError> {
         Ok(Self::with_roots(
             paths::blob_root()?,
-            paths::entry_root(base_url)?,
+            paths::entry_root(&profile.base_url)?,
+            EntrySystem {
+                base_url: profile.base_url.clone(),
+                profile: profile_name.to_owned(),
+                client: profile.client.clone(),
+                user: profile.username.clone(),
+            },
         ))
     }
 
+    /// A journal over roots the caller placed, for tests and for any caller
+    /// that does not read its location from a profile.
     #[must_use]
-    pub fn with_roots(blob_root: PathBuf, entry_root: PathBuf) -> Self {
+    pub fn with_roots(blob_root: PathBuf, entry_root: PathBuf, system: EntrySystem) -> Self {
         Self {
             blobs: BlobStore::new(blob_root),
             entries: EntryStore::new(entry_root),
+            system,
         }
     }
 
@@ -87,15 +90,24 @@ impl Journal {
     /// beforehand, and a crash after this leaves a `pending` entry holding it.
     ///
     /// Blobs are stored before the entry so that a crash in between leaves an
-    /// orphan rather than a dangling reference; the confirming put afterwards is
-    /// what a concurrent sweep respects.
+    /// orphan rather than a dangling reference; the confirming put afterwards
+    /// is what a concurrent sweep respects.
     ///
     /// # Errors
     ///
-    /// Returns [`JournalError`] when a blob or the entry cannot be written.
-    pub fn begin(&self, draft: EntryDraft) -> Result<JournalEntry, JournalError> {
-        let active_before = self.store(draft.active_before.as_deref())?;
-        let inactive_before = match draft.inactive_before.as_deref() {
+    /// Returns [`JournalError`] when a blob or the entry cannot be written. The
+    /// caller must treat that as fatal: an operation with no before-image has
+    /// no recovery at all.
+    pub fn begin(
+        &self,
+        object: EntryObject,
+        operation: JournalOperation,
+        transport: Option<String>,
+        active_before: Option<String>,
+        inactive_before: Option<String>,
+    ) -> Result<JournalEntry, JournalError> {
+        let stored_active = self.store(active_before.as_deref())?;
+        let stored_inactive = match inactive_before.as_deref() {
             Some(content) => Some(self.store(Some(content))?),
             None => None,
         };
@@ -104,21 +116,18 @@ impl Journal {
             id: String::new(),
             recorded_at: String::new(),
             status: EntryStatus::Pending,
-            system: draft.system,
-            object: draft.object,
-            operation: draft.operation,
-            transport: draft.transport,
-            active_before,
-            inactive_before,
+            system: self.system.clone(),
+            object,
+            operation,
+            transport,
+            active_before: stored_active,
+            inactive_before: stored_inactive,
             active_after: None,
             etag_after: None,
             undo_progress: None,
         })?;
 
-        self.confirm([
-            draft.active_before.as_deref(),
-            draft.inactive_before.as_deref(),
-        ])?;
+        self.confirm([active_before.as_deref(), inactive_before.as_deref()])?;
         Ok(entry)
     }
 
@@ -215,40 +224,45 @@ mod tests {
         let journal = Journal::with_roots(
             dir.path().join("blobs"),
             dir.path().join("journal").join("de3"),
-        );
-        (journal, dir)
-    }
-
-    fn draft() -> EntryDraft {
-        EntryDraft {
-            system: EntrySystem {
-                host: "sap.example".to_owned(),
+            EntrySystem {
+                base_url: "https://sap.example:8001".to_owned(),
                 profile: "dev".to_owned(),
                 client: "100".to_owned(),
                 user: "developer".to_owned(),
             },
-            object: EntryObject {
-                object_type: AdtObjectFamily::parse("PROG").unwrap(),
-                name: "ZSAMPLE".to_owned(),
-                uri: "/sap/bc/adt/programs/programs/zsample".to_owned(),
-                source_part: None,
-            },
-            operation: JournalOperation::Activate,
-            transport: None,
-            active_before: Some("REPORT zsample. \" before".to_owned()),
-            inactive_before: Some("REPORT zsample. \" pending".to_owned()),
+        );
+        (journal, dir)
+    }
+
+    const BEFORE: &str = "REPORT zsample. \" before";
+    const PENDING: &str = "REPORT zsample. \" pending";
+
+    fn object() -> EntryObject {
+        EntryObject {
+            object_type: AdtObjectFamily::parse("PROG").unwrap(),
+            name: "ZSAMPLE".to_owned(),
+            uri: "/sap/bc/adt/programs/programs/zsample".to_owned(),
+            source_part: None,
         }
     }
 
     #[test]
     fn begin_stores_the_before_images_and_a_pending_entry() {
         let (journal, _dir) = journal();
-        let entry = journal.begin(draft()).unwrap();
+        let entry = journal
+            .begin(
+                object(),
+                JournalOperation::Activate,
+                None,
+                Some(BEFORE.to_owned()),
+                Some(PENDING.to_owned()),
+            )
+            .unwrap();
 
         assert_eq!(entry.status, EntryStatus::Pending);
         assert_eq!(
             entry.active_before,
-            ContentRef::Sha256(source_sha256("REPORT zsample. \" before"))
+            ContentRef::Sha256(source_sha256(BEFORE))
         );
         assert!(entry.active_after.is_none());
         for hash in entry.referenced_blobs() {
@@ -260,10 +274,13 @@ mod tests {
     fn no_pending_work_is_recorded_as_no_field_at_all() {
         let (journal, _dir) = journal();
         let entry = journal
-            .begin(EntryDraft {
-                inactive_before: None,
-                ..draft()
-            })
+            .begin(
+                object(),
+                JournalOperation::Activate,
+                None,
+                Some(BEFORE.to_owned()),
+                None,
+            )
             .unwrap();
 
         assert_eq!(entry.inactive_before, None);
@@ -273,10 +290,13 @@ mod tests {
     fn an_object_with_no_active_version_records_an_absence() {
         let (journal, _dir) = journal();
         let entry = journal
-            .begin(EntryDraft {
-                active_before: None,
-                ..draft()
-            })
+            .begin(
+                object(),
+                JournalOperation::Activate,
+                None,
+                None,
+                Some(PENDING.to_owned()),
+            )
             .unwrap();
 
         // Not the hash of an empty document.
@@ -287,7 +307,15 @@ mod tests {
     #[test]
     fn succeeding_stores_the_after_image_and_resolves() {
         let (journal, _dir) = journal();
-        let entry = journal.begin(draft()).unwrap();
+        let entry = journal
+            .begin(
+                object(),
+                JournalOperation::Activate,
+                None,
+                Some(BEFORE.to_owned()),
+                Some(PENDING.to_owned()),
+            )
+            .unwrap();
         let resolved = journal
             .succeeded(
                 entry,
@@ -307,7 +335,15 @@ mod tests {
     #[test]
     fn a_refused_operation_keeps_its_before_image_and_gains_no_after() {
         let (journal, _dir) = journal();
-        let entry = journal.begin(draft()).unwrap();
+        let entry = journal
+            .begin(
+                object(),
+                JournalOperation::Activate,
+                None,
+                Some(BEFORE.to_owned()),
+                Some(PENDING.to_owned()),
+            )
+            .unwrap();
         let before = entry.active_before.clone();
         let resolved = journal.failed(entry).unwrap();
 
@@ -320,11 +356,13 @@ mod tests {
     fn a_delete_records_the_object_as_gone() {
         let (journal, _dir) = journal();
         let entry = journal
-            .begin(EntryDraft {
-                operation: JournalOperation::Delete,
-                inactive_before: None,
-                ..draft()
-            })
+            .begin(
+                object(),
+                JournalOperation::Delete,
+                None,
+                Some(BEFORE.to_owned()),
+                None,
+            )
             .unwrap();
         let resolved = journal.succeeded(entry, None, None).unwrap();
 
@@ -342,7 +380,15 @@ mod tests {
         // an on-disk entry has referenced them since `begin`.
         let (journal, _dir) = journal();
 
-        let entry = journal.begin(draft()).unwrap();
+        let entry = journal
+            .begin(
+                object(),
+                JournalOperation::Activate,
+                None,
+                Some(BEFORE.to_owned()),
+                Some(PENDING.to_owned()),
+            )
+            .unwrap();
         let began_at = entry_written_at(&journal, &entry);
         for hash in entry.referenced_blobs() {
             assert!(
@@ -377,7 +423,15 @@ mod tests {
         // The other half: if the sweep won the race, the confirming `put` puts
         // the content back rather than leaving a dangling reference.
         let (journal, _dir) = journal();
-        let entry = journal.begin(draft()).unwrap();
+        let entry = journal
+            .begin(
+                object(),
+                JournalOperation::Activate,
+                None,
+                Some(BEFORE.to_owned()),
+                Some(PENDING.to_owned()),
+            )
+            .unwrap();
         let hash = entry.active_before.sha256().unwrap().to_owned();
         std::fs::remove_file(journal.blobs().path_of(&hash)).unwrap();
 

@@ -283,6 +283,9 @@ pub async fn discard_inactive_adt_source(
             transport: None,
             policy: policy.clone(),
         },
+        // A discard restores the active version over the inactive one, so its
+        // net effect on the active version is nil. Nothing to journal.
+        None,
     )
     .await
     .map_err(AdtInactiveSourceDiscardError::RestoredSourceActivation)?;

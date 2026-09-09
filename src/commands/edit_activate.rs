@@ -8,6 +8,7 @@ use crate::{
     output::{OutputFormat, print_result},
     reported::Reported,
 };
+use fractal::journal::recorder::Journal;
 use fractal::sap::{
     activation_request::AdtActivationMessage,
     metadata_activation::{
@@ -80,6 +81,12 @@ pub async fn edit_object_activate(
     let (profile_name, profile, mut client) = connect(explicit_profile).await?;
     let policy = profile.edit_policy();
 
+    let journal = if args.no_journal {
+        None
+    } else {
+        Some(Journal::open(&profile_name, &profile)?)
+    };
+
     match object_type {
         AdtObjectFamily::Source(object_type) => {
             let request = AdtSourceActivationRequest {
@@ -87,7 +94,8 @@ pub async fn edit_object_activate(
                 name: args.name.clone(),
                 transport: args.transport.clone(),
             };
-            let result = activate_adt_source(&mut client, &policy, &request).await?;
+            let result =
+                activate_adt_source(&mut client, &policy, &request, journal.as_ref()).await?;
             Ok(map_source_activation_result(profile_name, result))
         }
         AdtObjectFamily::Metadata(object_type) => {
@@ -96,7 +104,8 @@ pub async fn edit_object_activate(
                 name: args.name.clone(),
                 transport: args.transport.clone(),
             };
-            let result = activate_metadata_object(&mut client, &policy, &request).await?;
+            let result =
+                activate_metadata_object(&mut client, &policy, &request, journal.as_ref()).await?;
             Ok(map_metadata_activation_result(profile_name, result))
         }
     }

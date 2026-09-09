@@ -340,7 +340,7 @@ mod tests {
             recorded_at: String::new(),
             status: EntryStatus::Pending,
             system: EntrySystem {
-                host: "sap.example".to_owned(),
+                base_url: "https://sap.example:8001".to_owned(),
                 profile: "dev".to_owned(),
                 client: "100".to_owned(),
                 user: "developer".to_owned(),

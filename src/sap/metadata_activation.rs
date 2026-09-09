@@ -43,7 +43,11 @@ use super::{
     source_check::{AdtInactiveSourceProbeError, probe_inactive_adt_source},
 };
 use crate::config::EditPolicy;
+use crate::journal::JournalError;
+use crate::journal::entry::{EntryObject, JournalEntry, JournalOperation};
+use crate::journal::recorder::Journal;
 use crate::reportable_error::{ReportableError, sap_http_status};
+use crate::sap::object_family::AdtObjectFamily;
 use crate::suggested_command;
 
 /// The `adtcore:version` a document reports once it has been activated.
@@ -72,6 +76,10 @@ pub struct MetadataObjectActivationResult {
 pub enum MetadataObjectActivationError {
     #[error(transparent)]
     Validation(#[from] AdtEditTargetValidationError),
+    /// The journal could not be written. Fatal before the activation, because
+    /// an operation with no before-image has no recovery at all.
+    #[error(transparent)]
+    Journal(#[from] JournalError),
     #[error(transparent)]
     PackageNotAllowed(#[from] PackageAuthorizationError),
     #[error("could not establish whether {name} has an inactive version: {source}")]
@@ -134,6 +142,7 @@ impl ReportableError for MetadataObjectActivationError {
     fn code(&self) -> &'static str {
         match self {
             Self::Validation(error) => error.code(),
+            Self::Journal(error) => error.code(),
             Self::PackageNotAllowed(error) => error.code(),
             Self::InactiveVersionProbe { .. } => "edit_activate_inactive_probe_failed",
             Self::PostActivationProbe { .. } => "edit_activate_post_probe_failed",
@@ -153,6 +162,7 @@ impl ReportableError for MetadataObjectActivationError {
     fn hint(&self) -> Option<String> {
         Some(match self {
             Self::Validation(error) => return error.hint(),
+            Self::Journal(error) => return error.hint(),
             Self::PackageNotAllowed(error) => return error.hint(),
             Self::TransportAttachment(error) => return error.hint(),
             Self::InactiveVersionProbe { .. } => {
@@ -218,6 +228,7 @@ pub async fn activate_metadata_object(
     sap: &mut SapClient,
     policy: &EditPolicy,
     request: &MetadataObjectActivationRequest,
+    journal: Option<&Journal>,
 ) -> Result<MetadataObjectActivationResult, MetadataObjectActivationError> {
     let identity = metadata_object_identity(request.object_type, &request.name, policy)?;
     let transport = canonicalize_transport_request(request.transport.as_deref())
@@ -255,12 +266,32 @@ pub async fn activate_metadata_object(
             .map_err(MetadataObjectActivationError::TransportAttachment)?;
     }
 
-    let response = post_activation(sap, &identity.object_uri, &identity.name)
-        .await
-        .map_err(|source| MetadataObjectActivationError::ActivationRequest {
-            name: identity.name.clone(),
-            source,
-        })?;
+    let entry = match journal {
+        Some(journal) => Some(
+            journal
+                .begin(
+                    journal_object(request.object_type, &identity),
+                    JournalOperation::Activate,
+                    transport.clone(),
+                    // Only read these when they will be recorded.
+                    read_active_document_if_any(sap, &identity).await,
+                    read_document(sap, &identity, "inactive").await,
+                )
+                .map_err(MetadataObjectActivationError::Journal)?,
+        ),
+        None => None,
+    };
+
+    let response = match post_activation(sap, &identity.object_uri, &identity.name).await {
+        Ok(response) => response,
+        Err(source) => {
+            resolve_entry(journal, entry, Outcome::Failed)?;
+            return Err(MetadataObjectActivationError::ActivationRequest {
+                name: identity.name,
+                source,
+            });
+        }
+    };
 
     // Advisory only. Kept until the post-state says whether it matters.
     let parsed_response = parse_activation_response(&response);
@@ -273,15 +304,26 @@ pub async fn activate_metadata_object(
         read_active_metadata_object(sap, request.object_type, &identity),
         probe_inactive_adt_source(sap, &identity.object_uri),
     );
-    let active_xml = active_xml?;
-    let still_pending =
-        inactive_after.map_err(
-            |source| MetadataObjectActivationError::PostActivationProbe {
-                name: identity.name.clone(),
+    let active_xml = match active_xml {
+        Ok(active_xml) => active_xml,
+        Err(error) => {
+            // SAP accepted it and the post-state could not be established.
+            resolve_entry(journal, entry, Outcome::Unverified)?;
+            return Err(error);
+        }
+    };
+    let still_pending = match inactive_after {
+        Ok(still_pending) => still_pending,
+        Err(source) => {
+            resolve_entry(journal, entry, Outcome::Unverified)?;
+            return Err(MetadataObjectActivationError::PostActivationProbe {
+                name: identity.name,
                 source,
-            },
-        )?;
+            });
+        }
+    };
     if still_pending || document_version(&active_xml)?.as_deref() != Some(ACTIVE_VERSION) {
+        resolve_entry(journal, entry, Outcome::Failed)?;
         let (executed, messages) = parsed_response.map_or((None, Vec::new()), |parsed| {
             (parsed.activation_executed, parsed.messages)
         });
@@ -292,6 +334,8 @@ pub async fn activate_metadata_object(
             messages,
         });
     }
+
+    resolve_entry(journal, entry, Outcome::Succeeded(active_xml.clone()))?;
 
     // The post-state proves success, so a response we could not parse is
     // metadata rather than a failure.
@@ -312,6 +356,67 @@ pub async fn activate_metadata_object(
         activation_response_parsed,
         activation_messages: parsed.messages,
     })
+}
+
+/// How an activation ended, from the journal's point of view.
+enum Outcome {
+    Succeeded(String),
+    /// SAP refused it; nothing was published.
+    Failed,
+    /// SAP accepted it and the result could not be confirmed.
+    Unverified,
+}
+
+fn resolve_entry(
+    journal: Option<&Journal>,
+    entry: Option<JournalEntry>,
+    outcome: Outcome,
+) -> Result<(), MetadataObjectActivationError> {
+    let (Some(journal), Some(entry)) = (journal, entry) else {
+        return Ok(());
+    };
+    match outcome {
+        Outcome::Succeeded(active) => journal.succeeded(entry, Some(&active), None),
+        Outcome::Failed => journal.failed(entry),
+        Outcome::Unverified => journal.unverified(entry, None),
+    }
+    .map(|_| ())
+    .map_err(MetadataObjectActivationError::Journal)
+}
+
+fn journal_object(object_type: MetadataAdtObjectType, identity: &AdtObjectIdentity) -> EntryObject {
+    EntryObject {
+        object_type: AdtObjectFamily::Metadata(object_type),
+        name: identity.name.clone(),
+        uri: identity.object_uri.clone(),
+        source_part: None,
+    }
+}
+
+/// The active document, or `None` when the object has never been activated.
+///
+/// `?version=active` serves the pending document when there is no active
+/// version, so the response has to be parsed to figure out which it is, a document that
+/// declares itself `new` is not a previous active version, and journal it as
+/// one would have an undo restore something that was never active.
+async fn read_active_document_if_any(
+    sap: &SapClient,
+    identity: &AdtObjectIdentity,
+) -> Option<String> {
+    let document = read_document(sap, identity, ACTIVE_VERSION).await?;
+    (document_version(&document).ok().flatten().as_deref() == Some(ACTIVE_VERSION))
+        .then_some(document)
+}
+
+/// One version of the document, or `None` when there is none to read.
+async fn read_document(
+    sap: &SapClient,
+    identity: &AdtObjectIdentity,
+    version: &str,
+) -> Option<String> {
+    sap.get_text_with_query(&identity.object_uri, &[("version", version)])
+        .await
+        .ok()
 }
 
 /// Reads the **active** document.

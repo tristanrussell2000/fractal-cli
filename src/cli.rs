@@ -434,6 +434,13 @@ pub struct EditActivateArgs {
     /// Parent CTS change request to attach before activation, for example AB1K900575.
     #[arg(long)]
     pub(crate) transport: Option<String>,
+    /// Skip the journal for this activation.
+    ///
+    /// The journal is the only record of what the active version was
+    /// beforehand, so this gives up any chance of undoing it. Intended for a
+    /// machine where the journal cannot be written at all.
+    #[arg(long, default_value_t = false)]
+    pub(crate) no_journal: bool,
 }
 
 #[derive(Debug, Args)]

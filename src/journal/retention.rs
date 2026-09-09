@@ -296,7 +296,7 @@ mod tests {
             recorded_at: String::new(),
             status: EntryStatus::Succeeded,
             system: EntrySystem {
-                host: "sap.example".to_owned(),
+                base_url: "https://sap.example:8001".to_owned(),
                 profile: "dev".to_owned(),
                 client: "100".to_owned(),
                 user: "developer".to_owned(),
@@ -547,7 +547,7 @@ mod tests {
         // the mark phase already decided was dead. Its confirming `put` touches
         // the blob, and a touch at or after `mark_started` means the snapshot
         // cannot be trusted about it.
-        use crate::journal::recorder::{EntryDraft, Journal};
+        use crate::journal::recorder::Journal;
 
         let dir = tempfile::tempdir().unwrap();
         let journal_root = dir.path().join("journal");
@@ -560,26 +560,29 @@ mod tests {
         let live = HashSet::new();
 
         // Meanwhile another process records an operation over that content.
-        let journal = Journal::with_roots(dir.path().join("blobs"), journal_root.join("qe2"));
+        let journal = Journal::with_roots(
+            dir.path().join("blobs"),
+            journal_root.join("qe2"),
+            crate::journal::entry::EntrySystem {
+                base_url: "https://sap.example:8001".to_owned(),
+                profile: "dev".to_owned(),
+                client: "100".to_owned(),
+                user: "developer".to_owned(),
+            },
+        );
         journal
-            .begin(EntryDraft {
-                system: crate::journal::entry::EntrySystem {
-                    host: "sap.example".to_owned(),
-                    profile: "dev".to_owned(),
-                    client: "100".to_owned(),
-                    user: "developer".to_owned(),
-                },
-                object: EntryObject {
+            .begin(
+                EntryObject {
                     object_type: AdtObjectFamily::parse("PROG").unwrap(),
                     name: "ZSAMPLE".to_owned(),
                     uri: "/a".to_owned(),
                     source_part: None,
                 },
-                operation: JournalOperation::Activate,
-                transport: None,
-                active_before: Some("about to be referenced".to_owned()),
-                inactive_before: None,
-            })
+                JournalOperation::Activate,
+                None,
+                Some("about to be referenced".to_owned()),
+                None,
+            )
             .unwrap();
 
         assert_eq!(sweep_blobs(&blobs, &live, mark_started).unwrap(), 0);
