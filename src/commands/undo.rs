@@ -16,11 +16,12 @@ use crate::{
     reported::Reported,
 };
 use fractal::journal::blobs::BlobStore;
-use fractal::journal::entry::JournalEntry;
+use fractal::journal::entry::{JournalEntry, UndoStep};
 use fractal::journal::paths;
+use fractal::journal::recorder::Journal;
 use fractal::journal::store::EntryStore;
 use fractal::reportable_error::ReportableError;
-use fractal::sap::undo::{UndoPlan, plan_activation_undo};
+use fractal::sap::undo::{UndoOutcome, UndoPlan, plan_activation_undo, undo_activation};
 
 #[derive(Debug, Serialize)]
 pub struct UndoOutput {
@@ -47,6 +48,19 @@ pub struct UndoOutput {
     forced: bool,
     /// Which refusals `--force` proceeded past, so an override is never silent.
     overridden: Vec<&'static str>,
+    /// Pending work that undoing would replace with something else. Not merely
+    /// "there is pending work": a redo's pending work is what it would restore.
+    pending_work_at_risk: bool,
+    /// Which of the three steps this run performed. Fewer than three when an
+    /// earlier run got part way, or when there was no pending work to restore.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    steps_run: Vec<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resumed_from: Option<&'static str>,
+    /// A write landed and its lock could not be released. Somebody has to clear
+    /// it: it blocks the next edit of this object.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    still_locked: bool,
     /// What a real run would do, in order.
     steps: Vec<String>,
     /// Where the content lives, for `diff` and an editor.
@@ -60,62 +74,36 @@ struct UndoContentPath {
     path: String,
 }
 
-/// A run without `--dry-run`, which cannot be served yet.
-#[derive(Debug)]
-struct UndoNotBuilt;
-
-impl std::fmt::Display for UndoNotBuilt {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "undo cannot write yet")
-    }
-}
-
-impl std::error::Error for UndoNotBuilt {}
-
-impl ReportableError for UndoNotBuilt {
-    fn code(&self) -> &'static str {
-        "undo_not_built"
-    }
-
-    fn hint(&self) -> Option<String> {
-        Some(
-            "The three restore steps are not implemented yet. `fractal undo --dry-run` reports what an undo would do, and `fractal journal show` gives the path to restore by hand."
-                .to_owned(),
-        )
-    }
-}
-
-/// Assesses one undo and reports the verdict.
+/// Undoes one activation, or reports what undoing it would do.
 ///
 /// # Errors
 ///
 /// Returns [`Reported`] when no entry matches, when the entry cannot be undone,
-/// when the object has moved since it was recorded, or when the caller asked
-/// for a real run.
+/// when the object has moved since it was recorded, or when a step fails.
 pub async fn object_undo(
     explicit_profile: Option<&str>,
     args: &UndoArgs,
 ) -> Result<UndoOutput, Reported> {
-    // Before the connection: refusing after reading the object would spend a
-    // round trip to say nothing can be done with it.
-    if !args.dry_run {
-        return Err(UndoNotBuilt.into());
-    }
     let (profile_name, profile, mut client) = connect(explicit_profile).await?;
-    let entries = EntryStore::new(paths::entry_root(&profile.base_url)?);
+    let journal = Journal::open(&profile_name, &profile)?;
     let blobs = BlobStore::new(paths::blob_root()?);
-    let entry = select_entry(&entries, args)?;
+    let entry = select_entry(journal.entries(), args)?;
+    let policy = profile.edit_policy();
 
-    let plan = plan_activation_undo(
+    let plan = plan_activation_undo(&mut client, &policy, entry, &blobs, args.force).await?;
+    if args.dry_run {
+        return Ok(report(profile_name, args, &plan, None, &blobs));
+    }
+
+    let outcome = undo_activation(
         &mut client,
-        &profile.edit_policy(),
-        entry,
-        &blobs,
-        args.force,
+        &policy,
+        &plan,
+        args.transport.as_deref(),
+        &journal,
     )
     .await?;
-
-    Ok(report(profile_name, args, &plan, &blobs))
+    Ok(report(profile_name, args, &plan, Some(&outcome), &blobs))
 }
 
 /// The entry to act on: the one named, or the object's most recent.
@@ -214,7 +202,13 @@ impl ReportableError for NoEntryForObject {
     }
 }
 
-fn report(profile: String, args: &UndoArgs, plan: &UndoPlan, blobs: &BlobStore) -> UndoOutput {
+fn report(
+    profile: String,
+    args: &UndoArgs,
+    plan: &UndoPlan,
+    outcome: Option<&UndoOutcome>,
+    blobs: &BlobStore,
+) -> UndoOutput {
     UndoOutput {
         ok: true,
         profile,
@@ -235,6 +229,12 @@ fn report(profile: String, args: &UndoArgs, plan: &UndoPlan, blobs: &BlobStore) 
             .iter()
             .map(|override_| override_.as_str())
             .collect(),
+        pending_work_at_risk: plan.pending_work_at_risk,
+        steps_run: outcome
+            .map(|outcome| outcome.steps_run.iter().map(step_name).collect())
+            .unwrap_or_default(),
+        resumed_from: outcome.and_then(|outcome| outcome.resumed_from.as_ref().map(step_name)),
+        still_locked: outcome.is_some_and(|outcome| outcome.still_locked),
         steps: steps(plan),
         content: content_paths(plan, blobs),
     }
@@ -266,6 +266,15 @@ fn steps(plan: &UndoPlan) -> Vec<String> {
     ]
 }
 
+/// The JSON spelling of a step, which is what a caller reading the output sees.
+const fn step_name(step: &UndoStep) -> &'static str {
+    match step {
+        UndoStep::WroteInactive => "wrote_inactive",
+        UndoStep::Activated => "activated",
+        UndoStep::RestoredInactive => "restored_inactive",
+    }
+}
+
 fn content_paths(plan: &UndoPlan, blobs: &BlobStore) -> Vec<UndoContentPath> {
     [
         ("restore", Some(&plan.restore_sha256)),
@@ -291,14 +300,30 @@ pub fn print_object_undo(result: &UndoOutput, output: OutputFormat) {
     let mut rendered = String::new();
     let _ = writeln!(
         rendered,
-        "would undo {} on {} {}",
-        result.entry_id, result.object_type, result.name
+        "{} {} on {} {}",
+        if result.dry_run {
+            "would undo"
+        } else {
+            "undid"
+        },
+        result.entry_id,
+        result.object_type,
+        result.name
     );
     if !result.overridden.is_empty() {
         let _ = writeln!(rendered, "forced past: {}", result.overridden.join(", "));
     }
+    if let Some(resumed) = result.resumed_from {
+        let _ = writeln!(rendered, "resumed after: {resumed}");
+    }
     for (index, step) in result.steps.iter().enumerate() {
         let _ = writeln!(rendered, "  {}. {step}", index + 1);
+    }
+    if result.still_locked {
+        let _ = writeln!(
+            rendered,
+            "the object is still locked: clear it before the next edit"
+        );
     }
     for content in &result.content {
         let _ = writeln!(rendered, "{}: {}", content.field, content.path);

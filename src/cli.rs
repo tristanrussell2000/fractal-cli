@@ -239,6 +239,12 @@ pub struct UndoArgs {
     /// Object name, to undo its most recent recorded activation.
     #[arg(long, requires = "object_type")]
     pub(crate) name: Option<String>,
+    /// Change request the restore is recorded in, for a transportable object.
+    ///
+    /// Never defaulted to the transport in the entry: that request may since
+    /// have been released, and SAP would refuse it.
+    #[arg(long)]
+    pub(crate) transport: Option<String>,
     /// Report what undoing would do, and change nothing.
     #[arg(long, default_value_t = false)]
     pub(crate) dry_run: bool,

@@ -32,13 +32,23 @@ use super::{
     metadata_object::metadata_object_identity,
     object_family::AdtObjectFamily,
     package_authorization::{PackageAuthorizationError, authorize_object_package},
+    source_activation::{
+        AdtSourceActivationError, AdtSourceActivationRequest, activate_adt_source,
+    },
+    source_check::{AdtInactiveSourceProbeError, probe_inactive_adt_source},
+    source_replace::{
+        AdtSourceReplacementError, AdtSourceReplacementRequest, replace_adt_source_atomically,
+    },
 };
 use crate::config::EditPolicy;
 use crate::journal::JournalError;
 use crate::journal::blobs::BlobStore;
-use crate::journal::entry::{ContentKind, ContentRef, JournalEntry, JournalOperation};
+use crate::journal::entry::{
+    ContentKind, ContentRef, EntryStatus, JournalEntry, JournalOperation, UndoStep,
+};
+use crate::journal::recorder::Journal;
 use crate::reportable_error::{ReportableError, sap_http_status};
-use crate::source_change::source_sha256;
+use crate::source_change::{SourceChangePlanError, source_sha256};
 
 /// What an undo of one activation would do.
 #[derive(Debug, Clone)]
@@ -58,6 +68,10 @@ pub struct UndoPlan {
     pub expected_active_sha256: Option<String>,
     /// What the object holds now. `None` means it has no active version at all.
     pub current_active_sha256: Option<String>,
+    /// Whether pending work would be **lost**. An undo overwrites the inactive
+    /// layer, so pending work is at risk — but only when it is not one of the
+    /// two versions the undo leaves behind.
+    pub pending_work_at_risk: bool,
     /// The refusals `--force` was used to proceed past, in the order checked.
     pub overridden: Vec<Override>,
 }
@@ -81,6 +95,10 @@ pub enum Override {
     Ungated,
     /// The object no longer holds what the entry recorded activating.
     Stale,
+    /// Pending work exists now that step 1 would overwrite.
+    PendingWork,
+    /// The entry had already been undone.
+    AlreadyUndone,
 }
 
 impl Override {
@@ -90,6 +108,8 @@ impl Override {
             Self::Unresolved => "entry_unresolved",
             Self::Ungated => "no_after_image",
             Self::Stale => "stale",
+            Self::PendingWork => "pending_work",
+            Self::AlreadyUndone => "already_undone",
         }
     }
 }
@@ -110,6 +130,8 @@ pub enum UndoError {
     WouldDelete { name: String, id: String },
     #[error("journal entry {id} is {status} and has no result to undo")]
     Unresolved { id: String, status: String },
+    #[error("journal entry {id} has already been undone")]
+    AlreadyUndone { id: String, name: String },
     #[error("journal entry {id} has no after-image to check the object against")]
     Ungated { id: String },
     #[error("{name} is no longer what journal entry {id} recorded activating")]
@@ -122,6 +144,14 @@ pub enum UndoError {
         /// still an answer.
         blob_path: String,
     },
+    #[error("{name} has pending changes that undoing would replace")]
+    PendingWork { name: String, id: String },
+    #[error("could not establish whether {name} has pending changes: {source}")]
+    PendingWorkProbe {
+        name: String,
+        #[source]
+        source: AdtInactiveSourceProbeError,
+    },
     #[error("could not read the current state of {name}: {source}")]
     CurrentStateUnreadable {
         name: String,
@@ -130,6 +160,12 @@ pub enum UndoError {
     },
     #[error("SAP returned a document that could not be parsed: {0}")]
     ResponseInvalid(#[from] super::adt_response::AdtResponseParseError),
+    #[error("undoing {name} is not built yet for this object family")]
+    MetadataUndoNotBuilt { name: String },
+    #[error("could not write the previous version back: {0}")]
+    InactiveWrite(Box<AdtSourceReplacementError>),
+    #[error("could not activate the restored version: {0}")]
+    Activation(Box<AdtSourceActivationError>),
 }
 
 impl UndoError {
@@ -151,10 +187,16 @@ impl ReportableError for UndoError {
             Self::UnsupportedOperation { .. } => "undo_unsupported_operation",
             Self::WouldDelete { .. } => "undo_would_delete",
             Self::Unresolved { .. } => "undo_entry_unresolved",
+            Self::AlreadyUndone { .. } => "undo_already_undone",
             Self::Ungated { .. } => "undo_no_after_image",
             Self::Stale { .. } => "undo_stale",
+            Self::PendingWork { .. } => "undo_pending_work",
+            Self::PendingWorkProbe { .. } => "undo_pending_work_probe_failed",
             Self::CurrentStateUnreadable { .. } => "undo_current_state_unreadable",
             Self::ResponseInvalid(error) => error.code(),
+            Self::MetadataUndoNotBuilt { .. } => "undo_metadata_not_built",
+            Self::InactiveWrite(error) => error.code(),
+            Self::Activation(error) => error.code(),
         }
     }
 
@@ -181,6 +223,11 @@ impl ReportableError for UndoError {
                 "This entry was never resolved, so whether the operation landed is unknown. Read the object, then use --force if the before-image is what you want."
                     .to_owned()
             }
+            // Redoing is not built yet, so say what the object holds rather
+            // than pointing at a command that does not exist.
+            Self::AlreadyUndone { name, .. } => format!(
+                "{name} is already back at the version this entry replaced. Putting the activation back is a redo, which is not built yet: activate the object again, or use --force to run the undo a second time."
+            ),
             Self::Ungated { .. } => {
                 "Without an after-image there is nothing to check the object against. Read it first, then use --force."
                     .to_owned()
@@ -188,11 +235,25 @@ impl ReportableError for UndoError {
             Self::Stale { blob_path, .. } => format!(
                 "Something changed the object after the activation this entry recorded, so undoing it would discard that. The content it would have restored is at {blob_path}. Use --force to restore it anyway."
             ),
+            Self::PendingWork { .. } => {
+                "You have pending changes on this object. Undoing writes the previous active version over them, and then restores the pending version this entry recorded, not yours. Activate or discard them first, or use --force."
+                    .to_owned()
+            }
+            Self::PendingWorkProbe { .. } => {
+                "SAP could not say whether this object has pending changes, so nothing was written."
+                    .to_owned()
+            }
             Self::CurrentStateUnreadable { source, .. } => format!(
                 "Nothing was written. {}",
                 source.hint().unwrap_or_default()
             ),
             Self::ResponseInvalid(error) => return error.hint(),
+            Self::MetadataUndoNotBuilt { .. } => {
+                "Undoing a DTEL, DOMA, TTYP, MSAG or SRVB is not implemented yet. `fractal undo --dry-run` reports what it would do, and `fractal journal show` gives the path to restore by hand."
+                    .to_owned()
+            }
+            Self::InactiveWrite(error) => return error.hint(),
+            Self::Activation(error) => return error.hint(),
         })
     }
 
@@ -202,9 +263,13 @@ impl ReportableError for UndoError {
             Self::UnsupportedOperation { id, .. }
             | Self::Unresolved { id, .. }
             | Self::Ungated { id }
+            | Self::AlreadyUndone { id, .. }
             | Self::Stale { id, .. }
+            | Self::PendingWork { id, .. }
             | Self::WouldDelete { id, .. } => Some(format!("fractal journal show {id}")),
             Self::PackageNotAllowed(error) => error.suggested_command(),
+            Self::InactiveWrite(error) => error.suggested_command(),
+            Self::Activation(error) => error.suggested_command(),
             _ => None,
         }
     }
@@ -247,13 +312,28 @@ pub async fn plan_activation_undo(
 
     let mut overridden = Vec::new();
     if !entry.status.is_undoable() {
+        // Named apart from the unresolved case: an already-undone entry is
+        // also stale by construction, and "you undid this already" says more
+        // than either of the refusals that would otherwise fire.
+        let already_undone = entry.status == EntryStatus::Undone;
         if !force {
-            return Err(UndoError::Unresolved {
-                id: entry.id.clone(),
-                status: format!("{:?}", entry.status).to_lowercase(),
+            return Err(if already_undone {
+                UndoError::AlreadyUndone {
+                    id: entry.id.clone(),
+                    name: entry.object.name.clone(),
+                }
+            } else {
+                UndoError::Unresolved {
+                    id: entry.id.clone(),
+                    status: format!("{:?}", entry.status).to_lowercase(),
+                }
             });
         }
-        overridden.push(Override::Unresolved);
+        overridden.push(if already_undone {
+            Override::AlreadyUndone
+        } else {
+            Override::Unresolved
+        });
     }
     let expected_active_sha256 = entry
         .active_after
@@ -288,6 +368,16 @@ pub async fn plan_activation_undo(
     let current = current_active_content(sap, &entry, &identity).await?;
     let current_active_sha256 = current.as_deref().map(source_sha256);
 
+    // The two versions an undo leaves behind: what it activates, and what it
+    // puts back as pending.
+    let pending_work_at_risk = pending_work_at_risk(
+        sap,
+        &entry,
+        &identity,
+        [Some(&restore_sha256), restore_inactive_sha256.as_deref()],
+    )
+    .await?;
+
     let plan = UndoPlan {
         object_uri: identity.object_uri().to_owned(),
         restore,
@@ -296,10 +386,12 @@ pub async fn plan_activation_undo(
         restore_inactive_sha256,
         expected_active_sha256,
         current_active_sha256,
+        pending_work_at_risk,
         overridden,
         entry,
     };
 
+    let mut plan = plan;
     if plan.expected_active_sha256.is_some() && !plan.matches_recorded_state() {
         if !force {
             return Err(UndoError::Stale {
@@ -310,9 +402,20 @@ pub async fn plan_activation_undo(
                 blob_path: blobs.path_of(&plan.restore_sha256).display().to_string(),
             });
         }
-        let mut plan = plan;
         plan.overridden.push(Override::Stale);
-        return Ok(plan);
+    }
+
+    // Separate from staleness, and checked after it: the active version can be
+    // exactly what the entry recorded while somebody has staged pending work
+    // that is not the version this undo would put back.
+    if plan.pending_work_at_risk {
+        if !force {
+            return Err(UndoError::PendingWork {
+                name: plan.entry.object.name.clone(),
+                id: plan.entry.id.clone(),
+            });
+        }
+        plan.overridden.push(Override::PendingWork);
     }
     Ok(plan)
 }
@@ -363,6 +466,76 @@ fn undo_identity(
     }
 }
 
+/// Whether undoing would destroy pending work.
+///
+/// An undo leaves two versions behind: the one it activates, and the one it
+/// puts back in the inactive layer. Pending work is lost only when it is
+/// neither of those — content that survives as the active version has not been
+/// destroyed, it has been published.
+///
+/// The case this actually admits is running the same undo twice: the second
+/// finds the pending version the first restored, which is exactly what it would
+/// restore again. (It was first derived from the redo-through-a-new-entry path,
+/// which no longer exists; the rule outlived it because it never depended on
+/// it.)
+///
+/// A resumed undo is never at risk: what the probe would find is the inactive
+/// version its own earlier run left behind.
+async fn pending_work_at_risk(
+    sap: &SapClient,
+    entry: &JournalEntry,
+    identity: &UndoIdentity,
+    survives: [Option<&str>; 2],
+) -> Result<bool, UndoError> {
+    if entry.undo_progress.is_some() {
+        return Ok(false);
+    }
+    let pending = probe_inactive_adt_source(sap, identity.object_uri())
+        .await
+        .map_err(|source| UndoError::PendingWorkProbe {
+            name: identity.name().to_owned(),
+            source,
+        })?;
+    if !pending {
+        return Ok(false);
+    }
+    let current = current_inactive_content(sap, entry, identity)
+        .await?
+        .as_deref()
+        .map(source_sha256);
+    Ok(!survives.contains(&current.as_deref()))
+}
+
+/// The object's pending content, read the same way its active content is.
+async fn current_inactive_content(
+    sap: &SapClient,
+    entry: &JournalEntry,
+    identity: &UndoIdentity,
+) -> Result<Option<String>, UndoError> {
+    match (entry.content_kind(), identity) {
+        (ContentKind::Source, UndoIdentity::Source(identity)) => Ok(read_adt_source_for_edit(
+            sap,
+            identity.object_type,
+            &identity.name,
+            AdtSourceVersion::Inactive,
+        )
+        .await
+        .ok()
+        .map(|read| read.snapshot.source)),
+        (ContentKind::Xml, UndoIdentity::Metadata(identity)) => {
+            let document = sap
+                .get_text_with_query(&identity.object_uri, &[("version", "inactive")])
+                .await
+                .map_err(|source| UndoError::CurrentStateUnreadable {
+                    name: identity.name.clone(),
+                    source,
+                })?;
+            Ok(Some(strip_navigation_links(&document)))
+        }
+        _ => unreachable!("content kind and identity come from the same entry"),
+    }
+}
+
 /// The object's current active content, or `None` when it has none.
 ///
 /// A read that fails is an error rather than an absence: "SAP would not answer"
@@ -410,6 +583,207 @@ async fn current_active_content(
     }
 }
 
+/// What an undo actually did.
+#[derive(Debug, Clone)]
+pub struct UndoOutcome {
+    pub entry_id: String,
+    pub name: String,
+    pub object_uri: String,
+    /// The content now active again.
+    pub restored_sha256: String,
+    /// Whether step 3 put pending work back.
+    pub inactive_restored: bool,
+    /// Steps this run performed. Shorter than three when a previous run got
+    /// part way.
+    pub steps_run: Vec<UndoStep>,
+    #[allow(clippy::struct_field_names)]
+    pub resumed_from: Option<UndoStep>,
+    /// A write landed and its lock could not be released. Reported, never
+    /// treated as failure: the same answer `edit set` gives, for the same
+    /// reason.
+    pub still_locked: bool,
+}
+
+/// Performs the undo: write the previous active version as inactive, activate
+/// it, and put back the pending work the original activation consumed.
+///
+/// Every step goes through the forward code path for that step, so each
+/// inherits its pre-check, transport handling and verification. No new entry is
+/// written: the entry being undone is marked [`EntryStatus::Undone`], so the
+/// journal holds one entry per logical change rather than a chain of undos.
+///
+/// Steps are idempotent and the entry records how far it got, so a rerun after
+/// a failure continues rather than restarting.
+///
+/// # Errors
+///
+/// Returns [`UndoError`] when a write, the activation, or recording progress
+/// fails. Whatever fails, the steps that already landed stay recorded.
+pub async fn undo_activation(
+    sap: &mut SapClient,
+    policy: &EditPolicy,
+    plan: &UndoPlan,
+    transport: Option<&str>,
+    journal: &Journal,
+) -> Result<UndoOutcome, UndoError> {
+    let identity = match undo_identity(&plan.entry, policy)? {
+        UndoIdentity::Source(identity) => identity,
+        // The write path differs: a metadata object is restored with its whole
+        // document rather than source, and has no syntax pre-check.
+        UndoIdentity::Metadata(identity) => {
+            return Err(UndoError::MetadataUndoNotBuilt {
+                name: identity.name,
+            });
+        }
+    };
+    let mut entry = plan.entry.clone();
+    let resumed_from = entry.undo_progress;
+    let mut steps_run = Vec::new();
+    let mut still_locked = false;
+
+    let mut wrote_something = true;
+    if !already_done(resumed_from, UndoStep::WroteInactive) {
+        let write = write_inactive_source(sap, policy, &identity, &plan.restore, transport).await?;
+        wrote_something = write.changed;
+        still_locked |= write.still_locked;
+        record_progress(journal, &mut entry, UndoStep::WroteInactive)?;
+        steps_run.push(UndoStep::WroteInactive);
+    }
+
+    if !already_done(resumed_from, UndoStep::Activated) {
+        activate_restored_source(sap, policy, &identity, transport, wrote_something).await?;
+        record_progress(journal, &mut entry, UndoStep::Activated)?;
+        steps_run.push(UndoStep::Activated);
+    }
+
+    // Step 3, and the reason an undo is three steps rather than one: the
+    // activation consumed the caller's pending work, and restoring only the
+    // active version would discard it silently.
+    let mut inactive_restored = false;
+    if let Some(pending) = &plan.restore_inactive
+        && !already_done(resumed_from, UndoStep::RestoredInactive)
+    {
+        let write = write_inactive_source(sap, policy, &identity, pending, transport).await?;
+        still_locked |= write.still_locked;
+        record_progress(journal, &mut entry, UndoStep::RestoredInactive)?;
+        steps_run.push(UndoStep::RestoredInactive);
+        inactive_restored = true;
+    }
+
+    // Only now: a partway failure leaves the entry resolved and its progress
+    // recorded, so a rerun resumes rather than treating the undo as finished.
+    entry.undone();
+    journal.entries().update(&entry)?;
+
+    Ok(UndoOutcome {
+        entry_id: entry.id,
+        name: identity.name,
+        object_uri: identity.object_uri,
+        restored_sha256: plan.restore_sha256.clone(),
+        inactive_restored,
+        steps_run,
+        resumed_from,
+        still_locked,
+    })
+}
+
+/// The steps in order, so "already done" is a comparison rather than a list of
+/// special cases.
+const fn rank(step: UndoStep) -> u8 {
+    match step {
+        UndoStep::WroteInactive => 1,
+        UndoStep::Activated => 2,
+        UndoStep::RestoredInactive => 3,
+    }
+}
+
+fn already_done(progress: Option<UndoStep>, step: UndoStep) -> bool {
+    progress.is_some_and(|done| rank(done) >= rank(step))
+}
+
+/// Records how far the undo got, so a rerun resumes.
+fn record_progress(
+    journal: &Journal,
+    entry: &mut JournalEntry,
+    step: UndoStep,
+) -> Result<(), UndoError> {
+    entry.undo_progress = Some(step);
+    journal.entries().update(entry)?;
+    Ok(())
+}
+
+struct InactiveWrite {
+    changed: bool,
+    still_locked: bool,
+}
+
+/// Writes one version as the inactive source, through the ordinary write path.
+///
+/// Content already identical to what is stored is **not** a failure here, even
+/// though `edit set` reports it as one: for an undo it means the step has
+/// already been taken, which is exactly what a rerun should find.
+async fn write_inactive_source(
+    sap: &mut SapClient,
+    policy: &EditPolicy,
+    identity: &EditableAdtSourceIdentity,
+    source: &str,
+    transport: Option<&str>,
+) -> Result<InactiveWrite, UndoError> {
+    let request = AdtSourceReplacementRequest {
+        object_type: identity.object_type,
+        name: identity.name.clone(),
+        replacement_source: source.to_owned(),
+        // The gate is on the active version and has already been checked; the
+        // inactive layer is what this deliberately overwrites.
+        expected_sha256: None,
+        transport: transport.map(str::to_owned),
+    };
+    match replace_adt_source_atomically(sap, policy, &request).await {
+        Ok(result) => Ok(InactiveWrite {
+            changed: true,
+            still_locked: result.still_locked,
+        }),
+        Err(AdtSourceReplacementError::Replacement {
+            source: SourceChangePlanError::SourceReplacementNoChanges,
+            ..
+        }) => Ok(InactiveWrite {
+            changed: false,
+            still_locked: false,
+        }),
+        Err(error) => Err(UndoError::InactiveWrite(Box::new(error))),
+    }
+}
+
+/// Activates the restored version, through the ordinary activation path, and
+/// without journaling it.
+///
+/// `wrote_something` decides how "there is nothing to activate" is read. After
+/// a write that changed the inactive layer it is a real failure. After a write
+/// that found the content already in place it means an earlier run activated
+/// it, so the step is already taken.
+async fn activate_restored_source(
+    sap: &mut SapClient,
+    policy: &EditPolicy,
+    identity: &EditableAdtSourceIdentity,
+    transport: Option<&str>,
+    wrote_something: bool,
+) -> Result<(), UndoError> {
+    let request = AdtSourceActivationRequest {
+        object_type: identity.object_type,
+        name: identity.name.clone(),
+        transport: transport.map(str::to_owned),
+    };
+    // Deliberately unjournalled. The entry being undone records both halves —
+    // its after-image is what was active before the undo — so a second entry
+    // would only grow the journal by one row per undo, and it would describe a
+    // pending version the undo manufactured rather than one anybody staged.
+    match activate_adt_source(sap, policy, &request, None).await {
+        Ok(_) => Ok(()),
+        Err(AdtSourceActivationError::NoInactiveVersion { .. }) if !wrote_something => Ok(()),
+        Err(error) => Err(UndoError::Activation(Box::new(error))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,6 +822,7 @@ mod tests {
             restore_inactive_sha256: None,
             expected_active_sha256: expected.map(str::to_owned),
             current_active_sha256: current.map(str::to_owned),
+            pending_work_at_risk: false,
             overridden: Vec::new(),
         }
     }

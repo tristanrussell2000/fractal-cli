@@ -16,13 +16,20 @@ pub enum EntryStatus {
     Failed,
     /// SAP accepted it and the read-back could not confirm the result.
     Unverified,
+    /// An undo put the object back the way this entry found it.
+    ///
+    /// The undo writes no entry of its own: this one records both that the
+    /// operation happened and that it was reversed, so the journal holds one
+    /// entry per logical change rather than a chain of undos.
+    Undone,
 }
 
 impl EntryStatus {
     /// Whether `undo` may act on an entry in this state without `--force`.
     ///
     /// `Pending` is excluded because it has no after-image, which is what the
-    /// staleness gate compares against.
+    /// staleness gate compares against. `Undone` is excluded because it has
+    /// already been reversed.
     #[must_use]
     pub const fn is_undoable(self) -> bool {
         matches!(self, Self::Succeeded | Self::Unverified)
@@ -163,6 +170,11 @@ impl JournalEntry {
         self.status = EntryStatus::Unverified;
         self.active_after = active_after;
     }
+
+    /// An undo reversed this operation.
+    pub fn undone(&mut self) {
+        self.status = EntryStatus::Undone;
+    }
 }
 
 #[cfg(test)]
@@ -264,6 +276,22 @@ mod tests {
         assert!(EntryStatus::Succeeded.is_undoable());
         // SAP accepted it, so the object may well have changed.
         assert!(EntryStatus::Unverified.is_undoable());
+        // Already reversed. Putting it back is a redo, not another undo.
+        assert!(!EntryStatus::Undone.is_undoable());
+    }
+
+    #[test]
+    fn an_undone_entry_keeps_everything_it_recorded() {
+        let mut entry = entry();
+        entry.succeeded(ContentRef::Sha256("b".repeat(64)), None);
+        let after = entry.active_after.clone();
+        entry.undone();
+
+        assert_eq!(entry.status, EntryStatus::Undone);
+        // The after-image is what was active before the undo, so it is still
+        // the record of what the operation did.
+        assert_eq!(entry.active_after, after);
+        assert_eq!(json(&entry)["status"], serde_json::json!("undone"));
     }
 
     #[test]
