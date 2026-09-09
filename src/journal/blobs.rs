@@ -34,6 +34,11 @@ impl BlobStore {
         Self { root }
     }
 
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// The path a blob has, whether or not it exists yet.
     #[must_use]
     pub fn path_of(&self, sha256: &str) -> PathBuf {

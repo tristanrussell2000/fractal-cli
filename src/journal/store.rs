@@ -202,6 +202,17 @@ impl EntryStore {
         }
     }
 
+    /// When an entry was last written, for age-based pruning.
+    ///
+    /// The file's own timestamp rather than the id parsed back into a date:
+    /// same answer, and it cannot drift from the file it describes.
+    #[must_use]
+    pub fn modified_at(&self, id: &str) -> Option<std::time::SystemTime> {
+        std::fs::metadata(self.path_of(id))
+            .and_then(|metadata| metadata.modified())
+            .ok()
+    }
+
     fn path_of(&self, id: &str) -> PathBuf {
         self.root.join(format!("{id}.{EXTENSION}"))
     }
