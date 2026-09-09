@@ -76,6 +76,11 @@ pub enum Command {
     /// a permission rule in an agent harness matches `fractal delete` by
     /// prefix, with nothing read-only sharing that prefix.
     Delete(ObjectDeleteArgs),
+    /// Undo an activation Fractal recorded, restoring the previous active version.
+    ///
+    /// A top-level verb for the same reason `delete` is one: it mutates, and a
+    /// harness rule matches it by prefix.
+    Undo(UndoArgs),
     /// Read and safely edit supported source-based repository objects.
     Edit {
         #[command(subcommand)]
@@ -221,6 +226,25 @@ pub struct JournalClearArgs {
     /// Report what would be removed without removing it.
     #[arg(long, default_value_t = false)]
     pub(crate) dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct UndoArgs {
+    /// Entry id, as printed by `fractal journal list`.
+    #[arg(long, conflicts_with_all = ["object_type", "name"])]
+    pub(crate) entry: Option<String>,
+    /// Object type, to undo that object's most recent recorded activation.
+    #[arg(long = "type", requires = "name")]
+    pub(crate) object_type: Option<String>,
+    /// Object name, to undo its most recent recorded activation.
+    #[arg(long, requires = "object_type")]
+    pub(crate) name: Option<String>,
+    /// Report what undoing would do, and change nothing.
+    #[arg(long, default_value_t = false)]
+    pub(crate) dry_run: bool,
+    /// Proceed past a refusal that is a judgement call, and report which.
+    #[arg(long, default_value_t = false)]
+    pub(crate) force: bool,
 }
 
 #[derive(Debug, Subcommand)]

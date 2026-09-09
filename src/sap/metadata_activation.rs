@@ -52,7 +52,7 @@ use crate::sap::object_family::AdtObjectFamily;
 use crate::suggested_command;
 
 /// The `adtcore:version` a document reports once it has been activated.
-const ACTIVE_VERSION: &str = "active";
+pub(super) const ACTIVE_VERSION: &str = "active";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetadataObjectActivationRequest {
@@ -447,7 +447,7 @@ async fn read_active_metadata_object(
 }
 
 /// The layer a document says it belongs to: `new`, `inactive` or `active`.
-fn document_version(xml: &str) -> Result<Option<String>, AdtResponseParseError> {
+pub(super) fn document_version(xml: &str) -> Result<Option<String>, AdtResponseParseError> {
     let document = parse_adt_document(xml)?;
     Ok(find_non_empty_attribute(document.root_element(), "version"))
 }

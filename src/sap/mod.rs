@@ -28,6 +28,7 @@ pub mod source_patch;
 pub mod source_replace;
 pub mod table;
 pub mod transport;
+pub mod undo;
 
 /// Trims an XML attribute value and turns blank into `None`. Shared by every
 /// `sap` submodule's parser — SAP consistently uses empty-but-present

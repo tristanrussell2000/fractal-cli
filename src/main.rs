@@ -37,6 +37,7 @@ use commands::transport::{
     print_transport_create, print_transport_list, print_transport_show, transport_create,
     transport_list, transport_show,
 };
+use commands::undo::{object_undo, print_object_undo};
 use output::{
     default_output_format, run_and_print, run_and_print_async, run_and_print_with,
     run_and_print_with_async,
@@ -155,6 +156,14 @@ async fn main() {
             run_and_print_with_async(
                 || transport_list(cli.profile.as_deref(), args),
                 print_transport_list,
+                output,
+            )
+            .await
+        }
+        Command::Undo(args) => {
+            run_and_print_with_async(
+                || object_undo(cli.profile.as_deref(), args),
+                print_object_undo,
                 output,
             )
             .await

@@ -20,6 +20,7 @@ pub mod query;
 pub mod system;
 pub mod table;
 pub mod transport;
+pub mod undo;
 
 mod tabular;
 
