@@ -5,6 +5,8 @@
 //! readable, are the two failures that would actually hurt someone.
 
 use fractal::config::EditPolicy;
+use fractal::journal::entry::{ContentRef, EntryStatus, EntrySystem, JournalOperation};
+use fractal::journal::recorder::Journal;
 use fractal::{
     config::Profile,
     reportable_error::ReportableError,
@@ -133,6 +135,7 @@ async fn deletes_an_unreferenced_object_and_proves_it_is_gone() {
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
         &deletion_request(false, Some("AB1K900575")),
+        None,
     )
     .await
     .unwrap();
@@ -154,6 +157,7 @@ async fn refuses_a_referenced_object_without_locking_or_deleting() {
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
         &deletion_request(false, None),
+        None,
     )
     .await
     .unwrap_err();
@@ -201,6 +205,7 @@ async fn force_overrides_the_reference_guard_and_records_what_was_overridden() {
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
         &deletion_request(true, None),
+        None,
     )
     .await
     .unwrap();
@@ -235,6 +240,7 @@ async fn a_delete_that_leaves_the_object_readable_is_not_success() {
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
         &deletion_request(false, None),
+        None,
     )
     .await
     .unwrap_err();
@@ -274,6 +280,7 @@ async fn a_failed_delete_releases_the_lock_it_took() {
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
         &deletion_request(false, None),
+        None,
     )
     .await
     .unwrap_err();
@@ -320,6 +327,7 @@ async fn a_delete_that_fails_and_cannot_unlock_reports_both() {
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
         &deletion_request(false, None),
+        None,
     )
     .await
     .unwrap_err();
@@ -388,13 +396,213 @@ async fn refuses_an_object_outside_the_customer_namespaces_before_any_request() 
     };
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
-    let error = delete_adt_object(&mut client, &EditPolicy::namespaces_only(&["Z*"]), &request)
-        .await
-        .unwrap_err();
+    let error = delete_adt_object(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &request,
+        None,
+    )
+    .await
+    .unwrap_err();
 
     assert_eq!(error.code(), "object_outside_customer_namespaces");
     assert!(
         server.received_requests().await.unwrap().is_empty(),
         "--force must not skip the namespace guard"
     );
+}
+
+// --- Journaling a delete ---------------------------------------------------
+//
+// A delete is the one operation SAP offers nothing back from: no version
+// history, no inactive layer, nothing. The entry written here is the only copy
+// of what the object held, which is why a journal failure stops the delete
+// rather than warning about it.
+
+const SOURCE: &str = "REPORT zsample.\nWRITE 'one'.\n";
+
+fn object_xml() -> String {
+    r#"<?xml version="1.0" encoding="utf-8"?><program:abapProgram xmlns:program="http://www.sap.com/adt/programs/programs" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="ZSAMPLE" adtcore:type="PROG/P" adtcore:description="Sample report"><adtcore:packageRef adtcore:name="ZPKG"/></program:abapProgram>"#.to_owned()
+}
+
+fn journal(dir: &tempfile::TempDir) -> Journal {
+    Journal::with_roots(
+        dir.path().join("blobs"),
+        dir.path().join("journal/de3"),
+        EntrySystem {
+            base_url: "https://sap.example:8001".to_owned(),
+            profile: "dev".to_owned(),
+            client: "903".to_owned(),
+            user: "developer".to_owned(),
+        },
+    )
+}
+
+/// The reads a journaled delete adds: the source to keep, and the object's own
+/// document for its package and description.
+async fn mount_content_reads(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/programs/programs/zsample/source/main"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(SOURCE))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(OBJECT_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_string(object_xml()))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn a_journalled_delete_keeps_the_content_and_what_recreating_needs() {
+    let server = MockServer::start().await;
+    mount_csrf_session(&server).await;
+    mount_usages(&server, no_usages()).await;
+    mount_lock(&server).await;
+    mount_content_reads(&server).await;
+    Mock::given(method("DELETE"))
+        .and(path(OBJECT_PATH))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // The read-back that proves it is gone, after the content read above.
+    Mock::given(method("GET"))
+        .and(path(OBJECT_PATH))
+        .respond_with(ResponseTemplate::new(404).set_body_string("<error/>"))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let journal = journal(&dir);
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    delete_adt_object(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &deletion_request(false, None),
+        Some(&journal),
+    )
+    .await
+    .unwrap();
+
+    let entry = journal
+        .entries()
+        .latest_for(OBJECT_PATH)
+        .unwrap()
+        .expect("an entry was written");
+
+    assert_eq!(entry.status, EntryStatus::Succeeded);
+    // The object is gone, which is not the same as having held nothing.
+    assert_eq!(entry.active_after, Some(ContentRef::Absent));
+    let before = entry.active_before.sha256().expect("kept the content");
+    assert_eq!(journal.blobs().read(before).unwrap(), SOURCE);
+    // Package and description come from the object's own document: without
+    // them the restore recipe cannot name where to put it back.
+    assert_eq!(
+        entry.operation,
+        JournalOperation::delete(Some("ZPKG".to_owned()), Some("Sample report".to_owned()))
+    );
+
+    // Read under the lock, not before it. An unlocked read records what the
+    // object looked like a moment before somebody else could have changed it,
+    // which is not the same as what the delete destroyed.
+    let requests = server.received_requests().await.unwrap();
+    let position =
+        |predicate: &dyn Fn(&wiremock::Request) -> bool| requests.iter().position(predicate);
+    let locked = position(&|request| {
+        request
+            .url
+            .query()
+            .is_some_and(|query| query.contains("_action=LOCK"))
+    })
+    .expect("the lock was taken");
+    let read = position(&|request| request.url.path().ends_with("/source/main"))
+        .expect("the content was read");
+    assert!(locked < read, "the content was read before the lock");
+
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn a_delete_whose_content_cannot_be_read_never_reaches_sap() {
+    let server = MockServer::start().await;
+    mount_csrf_session(&server).await;
+    mount_usages(&server, no_usages()).await;
+    mount_lock(&server).await;
+    // The source read fails, so there would be no before-image.
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/programs/programs/zsample/source/main"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("<error/>"))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    // The lock must still come off: a refusal that leaves one behind blocks the
+    // next attempt on the lock rather than on the real cause.
+    Mock::given(method("POST"))
+        .and(path(OBJECT_PATH))
+        .and(query_param("_action", "UNLOCK"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let journal = journal(&dir);
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let error = delete_adt_object(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &deletion_request(false, None),
+        Some(&journal),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), "edit_delete_content_unreadable");
+    assert!(error.hint().unwrap().contains("--no-journal"));
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn without_a_journal_a_delete_reads_no_content_at_all() {
+    let server = MockServer::start().await;
+    mount_csrf_session(&server).await;
+    mount_usages(&server, no_usages()).await;
+    mount_lock(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/programs/programs/zsample/source/main"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(OBJECT_PATH))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(OBJECT_PATH))
+        .respond_with(ResponseTemplate::new(404).set_body_string("<error/>"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    delete_adt_object(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &deletion_request(false, None),
+        None,
+    )
+    .await
+    .unwrap();
+
+    server.verify().await;
 }

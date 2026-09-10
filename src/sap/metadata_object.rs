@@ -15,6 +15,7 @@ use super::package_authorization::{
     PackageAuthorizationError, authorize_known_package, package_of_object_xml,
 };
 use crate::config::EditPolicy;
+use crate::journal::recorder::Journal;
 use crate::source_change::{SourceChangePlanError, verify_expected_sha256};
 use thiserror::Error;
 
@@ -492,12 +493,13 @@ pub async fn delete_metadata_object(
     name: &str,
     transport: Option<&str>,
     force: bool,
+    journal: Option<&Journal>,
 ) -> Result<AdtObjectDeletionResult, AdtObjectDeletionError> {
     let identity = metadata_object_identity(object_type, name, policy)?;
     let transport =
         canonicalize_transport_request(transport).map_err(AdtEditTargetValidationError::from)?;
 
-    delete_validated_adt_object(sap, policy, identity, transport, force).await
+    delete_validated_adt_object(sap, policy, identity, transport, force, journal).await
 }
 
 /// Reports what deleting a metadata object would do, without doing any of it.

@@ -311,7 +311,7 @@ async fn a_delete_entry_is_not_something_undo_reverses() {
     let entry = journal
         .begin(
             class(),
-            JournalOperation::Delete,
+            JournalOperation::delete(None, None),
             None,
             Some(PREVIOUS_ACTIVE.to_owned()),
             None,

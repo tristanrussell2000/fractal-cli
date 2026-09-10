@@ -51,15 +51,18 @@ impl EntryStatus {
     }
 }
 
-/// What the operation was, and — for the one that can be undone automatically —
-/// how far an undo of it got.
+/// What the operation was, carrying what only that operation needs.
 ///
-/// The progress lives **inside** the operation rather than beside it. Its steps
-/// only mean anything for an activation, and a separate field could record
-/// `activated` against a delete with nothing to object. Undoing a delete is a
-/// different sequence entirely (create, write, activate), so when it is
-/// automated it gains its own payload here rather than sharing these steps.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// An activation needs how far an undo of it got; a delete needs what
+/// recreating the object will take. Neither means anything for the other, and
+/// as fields beside the operation either could be filled in against the wrong
+/// one with nothing to object — a delete recording `activated`, an activation
+/// recording a package. Here that is unrepresentable.
+///
+/// Undoing a delete is a different sequence entirely (create, write, activate).
+/// If it is ever automated, its progress belongs in this variant rather than
+/// sharing the activation's steps.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum JournalOperation {
     Activate {
@@ -69,11 +72,25 @@ pub enum JournalOperation {
         undo_progress: Option<ActivationUndoStep>,
     },
     /// Restoring one is create, write and activate, and is not automated. See
-    /// `journal show` for the recipe.
-    Delete,
+    /// `journal show` for the recipe, which needs these two beyond the content.
+    Delete {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        package: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
 }
 
 impl JournalOperation {
+    /// A recorded deletion, with what recreating the object will need.
+    #[must_use]
+    pub const fn delete(package: Option<String>, description: Option<String>) -> Self {
+        Self::Delete {
+            package,
+            description,
+        }
+    }
+
     /// A freshly recorded activation, before any undo of it.
     #[must_use]
     pub const fn activate() -> Self {
@@ -84,25 +101,37 @@ impl JournalOperation {
 
     /// The stable spelling for output, independent of the payload.
     #[must_use]
-    pub const fn as_str(self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Activate { .. } => "activate",
-            Self::Delete => "delete",
+            Self::Delete { .. } => "delete",
         }
     }
 
     #[must_use]
-    pub const fn is_activation(self) -> bool {
+    pub const fn is_activation(&self) -> bool {
         matches!(self, Self::Activate { .. })
+    }
+
+    /// What recreating a deleted object needs beyond its content.
+    #[must_use]
+    pub const fn deletion_recipe(&self) -> Option<(Option<&String>, Option<&String>)> {
+        match self {
+            Self::Delete {
+                package,
+                description,
+            } => Some((package.as_ref(), description.as_ref())),
+            Self::Activate { .. } => None,
+        }
     }
 
     /// How far an undo of this activation got. `None` for a delete, which has
     /// no automated undo to be part way through.
     #[must_use]
-    pub const fn activation_progress(self) -> Option<ActivationUndoStep> {
+    pub const fn activation_progress(&self) -> Option<ActivationUndoStep> {
         match self {
-            Self::Activate { undo_progress } => undo_progress,
-            Self::Delete => None,
+            Self::Activate { undo_progress } => *undo_progress,
+            Self::Delete { .. } => None,
         }
     }
 }
@@ -344,7 +373,7 @@ mod tests {
         // object. Undoing a delete is create, write and activate, a different
         // sequence that will carry its own payload here.
         let mut entry = entry();
-        entry.operation = JournalOperation::Delete;
+        entry.operation = JournalOperation::delete(None, None);
 
         entry.record_undo_step(ActivationUndoStep::Activated);
 

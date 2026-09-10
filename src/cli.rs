@@ -470,6 +470,12 @@ pub struct ObjectDeleteArgs {
     /// Report what would be deleted, and what references it, without deleting.
     #[arg(long, default_value_t = false)]
     pub(crate) dry_run: bool,
+    /// Delete without recording what the object held.
+    ///
+    /// The journal keeps the only copy of what a delete destroys, so this
+    /// removes the sole route back.
+    #[arg(long, default_value_t = false)]
+    pub(crate) no_journal: bool,
 }
 
 #[derive(Debug, Args)]

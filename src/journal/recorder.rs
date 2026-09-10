@@ -357,7 +357,7 @@ mod tests {
         let entry = journal
             .begin(
                 object(),
-                JournalOperation::Delete,
+                JournalOperation::delete(None, None),
                 None,
                 Some(BEFORE.to_owned()),
                 None,

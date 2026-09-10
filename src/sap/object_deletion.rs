@@ -18,14 +18,25 @@ use thiserror::Error;
 
 use super::{
     adt_object_identity::AdtObjectIdentity,
+    adt_response::parse_adt_document,
     client::{SapClient, SapClientError},
     edit_session::{
         AdtEditSessionError, acquire_adt_object_lock, release_adt_object_lock,
         stateful_session_headers,
     },
-    editable_source::{AdtEditTargetValidationError, validate_adt_edit_target},
+    editable_source::{
+        AdtEditTargetValidationError, AdtSourceVersion, read_adt_source_for_edit,
+        validate_adt_edit_target,
+    },
+    find_non_empty_attribute,
+    metadata_document::strip_navigation_links,
+    object_family::AdtObjectFamily,
     object_usages::{ObjectUsagesError, UsageReference, get_object_usages},
+    package_authorization::package_of_object_xml,
 };
+use crate::journal::JournalError;
+use crate::journal::entry::{EntryObject, JournalEntry, JournalOperation};
+use crate::journal::recorder::Journal;
 use crate::{
     reportable_error::{ReportableError, sap_http_status},
     suggested_command,
@@ -90,6 +101,23 @@ pub enum AdtObjectDeletionError {
         #[source]
         source: SapClientError,
     },
+    /// The journal could not be written. Fatal, because this is the only copy
+    /// of what is about to be destroyed.
+    #[error(transparent)]
+    Journal(#[from] JournalError),
+    /// The content could not be read, so there would be no before-image.
+    #[error("could not read {name} before deleting it: {source}")]
+    ContentUnreadable {
+        name: String,
+        #[source]
+        source: SapClientError,
+    },
+    #[error("could not read the source of {name} before deleting it: {source}")]
+    SourceUnreadable {
+        name: String,
+        #[source]
+        source: super::editable_source::AdtSourceReadError,
+    },
     /// The operation failed and its lock could not be released. Wraps the
     /// cause, so the reported code, status, and message are unchanged.
     #[error(transparent)]
@@ -108,6 +136,10 @@ impl ReportableError for AdtObjectDeletionError {
             Self::DeleteRequest { .. } => "edit_delete_request_failed",
             Self::NotDeleted { .. } => "edit_delete_not_verified",
             Self::Verification { .. } => "edit_delete_verification_failed",
+            Self::Journal(error) => error.code(),
+            Self::ContentUnreadable { .. } | Self::SourceUnreadable { .. } => {
+                "edit_delete_content_unreadable"
+            }
         }
     }
 
@@ -144,6 +176,11 @@ impl ReportableError for AdtObjectDeletionError {
             ),
             Self::NotDeleted { .. } => {
                 "SAP reported success but the object is still readable. Do not retry blindly; inspect it in ADT, because a partial delete may have left it in an inconsistent state."
+                    .to_owned()
+            }
+            Self::Journal(error) => return error.hint(),
+            Self::ContentUnreadable { .. } | Self::SourceUnreadable { .. } => {
+                "Nothing was deleted. The journal keeps the only copy of what a delete destroys, so a delete whose content cannot be read is refused; pass --no-journal to delete without that safety net."
                     .to_owned()
             }
             Self::Verification { .. } => {
@@ -236,6 +273,7 @@ pub async fn delete_adt_object(
     sap: &mut SapClient,
     policy: &EditPolicy,
     request: &AdtObjectDeletionRequest,
+    journal: Option<&Journal>,
 ) -> Result<AdtObjectDeletionResult, AdtObjectDeletionError> {
     let target = validate_adt_edit_target(
         request.object_type,
@@ -249,6 +287,7 @@ pub async fn delete_adt_object(
         target.identity.into(),
         target.transport,
         request.force,
+        journal,
     )
     .await
 }
@@ -273,6 +312,7 @@ pub async fn delete_validated_adt_object(
     identity: AdtObjectIdentity,
     transport: Option<String>,
     force: bool,
+    journal: Option<&Journal>,
 ) -> Result<AdtObjectDeletionResult, AdtObjectDeletionError> {
     authorize_object_package(sap, policy, &identity.name, &identity.object_uri).await?;
     let direct_usages = direct_usages(sap, &identity).await?;
@@ -288,6 +328,22 @@ pub async fn delete_validated_adt_object(
         .await
         .map_err(AdtObjectDeletionError::Session)?;
 
+    // The before-image is read here and nowhere earlier: under the lock the
+    // delete already holds, so what is recorded is what is destroyed rather
+    // than what the object looked like a moment before somebody else touched
+    // it. A failure to record it stops the delete, because this is the only
+    // copy there will ever be.
+    let entry = match journal {
+        Some(journal) => match record_deletion(sap, journal, &identity, transport.as_deref()).await
+        {
+            Ok(entry) => Some(entry),
+            Err(failure) => {
+                return Err(release_lock_and_report(sap, &identity, &lock, failure).await);
+            }
+        },
+        None => None,
+    };
+
     let mut query = vec![("lockHandle", lock.handle())];
     if let Some(transport) = &transport {
         query.push(("corrNr", transport.as_str()));
@@ -297,6 +353,7 @@ pub async fn delete_validated_adt_object(
         .await;
 
     if let Err(source) = deleted {
+        resolve_entry(journal, entry, false);
         // The object still exists, so its lock still means something. The
         // delete failure stays the reported cause — a cleanup failure must not
         // mask it — but whether the lock survived is state the caller needs,
@@ -315,7 +372,11 @@ pub async fn delete_validated_adt_object(
         });
     }
 
-    verify_object_is_gone(sap, &identity).await?;
+    let gone = verify_object_is_gone(sap, &identity).await;
+    // The object is gone either way the read-back landed, so the entry is
+    // resolved before the result is reported.
+    resolve_entry(journal, entry, gone.is_ok());
+    gone?;
 
     Ok(AdtObjectDeletionResult {
         identity,
@@ -323,6 +384,121 @@ pub async fn delete_validated_adt_object(
         direct_usages,
         forced: force,
     })
+}
+
+/// Records what is about to be destroyed, read under the delete's own lock.
+///
+/// The content is the object itself: source for a source object, the whole
+/// document for a metadata one. Package and description come with it, because
+/// recreating the object needs both and neither survives the delete.
+async fn record_deletion(
+    sap: &SapClient,
+    journal: &Journal,
+    identity: &AdtObjectIdentity,
+    transport: Option<&str>,
+) -> Result<JournalEntry, AdtObjectDeletionError> {
+    let (content, metadata) = deletion_content(sap, identity).await?;
+    let (package, description) = describe(&metadata);
+
+    Ok(journal.begin(
+        EntryObject {
+            object_type: identity.object_type,
+            name: identity.name.clone(),
+            uri: identity.object_uri.clone(),
+            source_part: None,
+        },
+        JournalOperation::delete(package, description),
+        transport.map(str::to_owned),
+        Some(content),
+        // A delete takes the object with both its layers, and the recipe
+        // restores one object. Pending work is not separately recoverable.
+        None,
+    )?)
+}
+
+/// The content to keep, and the document to read the object's own fields from.
+///
+/// For a metadata object those are the same read: the document *is* the object.
+/// A source object needs both, and the two are different resources.
+async fn deletion_content(
+    sap: &SapClient,
+    identity: &AdtObjectIdentity,
+) -> Result<(String, String), AdtObjectDeletionError> {
+    let unreadable = |source| AdtObjectDeletionError::ContentUnreadable {
+        name: identity.name.clone(),
+        source,
+    };
+    match identity.object_type {
+        AdtObjectFamily::Source(object_type) => {
+            let source = read_adt_source_for_edit(
+                sap,
+                object_type,
+                &identity.name,
+                AdtSourceVersion::Active,
+            )
+            .await
+            .map_err(|source| AdtObjectDeletionError::SourceUnreadable {
+                name: identity.name.clone(),
+                source,
+            })?;
+            let metadata = sap
+                .get_text(&identity.object_uri)
+                .await
+                .map_err(unreadable)?;
+            Ok((source.snapshot.source, metadata))
+        }
+        AdtObjectFamily::Metadata(_) => {
+            let document = sap
+                .get_text(&identity.object_uri)
+                .await
+                .map_err(unreadable)?;
+            let document = strip_navigation_links(&document);
+            Ok((document.clone(), document))
+        }
+    }
+}
+
+/// The package and description a restore needs, from the object's own document.
+fn describe(metadata: &str) -> (Option<String>, Option<String>) {
+    let package = package_of_object_xml(metadata).ok().flatten();
+    let description = parse_adt_document(metadata)
+        .ok()
+        .and_then(|document| find_non_empty_attribute(document.root_element(), "description"));
+    (package, description)
+}
+
+/// Resolves the entry once the object is gone, or refused.
+///
+/// A failure here is reported as a warning by the caller rather than failing
+/// the delete: the object is already destroyed, and reporting failure would
+/// invite a retry of something that cannot be retried.
+fn resolve_entry(journal: Option<&Journal>, entry: Option<JournalEntry>, deleted: bool) {
+    let (Some(journal), Some(entry)) = (journal, entry) else {
+        return;
+    };
+    // `None` after-image is an absence, which is what a deleted object is.
+    let _ = if deleted {
+        journal.succeeded(entry, None, None)
+    } else {
+        journal.failed(entry)
+    };
+}
+
+/// Releases the lock a refused delete still holds, keeping the original cause.
+async fn release_lock_and_report(
+    sap: &mut SapClient,
+    identity: &AdtObjectIdentity,
+    lock: &super::edit_session::AdtObjectLock,
+    failure: AdtObjectDeletionError,
+) -> AdtObjectDeletionError {
+    if release_adt_object_lock(sap, &identity.object_uri, lock)
+        .await
+        .is_err()
+    {
+        AdtObjectDeletionError::AbandonedLock(Box::new(failure))
+    } else {
+        failure
+    }
 }
 
 /// Confirms the object can no longer be read.

@@ -16,7 +16,7 @@ use crate::{
 };
 use fractal::config;
 use fractal::journal::blobs::BlobStore;
-use fractal::journal::entry::{ContentRef, JournalEntry};
+use fractal::journal::entry::{ContentKind, ContentRef, JournalEntry};
 use fractal::journal::paths;
 use fractal::journal::retention::{PruneOutcome, RetentionPolicy, entry_stores, run_retention};
 use fractal::journal::store::EntryStore;
@@ -54,6 +54,22 @@ pub struct JournalShowOutput {
     entry: JournalEntry,
     /// Where the content lives, for `diff` and an editor.
     content: Vec<JournalContentPath>,
+    /// How to put a deleted object back, by hand. Absent for an activation,
+    /// which `fractal undo` reverses on its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    restore: Option<RestoreRecipe>,
+}
+
+/// The steps that recreate a deleted object.
+///
+/// Not automated: restoring is create, write and activate, it needs a package
+/// and a transport, and any step can fail halfway. The journal makes recovery
+/// possible by hand, which is the part that matters.
+#[derive(Debug, Serialize)]
+struct RestoreRecipe {
+    steps: Vec<String>,
+    /// Things that will bite, learned the hard way.
+    warnings: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -119,11 +135,13 @@ pub fn journal_show(
     for store in stores(&profile, args.all_systems)? {
         if let Ok(entry) = store.find(&args.id) {
             let content = content_paths(&entry, &blobs);
+            let restore = restore_recipe(&entry, &blobs);
             return Ok(JournalShowOutput {
                 ok: true,
                 profile: profile_name,
                 entry,
                 content,
+                restore,
             });
         }
     }
@@ -254,6 +272,69 @@ fn summarize(entry: &JournalEntry, blobs: &BlobStore) -> JournalEntrySummary {
     }
 }
 
+/// The commands that recreate a deleted object, filled in from what the entry
+/// recorded.
+fn restore_recipe(entry: &JournalEntry, blobs: &BlobStore) -> Option<RestoreRecipe> {
+    let (package, description) = entry.operation.deletion_recipe()?;
+    let object_type = entry.object.object_type.as_str();
+    let name = &entry.object.name;
+    let content = entry
+        .active_before
+        .sha256()
+        .map(|sha256| blobs.path_of(sha256));
+
+    let mut steps = vec![format!(
+        "fractal edit create --type {object_type} --name {name} --package {} --description '{}'{}",
+        // Named as unknown rather than guessed: a create against the wrong
+        // package is a new object in the wrong place.
+        package.map_or("<package>", String::as_str),
+        description.map_or("<description>", String::as_str),
+        if entry.transport.is_some() {
+            " --transport <request>"
+        } else {
+            ""
+        }
+    )];
+    let (write, file) = match entry.content_kind() {
+        ContentKind::Source => ("edit set", "--source-file"),
+        ContentKind::Xml => ("edit set-xml", "--xml-file"),
+    };
+    steps.push(match &content {
+        // The blob path lives under the OS data directory, which has spaces in
+        // it on macOS and Windows, so it is quoted to stay copy-pasteable.
+        Some(path) => format!(
+            "fractal {write} --type {object_type} --name {name} {file} '{}'",
+            path.display()
+        ),
+        None => {
+            "the content is no longer in the journal, so there is nothing to write back".to_owned()
+        }
+    });
+    steps.push(format!(
+        "fractal edit activate --type {object_type} --name {name}"
+    ));
+
+    let mut warnings = Vec::new();
+    if entry.transport.is_some() {
+        warnings.push(format!(
+            "Recorded in {}, which may since have been released. Name a current request rather than reusing it.",
+            entry.transport.as_deref().unwrap_or_default()
+        ));
+    }
+    // Not specific to a family, though it was first seen on a service binding:
+    // observed again on a PROG deleted and recreated seconds later.
+    warnings.push(format!(
+        "Step 1 may be refused with `403 ... User <you> is currently editing {name}`. The editing lock outlives the object it was taken on, so a restore under the same name can need a wait."
+    ));
+    if content.is_none() {
+        warnings.push(
+            "The entry survives but its content was swept, so only the shell can be recreated."
+                .to_owned(),
+        );
+    }
+    Some(RestoreRecipe { steps, warnings })
+}
+
 fn content_paths(entry: &JournalEntry, blobs: &BlobStore) -> Vec<JournalContentPath> {
     [
         ("active_before", Some(&entry.active_before)),
@@ -335,6 +416,15 @@ pub fn print_journal_show(result: &JournalShowOutput, output: OutputFormat) {
             if content.available { "" } else { "  (gone)" }
         );
     }
+    if let Some(restore) = &result.restore {
+        let _ = writeln!(rendered, "\nto restore it, by hand:");
+        for (index, step) in restore.steps.iter().enumerate() {
+            let _ = writeln!(rendered, "  {}. {step}", index + 1);
+        }
+        for warning in &restore.warnings {
+            let _ = writeln!(rendered, "  ! {warning}");
+        }
+    }
     print!("{rendered}");
 }
 
@@ -376,6 +466,7 @@ mod tests {
 
     use super::*;
     use crate::cli::{Cli, Command, JournalCommand};
+    use fractal::journal::entry::JournalOperation;
 
     fn list_args(cli: Cli) -> JournalListArgs {
         let Command::Journal {
@@ -491,6 +582,77 @@ mod tests {
             serde_json::to_value(entry.status).unwrap(),
             serde_json::json!("succeeded")
         );
+    }
+
+    #[test]
+    fn a_deletion_recipe_names_the_package_the_description_and_the_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = BlobStore::new(dir.path().join("blobs"));
+        let sha256 = blobs.put("REPORT zsample.").unwrap();
+        let mut entry = entry("ZSAMPLE", "PROG");
+        entry.operation =
+            JournalOperation::delete(Some("ZPKG".to_owned()), Some("Sample".to_owned()));
+        entry.active_before = ContentRef::Sha256(sha256.clone());
+
+        let recipe = restore_recipe(&entry, &blobs).expect("a delete has a recipe");
+
+        assert!(
+            recipe.steps[0].contains("--package ZPKG"),
+            "{:?}",
+            recipe.steps
+        );
+        assert!(recipe.steps[0].contains("--description 'Sample'"));
+        assert!(recipe.steps[1].contains(&sha256));
+        // A copy-pasteable line: the flag keeps its value, and the path is
+        // quoted because the OS data directory has spaces in it.
+        assert!(
+            recipe.steps[1].contains("--source-file '"),
+            "{}",
+            recipe.steps[1]
+        );
+        assert!(recipe.steps[2].starts_with("fractal edit activate"));
+        // The trap that actually bites, on every family: the editing lock
+        // outlives the object, so step 1 can be refused straight away.
+        assert!(
+            recipe
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("currently editing")),
+            "{:?}",
+            recipe.warnings
+        );
+    }
+
+    #[test]
+    fn an_activation_has_no_restore_recipe() {
+        // `fractal undo` reverses it, so printing a by-hand recipe would offer
+        // a worse route than the one that exists.
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = BlobStore::new(dir.path().join("blobs"));
+
+        assert!(restore_recipe(&entry("ZSAMPLE", "PROG"), &blobs).is_none());
+    }
+
+    #[test]
+    fn a_recipe_says_when_the_content_is_gone_rather_than_naming_a_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = BlobStore::new(dir.path().join("blobs"));
+        let mut entry = entry("ZSAMPLE", "PROG");
+        entry.operation = JournalOperation::delete(None, None);
+        entry.active_before = ContentRef::Absent;
+
+        let recipe = restore_recipe(&entry, &blobs).unwrap();
+
+        assert!(recipe.steps[1].contains("no longer in the journal"));
+        assert!(
+            recipe
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("swept"))
+        );
+        // Unknown rather than guessed: a create against the wrong package puts
+        // the object back in the wrong place.
+        assert!(recipe.steps[0].contains("<package>"));
     }
 
     #[test]

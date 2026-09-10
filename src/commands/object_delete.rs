@@ -2,6 +2,8 @@ use std::fmt::Write as _;
 
 use serde::Serialize;
 
+use fractal::journal::recorder::Journal;
+
 use super::{connect, edit_object_identity::EditObjectIdentityOutput};
 use crate::{
     cli::ObjectDeleteArgs,
@@ -48,6 +50,12 @@ pub async fn object_delete(
     let object_type = AdtObjectFamily::parse(&args.object_type)?;
     let (profile_name, profile, mut client) = connect(explicit_profile).await?;
     let policy = &profile.edit_policy();
+    // A dry run destroys nothing, so it records nothing.
+    let journal = if args.no_journal || args.dry_run {
+        None
+    } else {
+        Some(Journal::open(&profile_name, &profile)?)
+    };
 
     match object_type {
         AdtObjectFamily::Source(object_type) => {
@@ -61,7 +69,7 @@ pub async fn object_delete(
                 let preview = preview_adt_object_deletion(&mut client, policy, &request).await?;
                 return Ok(map_deletion_preview(profile_name, preview));
             }
-            let result = delete_adt_object(&mut client, policy, &request).await?;
+            let result = delete_adt_object(&mut client, policy, &request, journal.as_ref()).await?;
             Ok(map_deletion_result(profile_name, result))
         }
         AdtObjectFamily::Metadata(object_type) => {
@@ -84,6 +92,7 @@ pub async fn object_delete(
                 &args.name,
                 args.transport.as_deref(),
                 args.force,
+                journal.as_ref(),
             )
             .await?;
             Ok(map_deletion_result(profile_name, result))

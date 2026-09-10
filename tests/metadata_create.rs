@@ -379,6 +379,7 @@ async fn deleting_a_metadata_object_is_guarded_by_where_used_like_any_other() {
         "zsample_de",
         None,
         false,
+        None,
     )
     .await
     .unwrap_err();
@@ -432,6 +433,7 @@ async fn a_deleted_metadata_object_must_read_back_as_gone() {
         "zsample_de",
         None,
         false,
+        None,
     )
     .await
     .unwrap();

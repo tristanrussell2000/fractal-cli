@@ -239,6 +239,7 @@ async fn a_refused_delete_never_reaches_the_where_used_check_or_the_lock() {
         &mut client(&server).await,
         &restricted(&["ZPROJ*"], true),
         &deletion_request(),
+        None,
     )
     .await
     .unwrap_err();
@@ -317,6 +318,7 @@ async fn an_unrestricted_profile_never_looks_a_package_up() {
         &mut client(&server).await,
         &EditPolicy::namespaces_only(&["Z*"]),
         &deletion_request(),
+        None,
     )
     .await
     .unwrap();
@@ -367,6 +369,7 @@ async fn an_object_that_reports_no_package_is_refused_rather_than_allowed() {
         &mut client(&server).await,
         &restricted(&["ZPROJ*"], true),
         &deletion_request(),
+        None,
     )
     .await
     .unwrap_err();
@@ -390,6 +393,7 @@ async fn a_failed_package_lookup_refuses_the_edit() {
         &mut client(&server).await,
         &restricted(&["ZPROJ*"], true),
         &deletion_request(),
+        None,
     )
     .await
     .unwrap_err();
