@@ -49,7 +49,7 @@ use super::{
 use crate::config::EditPolicy;
 use crate::journal::JournalError;
 use crate::journal::blobs::BlobStore;
-use crate::journal::entry::{ContentRef, EntryStatus, JournalEntry, JournalOperation, UndoStep};
+use crate::journal::entry::{ActivationUndoStep, ContentRef, EntryStatus, JournalEntry};
 use crate::journal::recorder::Journal;
 use crate::reportable_error::{ReportableError, sap_http_status};
 use crate::source_change::{SourceChangePlanError, source_sha256};
@@ -301,10 +301,10 @@ pub async fn plan_activation_undo(
     blobs: &BlobStore,
     force: bool,
 ) -> Result<UndoPlan, UndoError> {
-    if entry.operation != JournalOperation::Activate {
+    if !entry.operation.is_activation() {
         return Err(UndoError::UnsupportedOperation {
             id: entry.id.clone(),
-            operation: format!("{:?}", entry.operation).to_lowercase(),
+            operation: entry.operation.as_str().to_owned(),
         });
     }
 
@@ -477,7 +477,7 @@ async fn pending_work_at_risk(
     identity: &AdtObjectIdentity,
     survives: [Option<&str>; 2],
 ) -> Result<bool, UndoError> {
-    if entry.undo_progress.is_some() {
+    if entry.undo_progress().is_some() {
         return Ok(false);
     }
     let pending = probe_inactive_adt_source(sap, &identity.object_uri)
@@ -580,9 +580,9 @@ pub struct UndoOutcome {
     pub inactive_restored: bool,
     /// Steps this run performed. Shorter than three when a previous run got
     /// part way.
-    pub steps_run: Vec<UndoStep>,
+    pub steps_run: Vec<ActivationUndoStep>,
     #[allow(clippy::struct_field_names)]
-    pub resumed_from: Option<UndoStep>,
+    pub resumed_from: Option<ActivationUndoStep>,
     /// A write landed and its lock could not be released. Reported, never
     /// treated as failure: the same answer `edit set` gives, for the same
     /// reason.
@@ -613,23 +613,23 @@ pub async fn undo_activation(
 ) -> Result<UndoOutcome, UndoError> {
     let identity = undo_identity(&plan.entry, policy)?;
     let mut entry = plan.entry.clone();
-    let resumed_from = entry.undo_progress;
+    let resumed_from = entry.undo_progress();
     let mut steps_run = Vec::new();
     let mut still_locked = false;
 
     let mut wrote_something = true;
-    if !already_done(resumed_from, UndoStep::WroteInactive) {
+    if !already_done(resumed_from, ActivationUndoStep::WroteInactive) {
         let write = write_inactive(sap, policy, &identity, &plan.restore, transport).await?;
         wrote_something = write.changed;
         still_locked |= write.still_locked;
-        record_progress(journal, &mut entry, UndoStep::WroteInactive)?;
-        steps_run.push(UndoStep::WroteInactive);
+        record_progress(journal, &mut entry, ActivationUndoStep::WroteInactive)?;
+        steps_run.push(ActivationUndoStep::WroteInactive);
     }
 
-    if !already_done(resumed_from, UndoStep::Activated) {
+    if !already_done(resumed_from, ActivationUndoStep::Activated) {
         activate_restored(sap, policy, &identity, transport, wrote_something).await?;
-        record_progress(journal, &mut entry, UndoStep::Activated)?;
-        steps_run.push(UndoStep::Activated);
+        record_progress(journal, &mut entry, ActivationUndoStep::Activated)?;
+        steps_run.push(ActivationUndoStep::Activated);
     }
 
     // Step 3, and the reason an undo is three steps rather than one: the
@@ -637,12 +637,12 @@ pub async fn undo_activation(
     // active version would discard it silently.
     let mut inactive_restored = false;
     if let Some(pending) = &plan.restore_inactive
-        && !already_done(resumed_from, UndoStep::RestoredInactive)
+        && !already_done(resumed_from, ActivationUndoStep::RestoredInactive)
     {
         let write = write_inactive(sap, policy, &identity, pending, transport).await?;
         still_locked |= write.still_locked;
-        record_progress(journal, &mut entry, UndoStep::RestoredInactive)?;
-        steps_run.push(UndoStep::RestoredInactive);
+        record_progress(journal, &mut entry, ActivationUndoStep::RestoredInactive)?;
+        steps_run.push(ActivationUndoStep::RestoredInactive);
         inactive_restored = true;
     }
 
@@ -665,15 +665,15 @@ pub async fn undo_activation(
 
 /// The steps in order, so "already done" is a comparison rather than a list of
 /// special cases.
-const fn rank(step: UndoStep) -> u8 {
+const fn rank(step: ActivationUndoStep) -> u8 {
     match step {
-        UndoStep::WroteInactive => 1,
-        UndoStep::Activated => 2,
-        UndoStep::RestoredInactive => 3,
+        ActivationUndoStep::WroteInactive => 1,
+        ActivationUndoStep::Activated => 2,
+        ActivationUndoStep::RestoredInactive => 3,
     }
 }
 
-fn already_done(progress: Option<UndoStep>, step: UndoStep) -> bool {
+fn already_done(progress: Option<ActivationUndoStep>, step: ActivationUndoStep) -> bool {
     progress.is_some_and(|done| rank(done) >= rank(step))
 }
 
@@ -681,9 +681,9 @@ fn already_done(progress: Option<UndoStep>, step: UndoStep) -> bool {
 fn record_progress(
     journal: &Journal,
     entry: &mut JournalEntry,
-    step: UndoStep,
+    step: ActivationUndoStep,
 ) -> Result<(), UndoError> {
-    entry.undo_progress = Some(step);
+    entry.record_undo_step(step);
     journal.entries().update(entry)?;
     Ok(())
 }
@@ -879,7 +879,7 @@ async fn activate_restored_source(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::entry::{EntryObject, EntryStatus, EntrySystem};
+    use crate::journal::entry::{EntryObject, EntryStatus, EntrySystem, JournalOperation};
 
     fn plan(expected: Option<&str>, current: Option<&str>) -> UndoPlan {
         UndoPlan {
@@ -899,13 +899,12 @@ mod tests {
                     uri: "/sap/bc/adt/programs/programs/zsample".to_owned(),
                     source_part: None,
                 },
-                operation: JournalOperation::Activate,
+                operation: JournalOperation::activate(),
                 transport: None,
                 active_before: ContentRef::Sha256("a".repeat(64)),
                 inactive_before: None,
                 active_after: expected.map(|sha256| ContentRef::Sha256(sha256.to_owned())),
                 etag_after: None,
-                undo_progress: None,
             },
             object_uri: "/sap/bc/adt/programs/programs/zsample".to_owned(),
             restore: "REPORT zsample.".to_owned(),

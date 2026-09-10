@@ -276,7 +276,7 @@ pub async fn activate_metadata_object(
             journal
                 .begin(
                     journal_object(request.object_type, &identity),
-                    JournalOperation::Activate,
+                    JournalOperation::activate(),
                     transport.clone(),
                     // Only read these when they will be recorded.
                     read_active_document_if_any(sap, &identity).await,

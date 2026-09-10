@@ -25,6 +25,21 @@ pub enum EntryStatus {
 }
 
 impl EntryStatus {
+    /// The JSON spelling, which is what a caller filtering the output sees.
+    ///
+    /// Written out rather than derived from `Debug`, which drifts the moment a
+    /// variant gains a payload and takes the output with it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Unverified => "unverified",
+            Self::Undone => "undone",
+        }
+    }
+
     /// Whether `undo` may act on an entry in this state without `--force`.
     ///
     /// `Pending` is excluded because it has no after-image, which is what the
@@ -36,11 +51,60 @@ impl EntryStatus {
     }
 }
 
+/// What the operation was, and — for the one that can be undone automatically —
+/// how far an undo of it got.
+///
+/// The progress lives **inside** the operation rather than beside it. Its steps
+/// only mean anything for an activation, and a separate field could record
+/// `activated` against a delete with nothing to object. Undoing a delete is a
+/// different sequence entirely (create, write, activate), so when it is
+/// automated it gains its own payload here rather than sharing these steps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum JournalOperation {
-    Activate,
+    Activate {
+        /// How far an interrupted undo got, so a rerun resumes rather than
+        /// restarts. Absent until an undo starts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        undo_progress: Option<ActivationUndoStep>,
+    },
+    /// Restoring one is create, write and activate, and is not automated. See
+    /// `journal show` for the recipe.
     Delete,
+}
+
+impl JournalOperation {
+    /// A freshly recorded activation, before any undo of it.
+    #[must_use]
+    pub const fn activate() -> Self {
+        Self::Activate {
+            undo_progress: None,
+        }
+    }
+
+    /// The stable spelling for output, independent of the payload.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Activate { .. } => "activate",
+            Self::Delete => "delete",
+        }
+    }
+
+    #[must_use]
+    pub const fn is_activation(self) -> bool {
+        matches!(self, Self::Activate { .. })
+    }
+
+    /// How far an undo of this activation got. `None` for a delete, which has
+    /// no automated undo to be part way through.
+    #[must_use]
+    pub const fn activation_progress(self) -> Option<ActivationUndoStep> {
+        match self {
+            Self::Activate { undo_progress } => undo_progress,
+            Self::Delete => None,
+        }
+    }
 }
 
 /// What the stored blobs hold, and so which code path an undo takes.
@@ -97,10 +161,10 @@ pub struct EntryObject {
     pub source_part: Option<String>,
 }
 
-/// How far an interrupted undo got, so a rerun resumes rather than restarts.
+/// The three steps of undoing an activation, in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum UndoStep {
+pub enum ActivationUndoStep {
     WroteInactive,
     Activated,
     RestoredInactive,
@@ -128,8 +192,6 @@ pub struct JournalEntry {
     /// Opaque and verbatim; some SAP ETags embed the media type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub etag_after: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub undo_progress: Option<UndoStep>,
 }
 
 impl JournalEntry {
@@ -175,6 +237,22 @@ impl JournalEntry {
     pub fn undone(&mut self) {
         self.status = EntryStatus::Undone;
     }
+
+    /// Records how far an undo of this activation has got.
+    ///
+    /// Does nothing for an operation with no automated undo, so a step from one
+    /// sequence can never be recorded against another.
+    pub const fn record_undo_step(&mut self, step: ActivationUndoStep) {
+        if let JournalOperation::Activate { undo_progress } = &mut self.operation {
+            *undo_progress = Some(step);
+        }
+    }
+
+    /// How far an undo of this entry has got.
+    #[must_use]
+    pub const fn undo_progress(&self) -> Option<ActivationUndoStep> {
+        self.operation.activation_progress()
+    }
 }
 
 #[cfg(test)]
@@ -198,13 +276,12 @@ mod tests {
                 uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
                 source_part: Some("main".to_owned()),
             },
-            operation: JournalOperation::Activate,
+            operation: JournalOperation::activate(),
             transport: None,
             active_before: ContentRef::Sha256("a".repeat(64)),
             inactive_before: None,
             active_after: None,
             etag_after: None,
-            undo_progress: None,
         }
     }
 
@@ -248,15 +325,40 @@ mod tests {
     }
 
     #[test]
+    fn an_operation_carries_its_own_undo_progress() {
+        let mut entry = entry();
+        assert_eq!(entry.undo_progress(), None);
+
+        entry.record_undo_step(ActivationUndoStep::Activated);
+        assert_eq!(entry.undo_progress(), Some(ActivationUndoStep::Activated));
+        assert_eq!(
+            json(&entry)["operation"],
+            serde_json::json!({"kind": "activate", "undo_progress": "activated"})
+        );
+    }
+
+    #[test]
+    fn a_delete_cannot_record_a_step_from_the_activation_sequence() {
+        // The reason the progress lives inside the operation: as a field beside
+        // it, this would record `activated` against a delete and nothing would
+        // object. Undoing a delete is create, write and activate, a different
+        // sequence that will carry its own payload here.
+        let mut entry = entry();
+        entry.operation = JournalOperation::Delete;
+
+        entry.record_undo_step(ActivationUndoStep::Activated);
+
+        assert_eq!(entry.undo_progress(), None);
+        assert_eq!(
+            json(&entry)["operation"],
+            serde_json::json!({"kind": "delete"})
+        );
+    }
+
+    #[test]
     fn unset_fields_are_omitted_rather_than_null() {
         let value = json(&entry());
-        for absent in [
-            "transport",
-            "inactive_before",
-            "active_after",
-            "etag_after",
-            "undo_progress",
-        ] {
+        for absent in ["transport", "inactive_before", "active_after", "etag_after"] {
             assert!(value.get(absent).is_none(), "{absent} should be omitted");
         }
     }

@@ -245,19 +245,13 @@ fn summarize(entry: &JournalEntry, blobs: &BlobStore) -> JournalEntrySummary {
     JournalEntrySummary {
         id: entry.id.clone(),
         recorded_at: entry.recorded_at.clone(),
-        status: lowercase(&entry.status),
-        operation: lowercase(&entry.operation),
+        status: entry.status.as_str().to_owned(),
+        operation: entry.operation.as_str().to_owned(),
         object_type: entry.object.object_type.as_str().to_owned(),
         name: entry.object.name.clone(),
         transport: entry.transport.clone(),
         content_available: entry.referenced_blobs().all(|hash| blobs.contains(hash)),
     }
-}
-
-/// The JSON spelling of an enum, which is what a caller filtering the output
-/// will have seen.
-fn lowercase(value: &impl std::fmt::Debug) -> String {
-    format!("{value:?}").to_lowercase()
 }
 
 fn content_paths(entry: &JournalEntry, blobs: &BlobStore) -> Vec<JournalContentPath> {
@@ -323,8 +317,8 @@ pub fn print_journal_show(result: &JournalShowOutput, output: OutputFormat) {
     let _ = writeln!(
         rendered,
         "operation: {} ({})",
-        lowercase(&entry.operation),
-        lowercase(&entry.status)
+        entry.operation.as_str(),
+        entry.status.as_str()
     );
     if let Some(transport) = &entry.transport {
         let _ = writeln!(rendered, "transport: {transport}");
@@ -423,13 +417,12 @@ mod tests {
                 uri: format!("/sap/bc/adt/programs/programs/{}", name.to_lowercase()),
                 source_part: None,
             },
-            operation: JournalOperation::Activate,
+            operation: JournalOperation::activate(),
             transport: None,
             active_before: ContentRef::Sha256("a".repeat(64)),
             inactive_before: None,
             active_after: Some(ContentRef::Sha256("b".repeat(64))),
             etag_after: None,
-            undo_progress: None,
         }
     }
 
@@ -489,8 +482,15 @@ mod tests {
         // `list` and `show` must agree, and both must match what a caller
         // filtering the JSON sees.
         let entry = entry("ZSAMPLE", "PROG");
-        assert_eq!(lowercase(&entry.status), "succeeded");
-        assert_eq!(lowercase(&entry.operation), "activate");
+        assert_eq!(entry.status.as_str(), "succeeded");
+        assert_eq!(entry.operation.as_str(), "activate");
+        // Both spellings are written out, not derived from `Debug`: the
+        // operation gained a payload and a derived one would have silently
+        // started emitting `activate { undo_progress: none }`.
+        assert_eq!(
+            serde_json::to_value(entry.status).unwrap(),
+            serde_json::json!("succeeded")
+        );
     }
 
     #[test]

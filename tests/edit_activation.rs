@@ -5,7 +5,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use fractal::config::EditPolicy;
-use fractal::journal::entry::{EntryStatus, EntrySystem, JournalOperation};
+use fractal::journal::entry::{EntryStatus, EntrySystem};
 use fractal::journal::recorder::Journal;
 use fractal::reportable_error::ReportableError;
 use fractal::{
@@ -740,7 +740,7 @@ async fn a_journalled_activation_records_the_previous_active_source() {
         .expect("an entry was written");
 
     assert_eq!(entry.status, EntryStatus::Succeeded);
-    assert_eq!(entry.operation, JournalOperation::Activate);
+    assert!(entry.operation.is_activation());
     // The before-image is what nothing read before this feature, and the only
     // thing an undo of this activation could restore.
     let before = entry.active_before.sha256().expect("had an active version");

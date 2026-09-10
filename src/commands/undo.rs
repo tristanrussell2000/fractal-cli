@@ -16,7 +16,7 @@ use crate::{
     reported::Reported,
 };
 use fractal::journal::blobs::BlobStore;
-use fractal::journal::entry::{JournalEntry, UndoStep};
+use fractal::journal::entry::{ActivationUndoStep, JournalEntry};
 use fractal::journal::paths;
 use fractal::journal::recorder::Journal;
 use fractal::journal::store::EntryStore;
@@ -267,11 +267,11 @@ fn steps(plan: &UndoPlan) -> Vec<String> {
 }
 
 /// The JSON spelling of a step, which is what a caller reading the output sees.
-const fn step_name(step: &UndoStep) -> &'static str {
+const fn step_name(step: &ActivationUndoStep) -> &'static str {
     match step {
-        UndoStep::WroteInactive => "wrote_inactive",
-        UndoStep::Activated => "activated",
-        UndoStep::RestoredInactive => "restored_inactive",
+        ActivationUndoStep::WroteInactive => "wrote_inactive",
+        ActivationUndoStep::Activated => "activated",
+        ActivationUndoStep::RestoredInactive => "restored_inactive",
     }
 }
 

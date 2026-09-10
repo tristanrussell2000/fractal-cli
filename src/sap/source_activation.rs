@@ -327,7 +327,7 @@ pub(super) async fn activate_validated_adt_source(
             journal
                 .begin(
                     journal_object(&identity),
-                    JournalOperation::Activate,
+                    JournalOperation::activate(),
                     transport.clone(),
                     read_active_source_if_any(sap, &identity).await,
                     Some(inactive.snapshot.source.clone()),

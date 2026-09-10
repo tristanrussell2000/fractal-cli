@@ -10,7 +10,7 @@ mod adt_edit_mock;
 
 use fractal::config::{EditPolicy, Profile};
 use fractal::journal::entry::{
-    EntryObject, EntryStatus, EntrySystem, JournalEntry, JournalOperation, UndoStep,
+    ActivationUndoStep, EntryObject, EntryStatus, EntrySystem, JournalEntry, JournalOperation,
 };
 use fractal::journal::recorder::Journal;
 use fractal::reportable_error::ReportableError;
@@ -86,7 +86,7 @@ fn recorded(
     let entry = journal
         .begin(
             object,
-            JournalOperation::Activate,
+            JournalOperation::activate(),
             None,
             active_before.map(str::to_owned),
             inactive_before.map(str::to_owned),
@@ -334,7 +334,7 @@ async fn a_refused_operation_left_nothing_to_undo() {
     let entry = journal
         .begin(
             class(),
-            JournalOperation::Activate,
+            JournalOperation::activate(),
             None,
             Some(PREVIOUS_ACTIVE.to_owned()),
             Some(PENDING.to_owned()),
@@ -360,7 +360,7 @@ async fn an_unresolved_entry_can_be_forced_because_its_before_image_is_genuine()
     let entry = journal
         .begin(
             class(),
-            JournalOperation::Activate,
+            JournalOperation::activate(),
             None,
             Some(PREVIOUS_ACTIVE.to_owned()),
             Some(PENDING.to_owned()),
@@ -639,7 +639,10 @@ async fn undoing_restores_the_previous_active_version_and_the_pending_work() {
     // The entry records how far it got, so an interrupted rerun resumes, and
     // it is now marked as reversed.
     let entry = journal.entries().find(&entry_id).unwrap();
-    assert_eq!(entry.undo_progress, Some(UndoStep::RestoredInactive));
+    assert_eq!(
+        entry.undo_progress(),
+        Some(ActivationUndoStep::RestoredInactive)
+    );
     assert_eq!(entry.status, EntryStatus::Undone);
 
     // The undo writes no entry of its own: one entry per logical change, not a
@@ -726,13 +729,16 @@ async fn an_interrupted_undo_resumes_at_the_step_it_reached() {
     );
     // A run that wrote and activated, then died before restoring the pending
     // work — the step whose omission is silent.
-    entry.undo_progress = Some(UndoStep::Activated);
+    entry.record_undo_step(ActivationUndoStep::Activated);
     journal.entries().update(&entry).unwrap();
 
     let plan = plan(&server, &journal, entry, false).await.unwrap();
     let outcome = undo(&server, &journal, &plan).await.unwrap();
 
-    assert_eq!(outcome.steps_run, vec![UndoStep::RestoredInactive]);
+    assert_eq!(
+        outcome.steps_run,
+        vec![ActivationUndoStep::RestoredInactive]
+    );
     assert_eq!(written_bodies(&server).await, vec![PENDING]);
     server.verify().await;
 }

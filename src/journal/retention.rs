@@ -307,13 +307,12 @@ mod tests {
                 uri: uri.to_owned(),
                 source_part: None,
             },
-            operation: JournalOperation::Activate,
+            operation: JournalOperation::activate(),
             transport: None,
             active_before: ContentRef::Sha256(blob.to_owned()),
             inactive_before: None,
             active_after: None,
             etag_after: None,
-            undo_progress: None,
         }
     }
 
@@ -578,7 +577,7 @@ mod tests {
                     uri: "/a".to_owned(),
                     source_part: None,
                 },
-                JournalOperation::Activate,
+                JournalOperation::activate(),
                 None,
                 Some("about to be referenced".to_owned()),
                 None,

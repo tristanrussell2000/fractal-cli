@@ -124,7 +124,6 @@ impl Journal {
             inactive_before: stored_inactive,
             active_after: None,
             etag_after: None,
-            undo_progress: None,
         })?;
 
         self.confirm([active_before.as_deref(), inactive_before.as_deref()])?;
@@ -252,7 +251,7 @@ mod tests {
         let entry = journal
             .begin(
                 object(),
-                JournalOperation::Activate,
+                JournalOperation::activate(),
                 None,
                 Some(BEFORE.to_owned()),
                 Some(PENDING.to_owned()),
@@ -276,7 +275,7 @@ mod tests {
         let entry = journal
             .begin(
                 object(),
-                JournalOperation::Activate,
+                JournalOperation::activate(),
                 None,
                 Some(BEFORE.to_owned()),
                 None,
@@ -292,7 +291,7 @@ mod tests {
         let entry = journal
             .begin(
                 object(),
-                JournalOperation::Activate,
+                JournalOperation::activate(),
                 None,
                 None,
                 Some(PENDING.to_owned()),
@@ -310,7 +309,7 @@ mod tests {
         let entry = journal
             .begin(
                 object(),
-                JournalOperation::Activate,
+                JournalOperation::activate(),
                 None,
                 Some(BEFORE.to_owned()),
                 Some(PENDING.to_owned()),
@@ -338,7 +337,7 @@ mod tests {
         let entry = journal
             .begin(
                 object(),
-                JournalOperation::Activate,
+                JournalOperation::activate(),
                 None,
                 Some(BEFORE.to_owned()),
                 Some(PENDING.to_owned()),
@@ -383,7 +382,7 @@ mod tests {
         let entry = journal
             .begin(
                 object(),
-                JournalOperation::Activate,
+                JournalOperation::activate(),
                 None,
                 Some(BEFORE.to_owned()),
                 Some(PENDING.to_owned()),
@@ -426,7 +425,7 @@ mod tests {
         let entry = journal
             .begin(
                 object(),
-                JournalOperation::Activate,
+                JournalOperation::activate(),
                 None,
                 Some(BEFORE.to_owned()),
                 Some(PENDING.to_owned()),

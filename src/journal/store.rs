@@ -351,13 +351,12 @@ mod tests {
                 uri: uri.to_owned(),
                 source_part: None,
             },
-            operation: JournalOperation::Activate,
+            operation: JournalOperation::activate(),
             transport: None,
             active_before: ContentRef::Sha256("a".repeat(64)),
             inactive_before: None,
             active_after: None,
             etag_after: None,
-            undo_progress: None,
         }
     }
 
