@@ -114,7 +114,7 @@ async fn creates_a_data_element_with_the_envelope_a_live_system_accepts() {
     .await
     .unwrap();
 
-    assert_eq!(result.identity.object_type, "DTEL");
+    assert_eq!(result.identity.object_type.as_str(), "DTEL");
     assert_eq!(result.identity.name, "ZSAMPLE_DE");
     assert_eq!(
         result.identity.object_uri,
@@ -163,7 +163,7 @@ async fn a_domain_uses_its_own_collection_envelope_and_media_type() {
     .await
     .unwrap();
 
-    assert_eq!(result.identity.object_type, "DOMA");
+    assert_eq!(result.identity.object_type.as_str(), "DOMA");
     assert_eq!(result.identity.source_uri, None);
     server.verify().await;
 }
@@ -205,7 +205,7 @@ async fn a_table_type_uses_its_own_collection_envelope_and_media_type() {
     .await
     .unwrap();
 
-    assert_eq!(result.identity.object_type, "TTYP");
+    assert_eq!(result.identity.object_type.as_str(), "TTYP");
     assert_eq!(result.identity.source_uri, None);
     server.verify().await;
 }
@@ -248,7 +248,7 @@ async fn a_message_class_is_created_outside_the_ddic_collections() {
     .await
     .unwrap();
 
-    assert_eq!(result.identity.object_type, "MSAG");
+    assert_eq!(result.identity.object_type.as_str(), "MSAG");
     assert_eq!(
         result.identity.object_uri,
         "/sap/bc/adt/messageclass/zsample_msg"
@@ -304,7 +304,7 @@ async fn a_service_binding_sends_its_definition_and_protocol() {
     .await
     .unwrap();
 
-    assert_eq!(result.identity.object_type, "SRVB");
+    assert_eq!(result.identity.object_type.as_str(), "SRVB");
     server.verify().await;
 }
 

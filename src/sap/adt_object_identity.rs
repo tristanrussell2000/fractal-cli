@@ -7,12 +7,13 @@
 //! stays with each family and the shared operations take this.
 
 use super::editable_source::EditableAdtSourceIdentity;
+use super::object_family::AdtObjectFamily;
 
 /// One ADT object, reduced to what the shared operations need.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdtObjectIdentity {
-    /// Logical type label for messages, such as `PROG` or `DTEL`.
-    pub object_type: String,
+    /// The object's family and kind, such as `PROG` or `DTEL`.
+    pub object_type: AdtObjectFamily,
     pub name: String,
     pub object_uri: String,
     /// Where the object's source lives, when it has any.
@@ -27,7 +28,7 @@ pub struct AdtObjectIdentity {
 impl From<EditableAdtSourceIdentity> for AdtObjectIdentity {
     fn from(identity: EditableAdtSourceIdentity) -> Self {
         Self {
-            object_type: identity.object_type.as_str().to_owned(),
+            object_type: AdtObjectFamily::Source(identity.object_type),
             name: identity.name,
             object_uri: identity.object_uri,
             source_uri: Some(identity.source_uri),
@@ -50,7 +51,7 @@ mod tests {
         }
         .into();
 
-        assert_eq!(identity.object_type, "PROG");
+        assert_eq!(identity.object_type.as_str(), "PROG");
         assert_eq!(identity.name, "ZSAMPLE");
         assert_eq!(
             identity.source_uri.as_deref(),

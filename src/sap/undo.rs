@@ -24,7 +24,7 @@ use super::{
     adt_object_identity::AdtObjectIdentity,
     client::{SapClient, SapClientError},
     editable_source::{
-        AdtEditTargetValidationError, AdtSourceVersion, EditableAdtSourceIdentity,
+        AdtEditTargetValidationError, AdtSourceVersion, EditableAdtObjectType,
         editable_source_identity, read_adt_source_for_edit,
     },
     metadata_activation::{
@@ -49,9 +49,7 @@ use super::{
 use crate::config::EditPolicy;
 use crate::journal::JournalError;
 use crate::journal::blobs::BlobStore;
-use crate::journal::entry::{
-    ContentKind, ContentRef, EntryStatus, JournalEntry, JournalOperation, UndoStep,
-};
+use crate::journal::entry::{ContentRef, EntryStatus, JournalEntry, JournalOperation, UndoStep};
 use crate::journal::recorder::Journal;
 use crate::reportable_error::{ReportableError, sap_http_status};
 use crate::source_change::{SourceChangePlanError, source_sha256};
@@ -372,9 +370,9 @@ pub async fn plan_activation_undo(
     };
 
     let identity = undo_identity(&entry, policy)?;
-    authorize_object_package(sap, policy, identity.name(), identity.object_uri()).await?;
+    authorize_object_package(sap, policy, &identity.name, &identity.object_uri).await?;
 
-    let current = current_active_content(sap, &entry, &identity).await?;
+    let current = current_active_content(sap, &identity).await?;
     let current_active_sha256 = current.as_deref().map(source_sha256);
 
     // The two versions an undo leaves behind: what it activates, and what it
@@ -388,7 +386,7 @@ pub async fn plan_activation_undo(
     .await?;
 
     let plan = UndoPlan {
-        object_uri: identity.object_uri().to_owned(),
+        object_uri: identity.object_uri.clone(),
         restore,
         restore_sha256,
         restore_inactive,
@@ -429,38 +427,19 @@ pub async fn plan_activation_undo(
     Ok(plan)
 }
 
-/// The object, resolved the same way the forward command would resolve it.
+/// Resolves the object the same way the forward command would.
 ///
-/// Not taken from the entry's stored URI: the profile's namespace rules and
-/// the object's own naming are re-checked, so an undo cannot reach somewhere a
+/// Not taken from the entry's stored URI: the profile's namespace rules and the
+/// object's own naming are re-checked, so an undo cannot reach somewhere a
 /// forward edit could not.
-enum UndoIdentity {
-    Source(EditableAdtSourceIdentity),
-    /// The typed kind travels with the identity: the write and the activation
-    /// both need it, and `AdtObjectIdentity` keeps only a label.
-    Metadata(MetadataAdtObjectType, AdtObjectIdentity),
-}
-
-impl UndoIdentity {
-    fn name(&self) -> &str {
-        match self {
-            Self::Source(identity) => &identity.name,
-            Self::Metadata(_, identity) => &identity.name,
-        }
-    }
-
-    fn object_uri(&self) -> &str {
-        match self {
-            Self::Source(identity) => &identity.object_uri,
-            Self::Metadata(_, identity) => &identity.object_uri,
-        }
-    }
-}
-
+///
+/// [`AdtObjectIdentity`] carries the family as a typed value, so every step
+/// below routes on `identity.object_type` and the family cannot disagree with
+/// the identity it came from.
 fn undo_identity(
     entry: &JournalEntry,
     policy: &EditPolicy,
-) -> Result<UndoIdentity, AdtEditTargetValidationError> {
+) -> Result<AdtObjectIdentity, AdtEditTargetValidationError> {
     match entry.object.object_type {
         AdtObjectFamily::Source(object_type) => {
             let identity = editable_source_identity(object_type, &entry.object.name)
@@ -469,12 +448,11 @@ fn undo_identity(
                 &identity.name,
                 &policy.customer_namespaces,
             )?;
-            Ok(UndoIdentity::Source(identity))
+            Ok(identity.into())
         }
-        AdtObjectFamily::Metadata(object_type) => Ok(UndoIdentity::Metadata(
-            object_type,
-            metadata_object_identity(object_type, &entry.object.name, policy)?,
-        )),
+        AdtObjectFamily::Metadata(object_type) => {
+            metadata_object_identity(object_type, &entry.object.name, policy)
+        }
     }
 }
 
@@ -496,22 +474,22 @@ fn undo_identity(
 async fn pending_work_at_risk(
     sap: &SapClient,
     entry: &JournalEntry,
-    identity: &UndoIdentity,
+    identity: &AdtObjectIdentity,
     survives: [Option<&str>; 2],
 ) -> Result<bool, UndoError> {
     if entry.undo_progress.is_some() {
         return Ok(false);
     }
-    let pending = probe_inactive_adt_source(sap, identity.object_uri())
+    let pending = probe_inactive_adt_source(sap, &identity.object_uri)
         .await
         .map_err(|source| UndoError::PendingWorkProbe {
-            name: identity.name().to_owned(),
+            name: identity.name.clone(),
             source,
         })?;
     if !pending {
         return Ok(false);
     }
-    let current = current_inactive_content(sap, entry, identity)
+    let current = current_inactive_content(sap, identity)
         .await?
         .as_deref()
         .map(source_sha256);
@@ -521,20 +499,19 @@ async fn pending_work_at_risk(
 /// The object's pending content, read the same way its active content is.
 async fn current_inactive_content(
     sap: &SapClient,
-    entry: &JournalEntry,
-    identity: &UndoIdentity,
+    identity: &AdtObjectIdentity,
 ) -> Result<Option<String>, UndoError> {
-    match (entry.content_kind(), identity) {
-        (ContentKind::Source, UndoIdentity::Source(identity)) => Ok(read_adt_source_for_edit(
+    match identity.object_type {
+        AdtObjectFamily::Source(object_type) => Ok(read_adt_source_for_edit(
             sap,
-            identity.object_type,
+            object_type,
             &identity.name,
             AdtSourceVersion::Inactive,
         )
         .await
         .ok()
         .map(|read| read.snapshot.source)),
-        (ContentKind::Xml, UndoIdentity::Metadata(_, identity)) => {
+        AdtObjectFamily::Metadata(_) => {
             let document = sap
                 .get_text_with_query(&identity.object_uri, &[("version", "inactive")])
                 .await
@@ -544,7 +521,6 @@ async fn current_inactive_content(
                 })?;
             Ok(Some(strip_navigation_links(&document)))
         }
-        _ => unreachable!("content kind and identity come from the same entry"),
     }
 }
 
@@ -555,14 +531,13 @@ async fn current_inactive_content(
 /// as the second would report a network problem as a stale object.
 async fn current_active_content(
     sap: &SapClient,
-    entry: &JournalEntry,
-    identity: &UndoIdentity,
+    identity: &AdtObjectIdentity,
 ) -> Result<Option<String>, UndoError> {
-    match (entry.content_kind(), identity) {
-        (ContentKind::Source, UndoIdentity::Source(identity)) => {
+    match identity.object_type {
+        AdtObjectFamily::Source(object_type) => {
             match read_adt_source_for_edit(
                 sap,
-                identity.object_type,
+                object_type,
                 &identity.name,
                 AdtSourceVersion::Active,
             )
@@ -574,7 +549,7 @@ async fn current_active_content(
                 Err(_) => Ok(None),
             }
         }
-        (ContentKind::Xml, UndoIdentity::Metadata(_, identity)) => {
+        AdtObjectFamily::Metadata(_) => {
             let document = sap
                 .get_text_with_query(&identity.object_uri, &[("version", ACTIVE_VERSION)])
                 .await
@@ -590,8 +565,6 @@ async fn current_active_content(
                     .then_some(document),
             )
         }
-        // The family decides both, so these cannot disagree.
-        _ => unreachable!("content kind and identity come from the same entry"),
     }
 }
 
@@ -680,8 +653,8 @@ pub async fn undo_activation(
 
     Ok(UndoOutcome {
         entry_id: entry.id,
-        name: identity.name().to_owned(),
-        object_uri: identity.object_uri().to_owned(),
+        name: identity.name.clone(),
+        object_uri: identity.object_uri.clone(),
         restored_sha256: plan.restore_sha256.clone(),
         inactive_restored,
         steps_run,
@@ -725,16 +698,16 @@ struct InactiveWrite {
 async fn write_inactive(
     sap: &mut SapClient,
     policy: &EditPolicy,
-    identity: &UndoIdentity,
+    identity: &AdtObjectIdentity,
     content: &str,
     transport: Option<&str>,
 ) -> Result<InactiveWrite, UndoError> {
-    match identity {
-        UndoIdentity::Source(identity) => {
-            write_inactive_source(sap, policy, identity, content, transport).await
+    match identity.object_type {
+        AdtObjectFamily::Source(object_type) => {
+            write_inactive_source(sap, policy, object_type, identity, content, transport).await
         }
-        UndoIdentity::Metadata(object_type, identity) => {
-            write_inactive_document(sap, policy, *object_type, identity, content, transport).await
+        AdtObjectFamily::Metadata(object_type) => {
+            write_inactive_document(sap, policy, object_type, identity, content, transport).await
         }
     }
 }
@@ -781,12 +754,13 @@ async fn write_inactive_document(
 async fn write_inactive_source(
     sap: &mut SapClient,
     policy: &EditPolicy,
-    identity: &EditableAdtSourceIdentity,
+    object_type: EditableAdtObjectType,
+    identity: &AdtObjectIdentity,
     source: &str,
     transport: Option<&str>,
 ) -> Result<InactiveWrite, UndoError> {
     let request = AdtSourceReplacementRequest {
-        object_type: identity.object_type,
+        object_type,
         name: identity.name.clone(),
         replacement_source: source.to_owned(),
         // The gate is on the active version and has already been checked; the
@@ -825,19 +799,27 @@ async fn write_inactive_source(
 async fn activate_restored(
     sap: &mut SapClient,
     policy: &EditPolicy,
-    identity: &UndoIdentity,
+    identity: &AdtObjectIdentity,
     transport: Option<&str>,
     wrote_something: bool,
 ) -> Result<(), UndoError> {
-    match identity {
-        UndoIdentity::Source(identity) => {
-            activate_restored_source(sap, policy, identity, transport, wrote_something).await
+    match identity.object_type {
+        AdtObjectFamily::Source(object_type) => {
+            activate_restored_source(
+                sap,
+                policy,
+                object_type,
+                identity,
+                transport,
+                wrote_something,
+            )
+            .await
         }
-        UndoIdentity::Metadata(object_type, identity) => {
+        AdtObjectFamily::Metadata(object_type) => {
             activate_restored_document(
                 sap,
                 policy,
-                *object_type,
+                object_type,
                 identity,
                 transport,
                 wrote_something,
@@ -873,12 +855,13 @@ async fn activate_restored_document(
 async fn activate_restored_source(
     sap: &mut SapClient,
     policy: &EditPolicy,
-    identity: &EditableAdtSourceIdentity,
+    object_type: EditableAdtObjectType,
+    identity: &AdtObjectIdentity,
     transport: Option<&str>,
     wrote_something: bool,
 ) -> Result<(), UndoError> {
     let request = AdtSourceActivationRequest {
-        object_type: identity.object_type,
+        object_type,
         name: identity.name.clone(),
         transport: transport.map(str::to_owned),
     };

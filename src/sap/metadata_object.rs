@@ -39,6 +39,7 @@ use super::{
         AdtObjectDeletionError, AdtObjectDeletionPreview, AdtObjectDeletionResult,
         delete_validated_adt_object, preview_validated_deletion,
     },
+    object_family::AdtObjectFamily,
     repository_kind::{AdtObjectType, RepositoryKind},
 };
 use crate::{
@@ -395,7 +396,7 @@ pub fn metadata_object_identity(
     let path_name = name.to_ascii_lowercase().replace('/', "%2f");
 
     Ok(AdtObjectIdentity {
-        object_type: object_type.as_str().to_owned(),
+        object_type: AdtObjectFamily::Metadata(object_type),
         object_uri: format!("{}/{path_name}", object_type.collection_path()),
         name,
         // The whole point of this family: there is no source to point at.
@@ -844,7 +845,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(identity.object_type, "DTEL");
+        assert_eq!(identity.object_type.as_str(), "DTEL");
         assert_eq!(identity.name, "ZSAMPLE_DE");
         assert_eq!(
             identity.object_uri,

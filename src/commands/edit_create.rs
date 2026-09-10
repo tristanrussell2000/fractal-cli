@@ -148,7 +148,8 @@ fn map_object_creation_result(
         |_| {
             format!(
                 "fractal edit set --type {} --name {} --source-file <path>",
-                result.identity.object_type, result.identity.name
+                result.identity.object_type.as_str(),
+                result.identity.name
             )
         },
     );

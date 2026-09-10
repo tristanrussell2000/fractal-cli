@@ -193,7 +193,7 @@ async fn a_table_type_is_written_with_its_own_media_type() {
     .await
     .unwrap();
 
-    assert_eq!(result.identity.object_type, "TTYP");
+    assert_eq!(result.identity.object_type.as_str(), "TTYP");
     assert!(result.changed);
     server.verify().await;
 }

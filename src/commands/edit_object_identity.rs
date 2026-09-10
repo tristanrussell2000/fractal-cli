@@ -36,7 +36,7 @@ impl From<EditableAdtSourceIdentity> for EditObjectIdentityOutput {
 impl From<AdtObjectIdentity> for EditObjectIdentityOutput {
     fn from(object: AdtObjectIdentity) -> Self {
         Self {
-            object_type: object.object_type,
+            object_type: object.object_type.as_str().to_owned(),
             name: object.name,
             object_uri: object.object_uri,
             source_uri: object.source_uri,
