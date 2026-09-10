@@ -27,9 +27,15 @@ use super::{
         AdtEditTargetValidationError, AdtSourceVersion, EditableAdtSourceIdentity,
         editable_source_identity, read_adt_source_for_edit,
     },
-    metadata_activation::{ACTIVE_VERSION, document_version},
+    metadata_activation::{
+        ACTIVE_VERSION, MetadataObjectActivationError, MetadataObjectActivationRequest,
+        activate_metadata_object, document_version,
+    },
     metadata_document::strip_navigation_links,
-    metadata_object::metadata_object_identity,
+    metadata_object::{
+        MetadataAdtObjectType, MetadataObjectWriteError, metadata_object_identity,
+        write_metadata_object,
+    },
     object_family::AdtObjectFamily,
     package_authorization::{PackageAuthorizationError, authorize_object_package},
     source_activation::{
@@ -160,12 +166,14 @@ pub enum UndoError {
     },
     #[error("SAP returned a document that could not be parsed: {0}")]
     ResponseInvalid(#[from] super::adt_response::AdtResponseParseError),
-    #[error("undoing {name} is not built yet for this object family")]
-    MetadataUndoNotBuilt { name: String },
     #[error("could not write the previous version back: {0}")]
     InactiveWrite(Box<AdtSourceReplacementError>),
+    #[error("could not write the previous document back: {0}")]
+    MetadataWrite(Box<MetadataObjectWriteError>),
     #[error("could not activate the restored version: {0}")]
     Activation(Box<AdtSourceActivationError>),
+    #[error("could not activate the restored document: {0}")]
+    MetadataActivation(Box<MetadataObjectActivationError>),
 }
 
 impl UndoError {
@@ -194,9 +202,10 @@ impl ReportableError for UndoError {
             Self::PendingWorkProbe { .. } => "undo_pending_work_probe_failed",
             Self::CurrentStateUnreadable { .. } => "undo_current_state_unreadable",
             Self::ResponseInvalid(error) => error.code(),
-            Self::MetadataUndoNotBuilt { .. } => "undo_metadata_not_built",
             Self::InactiveWrite(error) => error.code(),
+            Self::MetadataWrite(error) => error.code(),
             Self::Activation(error) => error.code(),
+            Self::MetadataActivation(error) => error.code(),
         }
     }
 
@@ -248,12 +257,10 @@ impl ReportableError for UndoError {
                 source.hint().unwrap_or_default()
             ),
             Self::ResponseInvalid(error) => return error.hint(),
-            Self::MetadataUndoNotBuilt { .. } => {
-                "Undoing a DTEL, DOMA, TTYP, MSAG or SRVB is not implemented yet. `fractal undo --dry-run` reports what it would do, and `fractal journal show` gives the path to restore by hand."
-                    .to_owned()
-            }
             Self::InactiveWrite(error) => return error.hint(),
+            Self::MetadataWrite(error) => return error.hint(),
             Self::Activation(error) => return error.hint(),
+            Self::MetadataActivation(error) => return error.hint(),
         })
     }
 
@@ -269,7 +276,9 @@ impl ReportableError for UndoError {
             | Self::WouldDelete { id, .. } => Some(format!("fractal journal show {id}")),
             Self::PackageNotAllowed(error) => error.suggested_command(),
             Self::InactiveWrite(error) => error.suggested_command(),
+            Self::MetadataWrite(error) => error.suggested_command(),
             Self::Activation(error) => error.suggested_command(),
+            Self::MetadataActivation(error) => error.suggested_command(),
             _ => None,
         }
     }
@@ -427,21 +436,23 @@ pub async fn plan_activation_undo(
 /// forward edit could not.
 enum UndoIdentity {
     Source(EditableAdtSourceIdentity),
-    Metadata(AdtObjectIdentity),
+    /// The typed kind travels with the identity: the write and the activation
+    /// both need it, and `AdtObjectIdentity` keeps only a label.
+    Metadata(MetadataAdtObjectType, AdtObjectIdentity),
 }
 
 impl UndoIdentity {
     fn name(&self) -> &str {
         match self {
             Self::Source(identity) => &identity.name,
-            Self::Metadata(identity) => &identity.name,
+            Self::Metadata(_, identity) => &identity.name,
         }
     }
 
     fn object_uri(&self) -> &str {
         match self {
             Self::Source(identity) => &identity.object_uri,
-            Self::Metadata(identity) => &identity.object_uri,
+            Self::Metadata(_, identity) => &identity.object_uri,
         }
     }
 }
@@ -461,6 +472,7 @@ fn undo_identity(
             Ok(UndoIdentity::Source(identity))
         }
         AdtObjectFamily::Metadata(object_type) => Ok(UndoIdentity::Metadata(
+            object_type,
             metadata_object_identity(object_type, &entry.object.name, policy)?,
         )),
     }
@@ -522,7 +534,7 @@ async fn current_inactive_content(
         .await
         .ok()
         .map(|read| read.snapshot.source)),
-        (ContentKind::Xml, UndoIdentity::Metadata(identity)) => {
+        (ContentKind::Xml, UndoIdentity::Metadata(_, identity)) => {
             let document = sap
                 .get_text_with_query(&identity.object_uri, &[("version", "inactive")])
                 .await
@@ -562,7 +574,7 @@ async fn current_active_content(
                 Err(_) => Ok(None),
             }
         }
-        (ContentKind::Xml, UndoIdentity::Metadata(identity)) => {
+        (ContentKind::Xml, UndoIdentity::Metadata(_, identity)) => {
             let document = sap
                 .get_text_with_query(&identity.object_uri, &[("version", ACTIVE_VERSION)])
                 .await
@@ -626,16 +638,7 @@ pub async fn undo_activation(
     transport: Option<&str>,
     journal: &Journal,
 ) -> Result<UndoOutcome, UndoError> {
-    let identity = match undo_identity(&plan.entry, policy)? {
-        UndoIdentity::Source(identity) => identity,
-        // The write path differs: a metadata object is restored with its whole
-        // document rather than source, and has no syntax pre-check.
-        UndoIdentity::Metadata(identity) => {
-            return Err(UndoError::MetadataUndoNotBuilt {
-                name: identity.name,
-            });
-        }
-    };
+    let identity = undo_identity(&plan.entry, policy)?;
     let mut entry = plan.entry.clone();
     let resumed_from = entry.undo_progress;
     let mut steps_run = Vec::new();
@@ -643,7 +646,7 @@ pub async fn undo_activation(
 
     let mut wrote_something = true;
     if !already_done(resumed_from, UndoStep::WroteInactive) {
-        let write = write_inactive_source(sap, policy, &identity, &plan.restore, transport).await?;
+        let write = write_inactive(sap, policy, &identity, &plan.restore, transport).await?;
         wrote_something = write.changed;
         still_locked |= write.still_locked;
         record_progress(journal, &mut entry, UndoStep::WroteInactive)?;
@@ -651,7 +654,7 @@ pub async fn undo_activation(
     }
 
     if !already_done(resumed_from, UndoStep::Activated) {
-        activate_restored_source(sap, policy, &identity, transport, wrote_something).await?;
+        activate_restored(sap, policy, &identity, transport, wrote_something).await?;
         record_progress(journal, &mut entry, UndoStep::Activated)?;
         steps_run.push(UndoStep::Activated);
     }
@@ -663,7 +666,7 @@ pub async fn undo_activation(
     if let Some(pending) = &plan.restore_inactive
         && !already_done(resumed_from, UndoStep::RestoredInactive)
     {
-        let write = write_inactive_source(sap, policy, &identity, pending, transport).await?;
+        let write = write_inactive(sap, policy, &identity, pending, transport).await?;
         still_locked |= write.still_locked;
         record_progress(journal, &mut entry, UndoStep::RestoredInactive)?;
         steps_run.push(UndoStep::RestoredInactive);
@@ -677,8 +680,8 @@ pub async fn undo_activation(
 
     Ok(UndoOutcome {
         entry_id: entry.id,
-        name: identity.name,
-        object_uri: identity.object_uri,
+        name: identity.name().to_owned(),
+        object_uri: identity.object_uri().to_owned(),
         restored_sha256: plan.restore_sha256.clone(),
         inactive_restored,
         steps_run,
@@ -717,7 +720,60 @@ struct InactiveWrite {
     still_locked: bool,
 }
 
-/// Writes one version as the inactive source, through the ordinary write path.
+/// Writes one version as the inactive version, through the ordinary write path
+/// for its family.
+async fn write_inactive(
+    sap: &mut SapClient,
+    policy: &EditPolicy,
+    identity: &UndoIdentity,
+    content: &str,
+    transport: Option<&str>,
+) -> Result<InactiveWrite, UndoError> {
+    match identity {
+        UndoIdentity::Source(identity) => {
+            write_inactive_source(sap, policy, identity, content, transport).await
+        }
+        UndoIdentity::Metadata(object_type, identity) => {
+            write_inactive_document(sap, policy, *object_type, identity, content, transport).await
+        }
+    }
+}
+
+/// Writes the whole document back, which for this family is the whole object.
+///
+/// The document the journal holds is the canonical one, stripped of its
+/// `atom:link` navigation; SAP regenerates those on the next read, verified
+/// live — see [`super::metadata_document`].
+async fn write_inactive_document(
+    sap: &mut SapClient,
+    policy: &EditPolicy,
+    object_type: MetadataAdtObjectType,
+    identity: &AdtObjectIdentity,
+    xml: &str,
+    transport: Option<&str>,
+) -> Result<InactiveWrite, UndoError> {
+    let written = write_metadata_object(
+        sap,
+        policy,
+        object_type,
+        &identity.name,
+        xml,
+        transport,
+        // The gate is on the active version and has already been checked; the
+        // inactive layer is what this deliberately overwrites.
+        None,
+    )
+    .await
+    .map_err(|error| UndoError::MetadataWrite(Box::new(error)))?;
+    Ok(InactiveWrite {
+        // This family reports an unchanged write rather than refusing it, so
+        // the rerun case needs no special handling here.
+        changed: written.changed,
+        still_locked: written.still_locked,
+    })
+}
+
+/// Writes one version as the inactive source.
 ///
 /// Content already identical to what is stored is **not** a failure here, even
 /// though `edit set` reports it as one: for an undo it means the step has
@@ -754,13 +810,66 @@ async fn write_inactive_source(
     }
 }
 
-/// Activates the restored version, through the ordinary activation path, and
-/// without journaling it.
+/// Activates the restored version, through the ordinary activation path for its
+/// family, and **without journaling it**.
+///
+/// The entry being undone records both halves — its after-image is what was
+/// active before the undo — so a second entry would only grow the journal by a
+/// row per undo, describing a pending version the undo manufactured rather than
+/// one anybody staged.
 ///
 /// `wrote_something` decides how "there is nothing to activate" is read. After
 /// a write that changed the inactive layer it is a real failure. After a write
 /// that found the content already in place it means an earlier run activated
 /// it, so the step is already taken.
+async fn activate_restored(
+    sap: &mut SapClient,
+    policy: &EditPolicy,
+    identity: &UndoIdentity,
+    transport: Option<&str>,
+    wrote_something: bool,
+) -> Result<(), UndoError> {
+    match identity {
+        UndoIdentity::Source(identity) => {
+            activate_restored_source(sap, policy, identity, transport, wrote_something).await
+        }
+        UndoIdentity::Metadata(object_type, identity) => {
+            activate_restored_document(
+                sap,
+                policy,
+                *object_type,
+                identity,
+                transport,
+                wrote_something,
+            )
+            .await
+        }
+    }
+}
+
+/// The metadata activation runs no syntax pre-check — there is no source to
+/// check — and proves success from the document's own layer plus the inactive
+/// list, exactly as a forward activation does.
+async fn activate_restored_document(
+    sap: &mut SapClient,
+    policy: &EditPolicy,
+    object_type: MetadataAdtObjectType,
+    identity: &AdtObjectIdentity,
+    transport: Option<&str>,
+    wrote_something: bool,
+) -> Result<(), UndoError> {
+    let request = MetadataObjectActivationRequest {
+        object_type,
+        name: identity.name.clone(),
+        transport: transport.map(str::to_owned),
+    };
+    match activate_metadata_object(sap, policy, &request, None).await {
+        Ok(_) => Ok(()),
+        Err(MetadataObjectActivationError::NoInactiveVersion { .. }) if !wrote_something => Ok(()),
+        Err(error) => Err(UndoError::MetadataActivation(Box::new(error))),
+    }
+}
+
 async fn activate_restored_source(
     sap: &mut SapClient,
     policy: &EditPolicy,

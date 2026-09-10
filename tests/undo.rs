@@ -138,8 +138,14 @@ async fn mount_active_source(server: &MockServer, source: &str) {
 }
 
 fn document(version: &str, links: &str) -> String {
+    labelled(version, links, "Sample")
+}
+
+/// The same document with distinguishable content, so a test can tell the
+/// version being restored from the one being replaced.
+fn labelled(version: &str, links: &str, label: &str) -> String {
     format!(
-        r#"<?xml version="1.0" encoding="utf-8"?><blue:wbobj xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="ZSAMPLE_DE" adtcore:type="DTEL/DE" adtcore:version="{version}">{links}<dtel:dataElement xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements"><dtel:typeKind>predefinedAbapType</dtel:typeKind></dtel:dataElement></blue:wbobj>"#
+        r#"<?xml version="1.0" encoding="utf-8"?><blue:wbobj xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="ZSAMPLE_DE" adtcore:type="DTEL/DE" adtcore:version="{version}">{links}<dtel:dataElement xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements"><dtel:typeKind>predefinedAbapType</dtel:typeKind><dtel:shortFieldLabel>{label}</dtel:shortFieldLabel></dtel:dataElement></blue:wbobj>"#
     )
 }
 
@@ -828,25 +834,117 @@ async fn pending_work_staged_since_the_activation_is_not_written_over() {
 }
 
 #[tokio::test]
-async fn undoing_a_metadata_activation_is_refused_rather_than_half_done() {
+async fn undoing_a_metadata_activation_restores_the_document_and_the_pending_one() {
+    // The same three steps, through the metadata write path: the whole document
+    // is the object, so there is no source to write and no syntax pre-check.
     let server = MockServer::start().await;
-    forbid_writes(&server).await;
-    mount_active_document(&server, document("active", "")).await;
-    mount_no_pending_work(&server).await;
+    let session = adt_edit_mock::AdtEditSession {
+        object_path: DTEL_URI,
+        source_path: "",
+        ..session()
+    };
+    session.mount_csrf_session(&server).await;
+    session
+        .lock_request(None)
+        .respond_with(ResponseTemplate::new(200).set_body_string(session.lock_result_body()))
+        .expect(2)
+        .mount(&server)
+        .await;
+    session
+        .unlock_request()
+        .respond_with(ResponseTemplate::new(200))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(DTEL_URI))
+        .and(query_param("lockHandle", "undo-lock"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/activation"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"<chkl:messages xmlns:chkl="http://www.sap.com/abapxml/checklist"><chkl:properties activationExecuted="true"/></chkl:messages>"#,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // The plain GETs the write path makes: before and after each of its two
+    // writes. `version` must be absent, or this would also answer the reads
+    // that ask for one.
+    Mock::given(method("GET"))
+        .and(path(DTEL_URI))
+        .and(wiremock::matchers::query_param_is_missing("version"))
+        .respond_with(adt_edit_mock::SequentialResponses::sources(&[
+            &labelled("inactive", STATES_LINK, "two"),
+            &labelled("inactive", STATES_LINK, "one"),
+            &labelled("inactive", STATES_LINK, "one"),
+            &labelled("inactive", STATES_LINK, "two"),
+        ]))
+        .mount(&server)
+        .await;
+    // The gate, then the activation's read-back.
+    Mock::given(method("GET"))
+        .and(path(DTEL_URI))
+        .and(query_param("version", "active"))
+        .respond_with(adt_edit_mock::SequentialResponses::sources(&[
+            &labelled("active", STATES_LINK, "two"),
+            &labelled("active", "", "one"),
+        ]))
+        .mount(&server)
+        .await;
+    // No pending work, then the restored document pending, then activated.
+    for listed in [false, true, false] {
+        let body = if listed {
+            format!(
+                r#"<ioc:inactiveObjects xmlns:ioc="http://www.sap.com/abapxml/inactiveCtsObjects" xmlns:adtcore="http://www.sap.com/adt/core"><ioc:entry><ioc:object><ioc:ref adtcore:uri="{DTEL_URI}" adtcore:name="ZSAMPLE_DE"/></ioc:object></ioc:entry></ioc:inactiveObjects>"#
+            )
+        } else {
+            r#"<ioc:inactiveObjects xmlns:ioc="http://www.sap.com/abapxml/inactiveCtsObjects"/>"#
+                .to_owned()
+        };
+        Mock::given(method("GET"))
+            .and(path("/sap/bc/adt/activation/inactiveobjects"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+
     let dir = tempfile::tempdir().unwrap();
     let journal = journal(&dir);
+    // The journal holds canonical documents, so the entry's images have no
+    // links even though every read from SAP does.
+    let previous = labelled("active", "", "one");
+    let pending = labelled("inactive", "", "two");
     let entry = recorded(
         &journal,
         data_element(),
-        Some(&document("active", "")),
-        None,
-        &document("active", ""),
+        Some(&previous),
+        Some(&pending),
+        &labelled("active", "", "two"),
     );
-
+    let entry_id = entry.id.clone();
     let plan = plan(&server, &journal, entry, false).await.unwrap();
-    let error = undo(&server, &journal, &plan).await.unwrap_err();
 
-    // The dry run still describes it; only the writes are missing.
-    assert_eq!(error.code(), "undo_metadata_not_built");
+    let outcome = undo(&server, &journal, &plan).await.unwrap();
+
+    // What gets written back is the canonical document the journal stored, with
+    // no `atom:link` in it: SAP regenerates those itself.
+    let written = written_bodies(&server).await;
+    assert_eq!(written.len(), 2);
+    assert!(
+        written.iter().all(|body| !body.contains("atom:link")),
+        "{written:?}"
+    );
+    assert_eq!(written, vec![previous, pending]);
+    assert_eq!(outcome.steps_run.len(), 3);
+
+    let entry = journal.entries().find(&entry_id).unwrap();
+    assert_eq!(entry.status, EntryStatus::Undone);
+    assert_eq!(journal.entries().list().unwrap().len(), 1);
     server.verify().await;
 }
