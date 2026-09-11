@@ -212,6 +212,50 @@ impl Journal {
     }
 }
 
+/// How an operation ended, from the journal's point of view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resolution<'a> {
+    /// The operation landed. The content is what SAP holds now, or `None` when
+    /// the object is gone — which is not the same as holding nothing.
+    Succeeded(Option<&'a str>),
+    /// SAP refused it, so nothing was published and the before-image is still
+    /// true.
+    Failed,
+    /// SAP accepted it and the read-back could not confirm the result — the
+    /// case where the before-image matters most.
+    Unverified(Option<&'a str>),
+}
+
+/// Resolves an entry, naming one that could not be completed.
+///
+/// **Never fails the operation.** By the time this runs the mutation has landed
+/// or been refused, so returning an error would report failure for work that is
+/// already done and invite a retry that cannot succeed. What survives is a
+/// `pending` entry holding a real before-image: degraded, not useless. The
+/// caller reports success and says which entry is stuck.
+///
+/// A free function rather than a method because both arguments are optional at
+/// every call site — `--no-journal` gives no journal, and an operation that
+/// failed before recording anything has no entry — and pushing that back to the
+/// callers is what put three copies of this in the tree.
+pub fn resolve(
+    journal: Option<&Journal>,
+    entry: Option<JournalEntry>,
+    resolution: Resolution<'_>,
+) -> Option<String> {
+    let (Some(journal), Some(entry)) = (journal, entry) else {
+        return None;
+    };
+    let id = entry.id.clone();
+    match resolution {
+        Resolution::Succeeded(content) => journal.succeeded(entry, content, None),
+        Resolution::Failed => journal.failed(entry),
+        Resolution::Unverified(content) => journal.unverified(entry, content),
+    }
+    .err()
+    .map(|_| id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,6 +459,55 @@ mod tests {
                 &entry.id,
             )
             .expect("entry exists")
+    }
+
+    #[test]
+    fn resolving_names_an_entry_it_could_not_complete_rather_than_failing() {
+        // The contract every mutating command depends on: by the time this runs
+        // the operation has landed, so it reports which entry is stuck and
+        // never turns completed work into an error.
+        let (journal, dir) = journal();
+        let entry = journal
+            .begin(
+                object(),
+                JournalOperation::activate(),
+                None,
+                Some(BEFORE.to_owned()),
+                None,
+            )
+            .unwrap();
+        let id = entry.id.clone();
+        // Remove the whole store, so the resolution has nowhere to write.
+        std::fs::remove_dir_all(dir.path().join("journal")).unwrap();
+
+        let stuck = resolve(
+            Some(&journal),
+            Some(entry),
+            Resolution::Succeeded(Some("after")),
+        );
+
+        assert_eq!(stuck, Some(id));
+    }
+
+    #[test]
+    fn resolving_reports_nothing_when_it_worked_or_when_there_is_no_journal() {
+        let (journal, _dir) = journal();
+        let entry = journal
+            .begin(
+                object(),
+                JournalOperation::activate(),
+                None,
+                Some(BEFORE.to_owned()),
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(
+            resolve(Some(&journal), Some(entry), Resolution::Succeeded(None)),
+            None
+        );
+        // `--no-journal`, and an operation that failed before recording.
+        assert_eq!(resolve(None, None, Resolution::Failed), None);
     }
 
     #[test]

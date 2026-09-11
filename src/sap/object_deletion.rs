@@ -36,7 +36,7 @@ use super::{
 };
 use crate::journal::JournalError;
 use crate::journal::entry::{EntryObject, JournalEntry, JournalOperation};
-use crate::journal::recorder::Journal;
+use crate::journal::recorder::{Journal, Resolution, resolve};
 use crate::{
     reportable_error::{ReportableError, sap_http_status},
     suggested_command,
@@ -64,6 +64,10 @@ pub struct AdtObjectDeletionPreview {
 /// A deletion that has been carried out and verified.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdtObjectDeletionResult {
+    /// The object is gone and its journal entry could not be completed, so this
+    /// names the entry left at `pending`. It still holds the content, which is
+    /// the part that matters.
+    pub journal_entry_incomplete: Option<String>,
     pub identity: AdtObjectIdentity,
     pub transport: Option<String>,
     pub direct_usages: Vec<String>,
@@ -353,7 +357,9 @@ pub async fn delete_validated_adt_object(
         .await;
 
     if let Err(source) = deleted {
-        resolve_entry(journal, entry, false);
+        // Deliberately ignored: a cleanup failure must not replace the cause,
+        // and the delete is the failure worth reporting.
+        let _ = resolve(journal, entry, Resolution::Failed);
         // The object still exists, so its lock still means something. The
         // delete failure stays the reported cause — a cleanup failure must not
         // mask it — but whether the lock survived is state the caller needs,
@@ -375,10 +381,21 @@ pub async fn delete_validated_adt_object(
     let gone = verify_object_is_gone(sap, &identity).await;
     // The object is gone either way the read-back landed, so the entry is
     // resolved before the result is reported.
-    resolve_entry(journal, entry, gone.is_ok());
+    // `Succeeded(None)` is an absence, which is what a deleted object is — not
+    // an object that held nothing.
+    let journal_entry_incomplete = resolve(
+        journal,
+        entry,
+        if gone.is_ok() {
+            Resolution::Succeeded(None)
+        } else {
+            Resolution::Failed
+        },
+    );
     gone?;
 
     Ok(AdtObjectDeletionResult {
+        journal_entry_incomplete,
         identity,
         transport,
         direct_usages,
@@ -465,23 +482,6 @@ fn describe(metadata: &str) -> (Option<String>, Option<String>) {
         .ok()
         .and_then(|document| find_non_empty_attribute(document.root_element(), "description"));
     (package, description)
-}
-
-/// Resolves the entry once the object is gone, or refused.
-///
-/// A failure here is reported as a warning by the caller rather than failing
-/// the delete: the object is already destroyed, and reporting failure would
-/// invite a retry of something that cannot be retried.
-fn resolve_entry(journal: Option<&Journal>, entry: Option<JournalEntry>, deleted: bool) {
-    let (Some(journal), Some(entry)) = (journal, entry) else {
-        return;
-    };
-    // `None` after-image is an absence, which is what a deleted object is.
-    let _ = if deleted {
-        journal.succeeded(entry, None, None)
-    } else {
-        journal.failed(entry)
-    };
 }
 
 /// Releases the lock a refused delete still holds, keeping the original cause.

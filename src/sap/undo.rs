@@ -587,6 +587,9 @@ pub struct UndoOutcome {
     /// treated as failure: the same answer `edit set` gives, for the same
     /// reason.
     pub still_locked: bool,
+    /// Every step landed and the entry could not be marked as undone. Rerunning
+    /// is safe: the steps are idempotent and converge.
+    pub journal_entry_incomplete: bool,
 }
 
 /// Performs the undo: write the previous active version as inactive, activate
@@ -648,8 +651,13 @@ pub async fn undo_activation(
 
     // Only now: a partway failure leaves the entry resolved and its progress
     // recorded, so a rerun resumes rather than treating the undo as finished.
+    //
+    // Failing to write it does **not** fail the undo. All three steps have
+    // landed, so an error would report failure for work that is done; the entry
+    // simply keeps its old status, and rerunning converges because the steps
+    // are idempotent.
     entry.undone();
-    journal.entries().update(&entry)?;
+    let journal_entry_incomplete = journal.entries().update(&entry).is_err();
 
     Ok(UndoOutcome {
         entry_id: entry.id,
@@ -660,6 +668,7 @@ pub async fn undo_activation(
         steps_run,
         resumed_from,
         still_locked,
+        journal_entry_incomplete,
     })
 }
 

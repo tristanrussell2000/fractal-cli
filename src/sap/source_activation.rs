@@ -1,8 +1,8 @@
 use super::package_authorization::{PackageAuthorizationError, authorize_object_package};
 use crate::config::EditPolicy;
 use crate::journal::JournalError;
-use crate::journal::entry::{EntryObject, JournalEntry, JournalOperation};
-use crate::journal::recorder::Journal;
+use crate::journal::entry::{EntryObject, JournalOperation};
+use crate::journal::recorder::{Journal, Resolution, resolve};
 use crate::sap::object_family::AdtObjectFamily;
 use thiserror::Error;
 
@@ -36,6 +36,10 @@ pub struct AdtSourceActivationRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdtSourceActivationResult {
+    /// The activation landed and its journal entry could not be completed, so
+    /// this names the entry left at `pending`. Reported rather than failed: the
+    /// same shape, and the same reason, as `still_locked`.
+    pub journal_entry_incomplete: Option<String>,
     pub identity: EditableAdtSourceIdentity,
     pub transport: Option<String>,
     pub precheck: AdtSourceCheckResult,
@@ -341,7 +345,9 @@ pub(super) async fn activate_validated_adt_source(
         Ok(response) => response,
         Err(source) => {
             // Nothing was published, so the entry records a refusal.
-            resolve_entry(journal, entry, Outcome::Failed)?;
+            // Deliberately ignored: a cleanup failure must not replace the
+            // failure that caused it.
+            let _ = resolve(journal, entry, Resolution::Failed);
             return Err(AdtSourceActivationError::ActivationRequest {
                 identity: Box::new(identity),
                 source,
@@ -359,13 +365,16 @@ pub(super) async fn activate_validated_adt_source(
         Ok(active_result) => active_result,
         Err(error) => {
             // SAP accepted it and the post-state could not be established.
-            resolve_entry(journal, entry, Outcome::Unverified)?;
+            // Deliberately ignored: a cleanup failure must not replace the
+            // failure that caused it.
+            let _ = resolve(journal, entry, Resolution::Unverified(None));
             return Err(error);
         }
     };
 
     let Some(active_result) = active_result else {
-        resolve_entry(journal, entry, Outcome::Failed)?;
+        // Deliberately ignored: a cleanup failure must not replace the cause.
+        let _ = resolve(journal, entry, Resolution::Failed);
         return match parsed_response {
             Ok(parsed) => Err(AdtSourceActivationError::ActivationRefused {
                 sap_reported_activation_executed: parsed.activation_executed,
@@ -377,7 +386,9 @@ pub(super) async fn activate_validated_adt_source(
     let active = match active_result {
         Ok(active) => active,
         Err(source) => {
-            resolve_entry(journal, entry, Outcome::Unverified)?;
+            // Deliberately ignored: a cleanup failure must not replace the
+            // failure that caused it.
+            let _ = resolve(journal, entry, Resolution::Unverified(None));
             return Err(AdtSourceActivationError::ActiveSourceRead {
                 identity: Box::new(identity),
                 source,
@@ -385,18 +396,19 @@ pub(super) async fn activate_validated_adt_source(
         }
     };
     if active.snapshot.sha256 != inactive.snapshot.sha256 {
-        resolve_entry(journal, entry, Outcome::Unverified)?;
+        // Deliberately ignored: a cleanup failure must not replace the cause.
+        let _ = resolve(journal, entry, Resolution::Unverified(None));
         return Err(AdtSourceActivationError::VerificationMismatch {
             identity: Box::new(identity),
             inactive_sha256: inactive.snapshot.sha256,
             active_sha256: active.snapshot.sha256,
         });
     }
-    resolve_entry(
+    let journal_entry_incomplete = resolve(
         journal,
         entry,
-        Outcome::Succeeded(active.snapshot.source.clone()),
-    )?;
+        Resolution::Succeeded(Some(&active.snapshot.source)),
+    );
 
     // Post-state now proves success, so preserve malformed response XML as metadata.
     let (activation_response_parsed, parsed) = parsed_response.map_or_else(
@@ -404,6 +416,7 @@ pub(super) async fn activate_validated_adt_source(
         |parsed| (true, parsed),
     );
     Ok(AdtSourceActivationResult {
+        journal_entry_incomplete,
         identity,
         transport,
         precheck,
@@ -419,33 +432,6 @@ pub(super) async fn activate_validated_adt_source(
 ///
 /// Refuses before any mutation when the check reports errors: activation must
 /// never be attempted on source that will not compile.
-/// How an activation ended, from the journal's point of view.
-enum Outcome {
-    Succeeded(String),
-    /// SAP refused it; nothing was published.
-    Failed,
-    /// SAP accepted it and the result could not be confirmed — the case where
-    /// the before-image matters most.
-    Unverified,
-}
-
-fn resolve_entry(
-    journal: Option<&Journal>,
-    entry: Option<JournalEntry>,
-    outcome: Outcome,
-) -> Result<(), AdtSourceActivationError> {
-    let (Some(journal), Some(entry)) = (journal, entry) else {
-        return Ok(());
-    };
-    match outcome {
-        Outcome::Succeeded(active) => journal.succeeded(entry, Some(&active), None),
-        Outcome::Failed => journal.failed(entry),
-        Outcome::Unverified => journal.unverified(entry, None),
-    }
-    .map(|_| ())
-    .map_err(AdtSourceActivationError::Journal)
-}
-
 fn journal_object(identity: &EditableAdtSourceIdentity) -> EntryObject {
     EntryObject {
         object_type: AdtObjectFamily::Source(identity.object_type),

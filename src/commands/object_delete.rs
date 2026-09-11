@@ -37,6 +37,11 @@ pub struct EditObjectDeleteOutput {
     /// Objects SAP reports as genuine references. Non-empty on a completed
     /// delete only when `--force` overrode the refusal.
     direct_usages: Vec<String>,
+    /// The object is gone and this journal entry could not be completed, so it
+    /// is stuck at `pending`. It still holds the content, which is what a
+    /// restore needs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    journal_entry_incomplete: Option<String>,
 }
 
 /// # Errors
@@ -126,6 +131,8 @@ fn map_deletion_preview(
         object: preview.identity.into(),
         transport: preview.transport,
         direct_usages: preview.direct_usages,
+        // A dry run records nothing, so it has nothing left incomplete.
+        journal_entry_incomplete: None,
     }
 }
 
@@ -140,11 +147,18 @@ fn map_deletion_result(profile: String, result: AdtObjectDeletionResult) -> Edit
         object: result.identity.into(),
         transport: result.transport,
         direct_usages: result.direct_usages,
+        journal_entry_incomplete: result.journal_entry_incomplete,
     }
 }
 
 fn render_object_delete_readable(result: &EditObjectDeleteOutput) -> String {
     let mut output = String::new();
+    if let Some(entry) = &result.journal_entry_incomplete {
+        let _ = writeln!(
+            output,
+            "warning: the object is deleted, but journal entry {entry} could not be completed"
+        );
+    }
     let _ = writeln!(output, "profile: {}", result.profile);
     let _ = writeln!(
         output,
@@ -272,6 +286,7 @@ mod tests {
         let output = map_deletion_result(
             "development".to_owned(),
             AdtObjectDeletionResult {
+                journal_entry_incomplete: None,
                 identity: identity(),
                 transport: Some("AB1K900575".to_owned()),
                 direct_usages: vec!["ZCL_CALLER".to_owned()],

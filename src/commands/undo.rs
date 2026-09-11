@@ -61,6 +61,10 @@ pub struct UndoOutput {
     /// it: it blocks the next edit of this object.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     still_locked: bool,
+    /// Every step landed and the entry could not be marked as undone. Running
+    /// the undo again is safe.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    journal_entry_incomplete: bool,
     /// What a real run would do, in order.
     steps: Vec<String>,
     /// Where the content lives, for `diff` and an editor.
@@ -235,6 +239,7 @@ fn report(
             .unwrap_or_default(),
         resumed_from: outcome.and_then(|outcome| outcome.resumed_from.as_ref().map(step_name)),
         still_locked: outcome.is_some_and(|outcome| outcome.still_locked),
+        journal_entry_incomplete: outcome.is_some_and(|outcome| outcome.journal_entry_incomplete),
         steps: steps(plan),
         content: content_paths(plan, blobs),
     }
@@ -318,6 +323,12 @@ pub fn print_object_undo(result: &UndoOutput, output: OutputFormat) {
     }
     for (index, step) in result.steps.iter().enumerate() {
         let _ = writeln!(rendered, "  {}. {step}", index + 1);
+    }
+    if result.journal_entry_incomplete {
+        let _ = writeln!(
+            rendered,
+            "warning: the undo is done, but the entry could not be marked as undone"
+        );
     }
     if result.still_locked {
         let _ = writeln!(

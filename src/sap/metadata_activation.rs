@@ -45,8 +45,8 @@ use super::{
 };
 use crate::config::EditPolicy;
 use crate::journal::JournalError;
-use crate::journal::entry::{EntryObject, JournalEntry, JournalOperation};
-use crate::journal::recorder::Journal;
+use crate::journal::entry::{EntryObject, JournalOperation};
+use crate::journal::recorder::{Journal, Resolution, resolve};
 use crate::reportable_error::{ReportableError, sap_http_status};
 use crate::sap::object_family::AdtObjectFamily;
 use crate::suggested_command;
@@ -63,6 +63,9 @@ pub struct MetadataObjectActivationRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetadataObjectActivationResult {
+    /// The activation landed and its journal entry could not be completed, so
+    /// this names the entry left at `pending`.
+    pub journal_entry_incomplete: Option<String>,
     pub identity: AdtObjectIdentity,
     pub transport: Option<String>,
     /// The document SAP holds now, read back rather than assumed, and
@@ -290,7 +293,9 @@ pub async fn activate_metadata_object(
     let response = match post_activation(sap, &identity.object_uri, &identity.name).await {
         Ok(response) => response,
         Err(source) => {
-            resolve_entry(journal, entry, Outcome::Failed)?;
+            // Deliberately ignored: a cleanup failure must not replace the
+            // failure that caused it.
+            let _ = resolve(journal, entry, Resolution::Failed);
             return Err(MetadataObjectActivationError::ActivationRequest {
                 name: identity.name,
                 source,
@@ -313,14 +318,18 @@ pub async fn activate_metadata_object(
         Ok(active_xml) => active_xml,
         Err(error) => {
             // SAP accepted it and the post-state could not be established.
-            resolve_entry(journal, entry, Outcome::Unverified)?;
+            // Deliberately ignored: a cleanup failure must not replace the
+            // failure that caused it.
+            let _ = resolve(journal, entry, Resolution::Unverified(None));
             return Err(error);
         }
     };
     let still_pending = match inactive_after {
         Ok(still_pending) => still_pending,
         Err(source) => {
-            resolve_entry(journal, entry, Outcome::Unverified)?;
+            // Deliberately ignored: a cleanup failure must not replace the
+            // failure that caused it.
+            let _ = resolve(journal, entry, Resolution::Unverified(None));
             return Err(MetadataObjectActivationError::PostActivationProbe {
                 name: identity.name,
                 source,
@@ -328,7 +337,8 @@ pub async fn activate_metadata_object(
         }
     };
     if still_pending || document_version(&active_xml)?.as_deref() != Some(ACTIVE_VERSION) {
-        resolve_entry(journal, entry, Outcome::Failed)?;
+        // Deliberately ignored: a cleanup failure must not replace the cause.
+        let _ = resolve(journal, entry, Resolution::Failed);
         let (executed, messages) = parsed_response.map_or((None, Vec::new()), |parsed| {
             (parsed.activation_executed, parsed.messages)
         });
@@ -340,7 +350,8 @@ pub async fn activate_metadata_object(
         });
     }
 
-    resolve_entry(journal, entry, Outcome::Succeeded(active_xml.clone()))?;
+    let journal_entry_incomplete =
+        resolve(journal, entry, Resolution::Succeeded(Some(&active_xml)));
 
     // The post-state proves success, so a response we could not parse is
     // metadata rather than a failure.
@@ -354,6 +365,7 @@ pub async fn activate_metadata_object(
         |parsed| (true, parsed),
     );
     Ok(MetadataObjectActivationResult {
+        journal_entry_incomplete,
         identity,
         transport,
         active_xml,
@@ -361,32 +373,6 @@ pub async fn activate_metadata_object(
         activation_response_parsed,
         activation_messages: parsed.messages,
     })
-}
-
-/// How an activation ended, from the journal's point of view.
-enum Outcome {
-    Succeeded(String),
-    /// SAP refused it; nothing was published.
-    Failed,
-    /// SAP accepted it and the result could not be confirmed.
-    Unverified,
-}
-
-fn resolve_entry(
-    journal: Option<&Journal>,
-    entry: Option<JournalEntry>,
-    outcome: Outcome,
-) -> Result<(), MetadataObjectActivationError> {
-    let (Some(journal), Some(entry)) = (journal, entry) else {
-        return Ok(());
-    };
-    match outcome {
-        Outcome::Succeeded(active) => journal.succeeded(entry, Some(&active), None),
-        Outcome::Failed => journal.failed(entry),
-        Outcome::Unverified => journal.unverified(entry, None),
-    }
-    .map(|_| ())
-    .map_err(MetadataObjectActivationError::Journal)
 }
 
 fn journal_object(object_type: MetadataAdtObjectType, identity: &AdtObjectIdentity) -> EntryObject {

@@ -606,3 +606,88 @@ async fn without_a_journal_a_delete_reads_no_content_at_all() {
 
     server.verify().await;
 }
+
+/// Seals the journal's object directories while answering, so the resolution
+/// after the delete cannot write. Deterministic, unlike racing a thread: the
+/// DELETE is the one request between the journal's two writes.
+#[cfg(unix)]
+struct SealOnRequest {
+    directory: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+impl wiremock::Respond for SealOnRequest {
+    fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        for object in std::fs::read_dir(&self.directory).into_iter().flatten() {
+            let path = object.expect("an object directory").path();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o500))
+                .expect("seal the object directory");
+        }
+        ResponseTemplate::new(200)
+    }
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn a_delete_that_landed_is_reported_as_success_even_if_its_entry_cannot_be_resolved() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    // The object is gone. Reporting failure would say otherwise, and the
+    // reading a caller is most likely to take from `ok: false` after a delete
+    // is that the object still exists.
+    let server = MockServer::start().await;
+    mount_csrf_session(&server).await;
+    mount_usages(&server, no_usages()).await;
+    mount_lock(&server).await;
+    mount_content_reads(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let journal = journal(&dir);
+    let entries = journal.entries().root().to_path_buf();
+    Mock::given(method("DELETE"))
+        .and(path(OBJECT_PATH))
+        .respond_with(SealOnRequest {
+            directory: entries.clone(),
+        })
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(OBJECT_PATH))
+        .respond_with(ResponseTemplate::new(404).set_body_string("<error/>"))
+        .mount(&server)
+        .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let result = delete_adt_object(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &deletion_request(false, None),
+        Some(&journal),
+    )
+    .await
+    .expect("the object is gone, so this must be reported as success");
+
+    assert!(
+        result.journal_entry_incomplete.is_some(),
+        "a stuck entry must be named rather than dropped"
+    );
+
+    for object in std::fs::read_dir(&entries).unwrap() {
+        let path = object.unwrap().path();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    // Degraded but not useless: the content survives at `pending`, which is the
+    // whole reason a delete is journaled.
+    let entry = journal.entries().list().unwrap().pop().expect("an entry");
+    assert_eq!(entry.status, EntryStatus::Pending);
+    assert_eq!(
+        journal
+            .blobs()
+            .read(entry.active_before.sha256().unwrap())
+            .unwrap(),
+        SOURCE
+    );
+    server.verify().await;
+}

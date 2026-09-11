@@ -822,3 +822,204 @@ async fn without_a_journal_the_extra_active_read_never_happens() {
     assert!(!dir.path().join("journal").exists());
     server.verify().await;
 }
+
+/// A journal whose directories cannot be written to.
+///
+/// The blob store is left writable and only the entry directory is sealed, so
+/// the failure lands on the *entry* write rather than on storing content —
+/// which is what separates the two journal writes this exercises.
+#[cfg(unix)]
+fn unwritable_journal(dir: &tempfile::TempDir) -> Journal {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let entries = dir.path().join("journal/de3");
+    std::fs::create_dir_all(&entries).unwrap();
+    std::fs::set_permissions(&entries, std::fs::Permissions::from_mode(0o500)).unwrap();
+    Journal::with_roots(
+        dir.path().join("blobs"),
+        entries,
+        EntrySystem {
+            base_url: "https://sap.example:8001".to_owned(),
+            profile: "dev".to_owned(),
+            client: "100".to_owned(),
+            user: "developer".to_owned(),
+        },
+    )
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn a_journal_that_cannot_be_written_blocks_the_activation_before_sap_sees_it() {
+    // Write 1, before the mutation. Nothing has happened yet, so refusing costs
+    // a retry and no work — and an activation with no before-image has no
+    // recovery at all.
+    let server = MockServer::start().await;
+    // Probed once only: the journal blocks before the activation, so the
+    // post-activation probe never happens.
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/activation/inactiveobjects"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(format!("<objects><object uri=\"{OBJECT_URI}\"/></objects>")),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    mount_source_read(&server, "inactive", SOURCE).await;
+    mount_csrf_session(&server).await;
+    mount_checkrun(&server, "<checkMessageList/>").await;
+    Mock::given(method("GET"))
+        .and(path(SOURCE_URI))
+        .and(query_param("version", "active"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(PREVIOUS_ACTIVE))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/activation"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let journal = unwritable_journal(&dir);
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let error = activate_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &activation_request(None),
+        Some(&journal),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), "journal_write_error");
+    server.verify().await;
+}
+
+/// Seals a directory as a side effect of answering, then responds.
+///
+/// The activation POST is the one point that runs after the journal's first
+/// write and before its resolution, which makes it the seam this needs — and a
+/// deterministic one, unlike racing a background thread against the write.
+#[cfg(unix)]
+struct SealOnRequest {
+    directory: std::path::PathBuf,
+    response: ResponseTemplate,
+}
+
+#[cfg(unix)]
+impl Respond for SealOnRequest {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        for object in std::fs::read_dir(&self.directory).into_iter().flatten() {
+            let path = object.expect("an object directory").path();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o500))
+                .expect("seal the object directory");
+        }
+        self.response.clone()
+    }
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn an_activation_that_landed_is_reported_as_success_even_if_its_entry_cannot_be_resolved() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    // Write 2, after the mutation. The activation is done and SAP will not undo
+    // it, so reporting failure would state something untrue about the object
+    // and invite a retry that cannot succeed.
+    let server = MockServer::start().await;
+    mount_clean_preflight(&server).await;
+    mount_active_reads_before_and_after(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let journal = journal(&dir);
+    let entries = journal.entries().root().to_path_buf();
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/activation"))
+        .respond_with(SealOnRequest {
+            directory: entries.clone(),
+            response: ResponseTemplate::new(200).set_body_string("<activationResult/>"),
+        })
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let result = activate_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &activation_request(None),
+        Some(&journal),
+    )
+    .await
+    .expect("the activation landed, so it must be reported as success");
+
+    // The object is activated. Saying otherwise would be false, and the entry
+    // still holds the before-image, so it is named rather than hidden.
+    assert!(
+        result.journal_entry_incomplete.is_some(),
+        "a stuck entry must be named"
+    );
+
+    for object in std::fs::read_dir(&entries).unwrap() {
+        let path = object.unwrap().path();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    // Degraded but not useless: the before-image survived at `pending`.
+    let entry = journal.entries().list().unwrap().pop().expect("an entry");
+    assert_eq!(entry.status, EntryStatus::Pending);
+    assert_eq!(
+        journal
+            .blobs()
+            .read(entry.active_before.sha256().unwrap())
+            .unwrap(),
+        PREVIOUS_ACTIVE
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn a_refused_activation_reports_the_sap_cause_not_the_journal_failure() {
+    // The rule this codebase states twice elsewhere: a cleanup failure must not
+    // replace the failure that caused it. Here the activation was refused *and*
+    // the entry could not be resolved, and the caller needs to be told why SAP
+    // said no — not that a local file could not be written.
+    let server = MockServer::start().await;
+    mount_inactive_sequence(&server, true).await;
+    mount_source_read(&server, "inactive", SOURCE).await;
+    mount_csrf_session(&server).await;
+    mount_checkrun(&server, "<checkMessageList/>").await;
+    Mock::given(method("GET"))
+        .and(path(SOURCE_URI))
+        .and(query_param("version", "active"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(PREVIOUS_ACTIVE))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let journal = journal(&dir);
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/activation"))
+        .respond_with(SealOnRequest {
+            directory: journal.entries().root().to_path_buf(),
+            response: ResponseTemplate::new(200).set_body_string("<activationResult/>"),
+        })
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let error = activate_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &activation_request(None),
+        Some(&journal),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), "edit_activation_refused");
+    server.verify().await;
+}

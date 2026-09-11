@@ -50,6 +50,11 @@ pub struct EditActivationOutput {
     transport: Option<String>,
     active_sha256_after: String,
     active_bytes_after: usize,
+    /// The activation landed and this journal entry could not be completed, so
+    /// it is stuck at `pending`. The object is activated either way; the entry
+    /// still holds the previous version and `undo` will take it with `--force`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    journal_entry_incomplete: Option<String>,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     source_details: Option<SourceActivationDetails>,
     sap_reported_activation_executed: Option<bool>,
@@ -133,6 +138,7 @@ fn map_source_activation_result(
         transport: result.transport,
         active_sha256_after: result.active.sha256,
         active_bytes_after: result.active.bytes,
+        journal_entry_incomplete: result.journal_entry_incomplete,
         source_details: Some(SourceActivationDetails {
             precheck_clean: result.precheck.clean,
             precheck_errors: result.precheck.errors,
@@ -173,6 +179,7 @@ fn map_metadata_activation_result(
         transport: result.transport,
         active_sha256_after: source_sha256(&result.active_xml),
         active_bytes_after: result.active_xml.len(),
+        journal_entry_incomplete: result.journal_entry_incomplete,
         // No source to pre-check and no inactive snapshot to compare against.
         source_details: None,
         sap_reported_activation_executed: result.sap_reported_activation_executed,
@@ -205,6 +212,12 @@ fn map_activation_message(message: AdtActivationMessage) -> EditActivationDiagno
 
 fn render_activation_readable(result: &EditActivationOutput) -> String {
     let mut output = String::new();
+    if let Some(entry) = &result.journal_entry_incomplete {
+        let _ = writeln!(
+            output,
+            "warning: the object is activated, but journal entry {entry} could not be completed"
+        );
+    }
     let _ = writeln!(output, "profile: {}", result.profile);
     let _ = writeln!(
         output,
@@ -325,6 +338,7 @@ mod tests {
         let output = map_source_activation_result(
             "development".to_owned(),
             AdtSourceActivationResult {
+                journal_entry_incomplete: None,
                 identity: EditableAdtSourceIdentity {
                     object_type: EditableAdtObjectType::Class,
                     name: "ZCL_SAMPLE".to_owned(),
