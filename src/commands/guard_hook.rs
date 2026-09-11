@@ -15,7 +15,7 @@
 use serde::Serialize;
 use serde_json::Value;
 
-use super::guard::{ASKED, DENIED};
+use super::guard::{ASKED, DENIED, NO_JOURNAL_FLAG};
 use crate::{cli::GuardHookArgs, reported::Reported};
 
 /// What the harness is told. `ask` is omitted entirely when the harness cannot
@@ -98,16 +98,50 @@ pub fn decide(command: &str, no_ask: bool) -> HookDecision {
         };
         if let Some(rule) = matching_rule(&invocation, DENIED) {
             return HookDecision::Deny(format!(
-                "`{rule}` is refused by this project's Fractal guard. It deletes a repository object, which cannot be undone. A person can run it directly if it is genuinely wanted."
+                "`{rule}` is refused by this project's Fractal guard. It deletes a repository object, which cannot be undone.{} A person can run it directly if it is genuinely wanted.",
+                unjournalled_note(&invocation)
             ));
         }
         if !no_ask && let Some(rule) = matching_rule(&invocation, ASKED) {
             return HookDecision::Ask(format!(
-                "`{rule}` changes a SAP system. This project's Fractal guard asks before it runs."
+                "`{rule}` {}.{} This project's Fractal guard asks before it runs.",
+                what_it_changes(rule),
+                unjournalled_note(&invocation)
             ));
         }
     }
     HookDecision::NoOpinion
+}
+
+/// What the person approving is actually agreeing to.
+///
+/// Not every rule on the ask list touches SAP, and saying so of all of them
+/// would be false for two — which is worse than vague, because the reason is
+/// the only thing a person reads before deciding.
+fn what_it_changes(rule: &str) -> &'static str {
+    match rule {
+        "fractal journal clear" => {
+            "deletes the local record of what Fractal changed, which is the only way back from an operation SAP will not reverse"
+        }
+        "fractal auth" => "changes stored SAP credentials",
+        _ => "changes a SAP system",
+    }
+}
+
+/// What to add to a decision's reason when the caller has turned the journal
+/// off.
+///
+/// This does not change the verdict — every command that accepts the flag is
+/// already denied or asked about — but it changes what the person approving is
+/// agreeing to, which is the whole point of asking them. A declarative rule
+/// cannot see a flag at all; the hook is handed the command string, so this is
+/// the only place the distinction can be made.
+fn unjournalled_note(invocation: &[String]) -> &'static str {
+    if invocation.iter().any(|word| word == NO_JOURNAL_FLAG) {
+        " It also passes `--no-journal`, so nothing is recorded and there is no way back."
+    } else {
+        ""
+    }
 }
 
 /// Splits a shell command on the separators that start a new command, so that
@@ -221,9 +255,85 @@ mod tests {
             "fractal object search 'Z*'",
             "fractal ddic show ZSAMPLE_STATUS",
             "fractal table data ZSAMPLE",
+            // Reading the journal is not changing it.
+            "fractal journal list",
+            "fractal journal show 20260909T201150.262Z",
         ] {
             assert_eq!(decide(command, false), HookDecision::NoOpinion, "{command}");
         }
+    }
+
+    #[test]
+    fn a_reason_says_what_the_command_actually_changes() {
+        // The reason is the only thing a person reads before deciding, so a
+        // rule that touches no SAP system must not claim to.
+        let HookDecision::Ask(reason) = decide("fractal journal clear", false) else {
+            panic!("expected an ask");
+        };
+        assert!(!reason.contains("changes a SAP system"), "{reason}");
+        assert!(reason.contains("local record"), "{reason}");
+
+        let HookDecision::Ask(credentials) = decide("fractal auth login", false) else {
+            panic!("expected an ask");
+        };
+        assert!(credentials.contains("credentials"), "{credentials}");
+    }
+
+    #[test]
+    fn undoing_and_clearing_the_journal_are_asked_about() {
+        // `undo` publishes a previous version, which is a change to the active
+        // version like any other. `journal clear` changes nothing in SAP but
+        // destroys the before-images every other rule here relies on.
+        for command in [
+            "fractal undo --type PROG --name ZSAMPLE",
+            "fractal journal clear --older-than 0",
+        ] {
+            assert!(
+                matches!(decide(command, false), HookDecision::Ask(_)),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn turning_the_journal_off_is_named_in_the_reason() {
+        // The flag cannot change the verdict — every command that takes it is
+        // already asked about or denied — but it changes what the person
+        // approving is agreeing to, and only the hook can see it at all.
+        let HookDecision::Ask(reason) = decide(
+            "fractal edit activate --type PROG --name ZSAMPLE --no-journal",
+            false,
+        ) else {
+            panic!("expected an ask");
+        };
+        assert!(reason.contains("--no-journal"), "{reason}");
+        assert!(reason.contains("no way back"), "{reason}");
+
+        let HookDecision::Ask(plain) =
+            decide("fractal edit activate --type PROG --name ZSAMPLE", false)
+        else {
+            panic!("expected an ask");
+        };
+        assert!(!plain.contains("--no-journal"), "{plain}");
+    }
+
+    #[test]
+    fn a_dry_run_is_still_guarded() {
+        // It changes nothing, and the hook could see that. It does not, on
+        // purpose: a declarative rule matches a prefix and cannot tell a dry run
+        // apart, so exempting it here would make the same command answer
+        // differently depending on the harness.
+        assert!(matches!(
+            decide(
+                "fractal delete --type CLAS --name ZCL_SAMPLE --dry-run",
+                false
+            ),
+            HookDecision::Deny(_)
+        ));
+        assert!(matches!(
+            decide("fractal undo --type PROG --name ZSAMPLE --dry-run", false),
+            HookDecision::Ask(_)
+        ));
     }
 
     #[test]

@@ -40,9 +40,25 @@ pub(super) const ASKED: &[&str] = &[
     "fractal edit patch",
     "fractal edit activate",
     "fractal edit discard",
+    // Restoring a previous version is still a change to the active version,
+    // and it publishes it. A mutation like any other.
+    "fractal undo",
+    // Not a change to SAP, but it destroys the only copy of the before-images
+    // every other rule on this list relies on for recovery.
+    "fractal journal clear",
     "fractal transport create",
     "fractal auth",
 ];
+
+/// The flag that turns off the recovery net, which no declarative rule can see.
+///
+/// Claude Code matches a command **prefix**, so a rule cannot distinguish
+/// `fractal edit activate` from `fractal edit activate --no-journal`. The hook
+/// path can, because it is handed the whole command string, so the flag is
+/// called out there and the declarative install says plainly that it is not
+/// covered. Claiming otherwise would be the "looks live and does nothing"
+/// failure this project keeps rejecting.
+pub(super) const NO_JOURNAL_FLAG: &str = "--no-journal";
 
 /// What the Codex hook runs. Fractal is its own hook program, so the rule lists
 /// above stay the single source of truth instead of being copied into a
@@ -149,7 +165,9 @@ pub fn guard_install(args: &GuardInstallArgs) -> Result<GuardInstallResult, Repo
         added_deny,
         added_ask,
         already_present,
-        notes: Vec::new(),
+        notes: vec![format!(
+            "Rules match a command prefix, so `{NO_JOURNAL_FLAG}` cannot be covered here: an approved `fractal edit activate` also approves it with the flag. The Codex hook sees the whole command and says so in its reason."
+        )],
     })
 }
 
@@ -398,6 +416,47 @@ mod tests {
             settings["permissions"]["deny"][0],
             json!("Bash(fractal delete:*)")
         );
+    }
+
+    #[test]
+    fn the_declarative_install_admits_what_it_cannot_cover() {
+        // A rule matches a command prefix, so approving `fractal edit activate`
+        // also approves it with `--no-journal`. Saying so is the point: a guard
+        // that implies coverage it does not have is worse than a gap.
+        let directory = tempfile::tempdir().unwrap();
+        let result = guard_install(&GuardInstallArgs {
+            harness: Some(GuardHarnessArg::Claude),
+            dir: Some(directory.path().to_path_buf()),
+            local: false,
+            dry_run: true,
+            ask_only: false,
+        })
+        .unwrap();
+
+        assert!(
+            result
+                .notes
+                .iter()
+                .any(|note| note.contains(NO_JOURNAL_FLAG)),
+            "{:?}",
+            result.notes
+        );
+    }
+
+    #[test]
+    fn the_rules_cover_every_command_that_touches_the_journal() {
+        let all: Vec<&str> = DENIED.iter().chain(ASKED).copied().collect();
+        for command in [
+            "fractal undo",
+            "fractal journal clear",
+            "fractal edit activate",
+            "fractal delete",
+        ] {
+            assert!(all.contains(&command), "{command} is unguarded");
+        }
+        // Reading the journal is not changing it, so it stays off both lists.
+        assert!(!all.contains(&"fractal journal list"));
+        assert!(!all.contains(&"fractal journal show"));
     }
 
     #[test]
