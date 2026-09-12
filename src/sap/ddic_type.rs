@@ -245,7 +245,7 @@ impl ReportableError for DdicTypeError {
 /// [`DdicTypeError::DomainMissing`] when a referenced domain cannot be read,
 /// or [`DdicTypeError::Parse`] for a response that is not valid XML.
 pub async fn get_ddic_type(
-    sap: &mut SapClient,
+    sap: &SapClient,
     name: &str,
     options: &DdicTypeOptions,
 ) -> Result<DdicTypeInfo, DdicTypeError> {
@@ -296,7 +296,7 @@ fn supported_type(object_type: MetadataAdtObjectType) -> Result<(), DdicTypeErro
 /// candidate: any other failure is the real answer and must not be reported as
 /// "neither".
 async fn detect_and_read(
-    sap: &mut SapClient,
+    sap: &SapClient,
     name: &str,
     version: AdtVersion,
 ) -> Result<(MetadataAdtObjectType, String), DdicTypeError> {
@@ -316,7 +316,7 @@ async fn detect_and_read(
 }
 
 async fn read_domain(
-    sap: &mut SapClient,
+    sap: &SapClient,
     domain: &str,
     data_element: &str,
     version: AdtVersion,

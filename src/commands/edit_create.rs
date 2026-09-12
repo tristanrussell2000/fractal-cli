@@ -69,6 +69,7 @@ pub async fn edit_object_create(
             .await?
         }
         AdtObjectFamily::Metadata(object_type) => {
+            let binding = binding_spec(args)?;
             create_metadata_object(
                 &mut client,
                 &profile.edit_policy(),
@@ -78,7 +79,7 @@ pub async fn edit_object_create(
                     package: args.package.clone(),
                     description: args.description.clone(),
                     transport: args.transport.clone(),
-                    binding: binding_spec(args)?,
+                    binding,
                 },
             )
             .await?

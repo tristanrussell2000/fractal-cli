@@ -237,55 +237,25 @@ pub async fn activate_metadata_object(
     request: &MetadataObjectActivationRequest,
     journal: Option<&Journal>,
 ) -> Result<MetadataObjectActivationResult, MetadataObjectActivationError> {
-    let identity = metadata_object_identity(request.object_type, &request.name, policy)?;
-    let transport = canonicalize_transport_request(request.transport.as_deref())
-        .map_err(AdtEditTargetValidationError::from)?;
-
-    // Before anything is published, and before the CSRF session: a refusal
-    // should cost nothing.
-    authorize_object_package(sap, policy, &identity.name, &identity.object_uri).await?;
-
-    let inactive_exists = probe_inactive_adt_source(sap, &identity.object_uri)
-        .await
-        .map_err(
-            |source| MetadataObjectActivationError::InactiveVersionProbe {
-                name: identity.name.clone(),
-                source,
-            },
-        )?;
-    if !inactive_exists {
-        return Err(MetadataObjectActivationError::NoInactiveVersion {
-            object_type: request.object_type.as_str(),
-            name: identity.name.clone(),
-        });
-    }
-
-    sap.establish_csrf_session().await.map_err(|source| {
-        MetadataObjectActivationError::ActivationRequest {
-            name: identity.name.clone(),
-            source,
-        }
-    })?;
-
-    if let Some(transport) = &transport {
-        attach_adt_object_to_transport(sap, &identity.object_uri, transport)
-            .await
-            .map_err(MetadataObjectActivationError::TransportAttachment)?;
-    }
+    let (identity, transport) = prepare_activation(sap, policy, request).await?;
 
     let entry = match journal {
-        Some(journal) => Some(
-            journal
-                .begin(
-                    journal_object(request.object_type, &identity),
-                    JournalOperation::activate(),
-                    transport.clone(),
-                    // Only read these when they will be recorded.
-                    read_active_document_if_any(sap, &identity).await,
-                    read_document(sap, &identity, "inactive").await,
-                )
-                .map_err(MetadataObjectActivationError::Journal)?,
-        ),
+        Some(journal) => {
+            // Only read these when they will be recorded.
+            let active_before = read_active_document_if_any(sap, &identity).await;
+            let inactive_before = read_document(sap, &identity, "inactive").await;
+            Some(
+                journal
+                    .begin(
+                        journal_object(request.object_type, &identity),
+                        JournalOperation::activate(),
+                        transport.clone(),
+                        active_before.as_deref(),
+                        inactive_before.as_deref(),
+                    )
+                    .map_err(MetadataObjectActivationError::Journal)?,
+            )
+        }
         None => None,
     };
 
@@ -381,6 +351,52 @@ fn journal_object(object_type: MetadataAdtObjectType, identity: &AdtObjectIdenti
         uri: identity.object_uri.clone(),
         source_part: None,
     }
+}
+
+/// Everything that must hold before anything is published.
+///
+/// Ordered so a refusal costs as little as possible: validation, then the
+/// package guard, then the probe, and only then the CSRF session and the
+/// transport attachment.
+async fn prepare_activation(
+    sap: &mut SapClient,
+    policy: &EditPolicy,
+    request: &MetadataObjectActivationRequest,
+) -> Result<(AdtObjectIdentity, Option<String>), MetadataObjectActivationError> {
+    let identity = metadata_object_identity(request.object_type, &request.name, policy)?;
+    let transport = canonicalize_transport_request(request.transport.as_deref())
+        .map_err(AdtEditTargetValidationError::from)?;
+
+    authorize_object_package(sap, policy, &identity.name, &identity.object_uri).await?;
+
+    let inactive_exists = probe_inactive_adt_source(sap, &identity.object_uri)
+        .await
+        .map_err(
+            |source| MetadataObjectActivationError::InactiveVersionProbe {
+                name: identity.name.clone(),
+                source,
+            },
+        )?;
+    if !inactive_exists {
+        return Err(MetadataObjectActivationError::NoInactiveVersion {
+            object_type: request.object_type.as_str(),
+            name: identity.name.clone(),
+        });
+    }
+
+    sap.establish_csrf_session().await.map_err(|source| {
+        MetadataObjectActivationError::ActivationRequest {
+            name: identity.name.clone(),
+            source,
+        }
+    })?;
+
+    if let Some(transport) = &transport {
+        attach_adt_object_to_transport(sap, &identity.object_uri, transport)
+            .await
+            .map_err(MetadataObjectActivationError::TransportAttachment)?;
+    }
+    Ok((identity, transport))
 }
 
 /// The active document, or `None` when the object has never been activated.

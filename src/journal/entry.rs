@@ -218,7 +218,7 @@ pub struct JournalEntry {
     /// Unset until the operation resolves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_after: Option<ContentRef>,
-    /// Opaque and verbatim; some SAP ETags embed the media type.
+    /// Opaque and verbatim; some SAP `ETag` values embed the media type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub etag_after: Option<String>,
 }
@@ -252,7 +252,7 @@ impl JournalEntry {
         self.etag_after = etag_after;
     }
 
-    pub fn failed(&mut self) {
+    pub const fn failed(&mut self) {
         self.status = EntryStatus::Failed;
     }
 
@@ -263,7 +263,7 @@ impl JournalEntry {
     }
 
     /// An undo reversed this operation.
-    pub fn undone(&mut self) {
+    pub const fn undone(&mut self) {
         self.status = EntryStatus::Undone;
     }
 

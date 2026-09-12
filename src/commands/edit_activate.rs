@@ -38,6 +38,9 @@ pub struct EditActivationDiagnosticOutput {
 /// `source_details` and omitted entirely for a metadata object, rather than
 /// being filled with plausible-looking defaults: a caller must never read
 /// `precheck_errors: 0` and conclude a check passed when none was possible.
+// The flags are the JSON contract, as with the other edit outputs: each answers
+// a question a caller must be able to ask without parsing prose.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Serialize)]
 pub struct EditActivationOutput {
     ok: bool,

@@ -108,6 +108,9 @@ const fn default_allow_temporary_package() -> bool {
 
 /// Keeps the default out of the written file, so a config that never mentions
 /// this setting is not rewritten to mention it.
+// Serde's `skip_serializing_if` hands the field by reference; the signature is
+// not ours to choose.
+#[allow(clippy::trivially_copy_pass_by_ref)]
 const fn is_default_allow_temporary_package(value: &bool) -> bool {
     *value
 }

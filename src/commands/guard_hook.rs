@@ -16,7 +16,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::guard::{ASKED, DENIED, NO_JOURNAL_FLAG};
-use crate::{cli::GuardHookArgs, reported::Reported};
+use crate::cli::GuardHookArgs;
 
 /// What the harness is told. `ask` is omitted entirely when the harness cannot
 /// act on it, rather than being downgraded to a silent `allow` that looks like
@@ -49,10 +49,10 @@ struct HookOutput {
 /// Always exits successfully: a hook that fails noisily on an unexpected
 /// payload would break every tool call in the session, which is a far worse
 /// outcome than failing to guard one command. Silence means "no opinion".
-pub fn guard_hook(args: &GuardHookArgs) -> Result<(), Reported> {
+pub fn guard_hook(args: &GuardHookArgs) {
     let mut payload = String::new();
     if std::io::Read::read_to_string(&mut std::io::stdin(), &mut payload).is_err() {
-        return Ok(());
+        return;
     }
 
     let command = command_from_payload(&payload);
@@ -63,7 +63,6 @@ pub fn guard_hook(args: &GuardHookArgs) -> Result<(), Reported> {
     if let Some(rendered) = render_decision(&decision) {
         println!("{rendered}");
     }
-    Ok(())
 }
 
 /// Extracts the shell command from a `PreToolUse` payload.

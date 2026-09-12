@@ -321,7 +321,7 @@ pub struct ServiceBindingSpec {
 ///
 /// SAP lists six at `/businessservices/bindings/bindingtypes` as a
 /// (name, category) pair: `INA`, `ODATA` V2 and V4, and `SQL`, each in a UI or
-/// Web API category. Only the OData four are offered here — they are the RAP
+/// Web API category. Only the `ODATA` four are offered here — they are the RAP
 /// cases — and the other two are refused by name rather than guessed at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceBindingType {

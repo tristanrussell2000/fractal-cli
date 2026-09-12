@@ -426,7 +426,7 @@ async fn record_deletion(
         },
         JournalOperation::delete(package, description),
         transport.map(str::to_owned),
-        Some(content),
+        Some(&content),
         // A delete takes the object with both its layers, and the recipe
         // restores one object. Pending work is not separately recoverable.
         None,

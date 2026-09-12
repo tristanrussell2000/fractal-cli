@@ -129,8 +129,8 @@ async fn resolves_a_data_element_through_to_its_domain() {
         .await;
 
     let profile = profile(server.uri());
-    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let info = get_ddic_type(&mut client, "zsample_status", &resolving())
+    let client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let info = get_ddic_type(&client, "zsample_status", &resolving())
         .await
         .unwrap();
 
@@ -163,9 +163,9 @@ async fn no_resolve_reads_the_data_element_alone() {
     // assertion that the second call is not made.
 
     let profile = profile(server.uri());
-    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let client = SapClient::new(&profile, "password".to_owned()).unwrap();
     let info = get_ddic_type(
-        &mut client,
+        &client,
         "ZSAMPLE_STATUS",
         &DdicTypeOptions {
             object_type: None,
@@ -195,8 +195,8 @@ async fn a_predefined_type_needs_no_domain_request() {
     .await;
 
     let profile = profile(server.uri());
-    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let info = get_ddic_type(&mut client, "ZSAMPLE_AMOUNT", &resolving())
+    let client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let info = get_ddic_type(&client, "ZSAMPLE_AMOUNT", &resolving())
         .await
         .unwrap();
 
@@ -217,8 +217,8 @@ async fn falls_back_to_a_domain_when_no_data_element_has_the_name() {
         .await;
 
     let profile = profile(server.uri());
-    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let info = get_ddic_type(&mut client, "ZSAMPLE_STATUS_DOM", &resolving())
+    let client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let info = get_ddic_type(&client, "ZSAMPLE_STATUS_DOM", &resolving())
         .await
         .unwrap();
 
@@ -240,9 +240,9 @@ async fn an_explicit_type_skips_detection() {
         .await;
 
     let profile = profile(server.uri());
-    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let client = SapClient::new(&profile, "password".to_owned()).unwrap();
     let info = get_ddic_type(
-        &mut client,
+        &client,
         "ZSAMPLE_STATUS_DOM",
         &DdicTypeOptions {
             object_type: Some(MetadataAdtObjectType::Domain),
@@ -268,8 +268,8 @@ async fn a_name_that_is_neither_reports_one_error_rather_than_a_bare_404() {
         .await;
 
     let profile = profile(server.uri());
-    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let error = get_ddic_type(&mut client, "ZMISSING", &resolving())
+    let client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let error = get_ddic_type(&client, "ZMISSING", &resolving())
         .await
         .unwrap_err();
 
@@ -294,8 +294,8 @@ async fn detection_stops_at_a_failure_that_is_not_a_missing_object() {
     // domain" would be actively wrong, and the domain must not be tried.
 
     let profile = profile(server.uri());
-    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let error = get_ddic_type(&mut client, "ZSAMPLE_STATUS", &resolving())
+    let client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let error = get_ddic_type(&client, "ZSAMPLE_STATUS", &resolving())
         .await
         .unwrap_err();
 
@@ -318,8 +318,8 @@ async fn a_referenced_domain_that_cannot_be_read_names_both_objects() {
         .await;
 
     let profile = profile(server.uri());
-    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let error = get_ddic_type(&mut client, "ZSAMPLE_STATUS", &resolving())
+    let client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let error = get_ddic_type(&client, "ZSAMPLE_STATUS", &resolving())
         .await
         .unwrap_err();
 
@@ -334,8 +334,8 @@ async fn a_referenced_domain_that_cannot_be_read_names_both_objects() {
 async fn a_malformed_name_is_refused_before_any_request() {
     let server = MockServer::start().await;
     let profile = profile(server.uri());
-    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let error = get_ddic_type(&mut client, "ZBAD NAME", &resolving())
+    let client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let error = get_ddic_type(&client, "ZBAD NAME", &resolving())
         .await
         .unwrap_err();
 
@@ -357,8 +357,8 @@ async fn a_standard_domain_outside_the_customer_namespaces_is_readable() {
         .await;
 
     let profile = profile(server.uri());
-    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let info = get_ddic_type(&mut client, "STD_SAMPLE_DOM", &resolving())
+    let client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let info = get_ddic_type(&client, "STD_SAMPLE_DOM", &resolving())
         .await
         .unwrap();
 
@@ -385,8 +385,8 @@ async fn every_read_names_the_layer_it_wants() {
     .await;
 
     let profile = profile(server.uri());
-    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let info = get_ddic_type(&mut client, "ZSAMPLE_STATUS", &resolving())
+    let client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let info = get_ddic_type(&client, "ZSAMPLE_STATUS", &resolving())
         .await
         .unwrap();
 
@@ -421,9 +421,9 @@ async fn the_inactive_layer_is_reported_as_the_inactive_layer() {
     .await;
 
     let profile = profile(server.uri());
-    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let client = SapClient::new(&profile, "password".to_owned()).unwrap();
     let info = get_ddic_type(
-        &mut client,
+        &client,
         "ZSAMPLE_STATUS",
         &DdicTypeOptions {
             object_type: Some(MetadataAdtObjectType::DataElement),
@@ -460,9 +460,9 @@ async fn a_layer_that_does_not_exist_is_reported_as_the_one_that_arrived() {
     .await;
 
     let profile = profile(server.uri());
-    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let client = SapClient::new(&profile, "password".to_owned()).unwrap();
     let info = get_ddic_type(
-        &mut client,
+        &client,
         "ZSAMPLE_STATUS",
         &DdicTypeOptions {
             object_type: Some(MetadataAdtObjectType::DataElement),

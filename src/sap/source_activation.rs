@@ -123,7 +123,6 @@ impl AdtSourceActivationError {
     #[must_use]
     pub const fn sap_error(&self) -> Option<&SapClientError> {
         match self {
-            Self::Journal(_) => None,
             Self::PackageNotAllowed(error) => error.sap_error(),
             Self::InactiveSourceRead(error) | Self::ActiveSourceRead { source: error, .. } => {
                 error.sap_error()
@@ -134,7 +133,8 @@ impl AdtSourceActivationError {
             Self::ActivationRequest { source, .. } => Some(source),
             Self::Precheck(error) => error.sap_error(),
             Self::TransportAttachment(error) => error.sap_error(),
-            Self::Validation(_)
+            Self::Journal(_)
+            | Self::Validation(_)
             | Self::NoInactiveVersion { .. }
             | Self::PrecheckRejected { .. }
             | Self::ActivationResponseInvalid(_)
@@ -226,7 +226,6 @@ impl ReportableError for AdtSourceActivationError {
     /// the activation with a different request, which is a mutation.
     fn suggested_command(&self) -> Option<String> {
         match self {
-            Self::Journal(_) => None,
             Self::PackageNotAllowed(error) => error.suggested_command(),
             Self::NoInactiveVersion { identity }
             | Self::ActiveSourceRead { identity, .. }
@@ -244,7 +243,8 @@ impl ReportableError for AdtSourceActivationError {
                 ))
             }
             Self::InactiveSourceRead(error) => error.suggested_command(),
-            Self::Validation(_)
+            Self::Journal(_)
+            | Self::Validation(_)
             | Self::InactiveVersionProbe(_)
             | Self::Precheck(_)
             | Self::TransportAttachment(_)
@@ -300,45 +300,26 @@ pub(super) async fn activate_validated_adt_source(
     let identity = target.identity;
     let transport = target.transport;
 
-    let inactive_exists = probe_inactive_adt_source(sap, &identity.object_uri)
-        .await
-        .map_err(AdtSourceActivationError::InactiveVersionProbe)?;
-    if !inactive_exists {
-        return Err(AdtSourceActivationError::NoInactiveVersion {
-            identity: Box::new(identity),
-        });
-    }
-
-    sap.establish_csrf_session().await.map_err(|source| {
-        AdtSourceActivationError::Precheck(AdtSourceCheckError::Sap {
-            identity: Box::new(identity.clone()),
-            version: AdtVersion::Inactive,
-            source,
-        })
-    })?;
-    let (inactive, precheck) = read_and_precheck_inactive_source(sap, &identity).await?;
-
-    if let Some(transport) = &transport {
-        attach_adt_object_to_transport(sap, &identity.object_uri, transport)
-            .await
-            .map_err(AdtSourceActivationError::TransportAttachment)?;
-    }
+    let (inactive, precheck) = prepare_activation(sap, &identity, transport.as_deref()).await?;
 
     let entry = match journal {
-        Some(journal) => Some(
+        Some(journal) => {
             // The one thing an undo of this activation needs, and the one thing
             // nothing read before: what the active version was beforehand.
             // Costs a request, so it is only made when it will be recorded.
-            journal
-                .begin(
-                    journal_object(&identity),
-                    JournalOperation::activate(),
-                    transport.clone(),
-                    read_active_source_if_any(sap, &identity).await,
-                    Some(inactive.snapshot.source.clone()),
-                )
-                .map_err(AdtSourceActivationError::Journal)?,
-        ),
+            let active_before = read_active_source_if_any(sap, &identity).await;
+            Some(
+                journal
+                    .begin(
+                        journal_object(&identity),
+                        JournalOperation::activate(),
+                        transport.clone(),
+                        active_before.as_deref(),
+                        Some(&inactive.snapshot.source),
+                    )
+                    .map_err(AdtSourceActivationError::Journal)?,
+            )
+        }
         None => None,
     };
 
@@ -461,6 +442,41 @@ async fn read_active_source_if_any(
     .await
     .ok()
     .map(|read| read.snapshot.source)
+}
+
+/// Everything that must hold before the activation is posted.
+///
+/// Refuses without an inactive version, syntax-checks what is about to be
+/// published, and attaches the object to its transport.
+async fn prepare_activation(
+    sap: &mut SapClient,
+    identity: &EditableAdtSourceIdentity,
+    transport: Option<&str>,
+) -> Result<(AdtSourceReadResult, AdtSourceCheckResult), AdtSourceActivationError> {
+    let inactive_exists = probe_inactive_adt_source(sap, &identity.object_uri)
+        .await
+        .map_err(AdtSourceActivationError::InactiveVersionProbe)?;
+    if !inactive_exists {
+        return Err(AdtSourceActivationError::NoInactiveVersion {
+            identity: Box::new(identity.clone()),
+        });
+    }
+
+    sap.establish_csrf_session().await.map_err(|source| {
+        AdtSourceActivationError::Precheck(AdtSourceCheckError::Sap {
+            identity: Box::new(identity.clone()),
+            version: AdtVersion::Inactive,
+            source,
+        })
+    })?;
+    let checked = read_and_precheck_inactive_source(sap, identity).await?;
+
+    if let Some(transport) = transport {
+        attach_adt_object_to_transport(sap, &identity.object_uri, transport)
+            .await
+            .map_err(AdtSourceActivationError::TransportAttachment)?;
+    }
+    Ok(checked)
 }
 
 async fn read_and_precheck_inactive_source(

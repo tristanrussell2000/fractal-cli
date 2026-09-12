@@ -33,8 +33,8 @@ pub async fn ddic_show(
         resolve_domain: !args.no_resolve,
         version: args.version.into(),
     };
-    let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
-    let info = get_ddic_type(&mut client, &args.name, &options).await?;
+    let (profile_name, _profile, client) = connect(explicit_profile).await?;
+    let info = get_ddic_type(&client, &args.name, &options).await?;
 
     Ok(DdicShowOutput {
         ok: true,
@@ -196,7 +196,7 @@ fn render_effective_type(info: &DdicTypeInfo) -> String {
     rendered
 }
 
-fn render_missing_domain(element: &fractal::sap::ddic_type::DataElementInfo) -> &'static str {
+const fn render_missing_domain(element: &fractal::sap::ddic_type::DataElementInfo) -> &'static str {
     match element.type_source {
         DataElementTypeSource::Domain(_) => "not read (--no-resolve)",
         DataElementTypeSource::PredefinedAbapType | DataElementTypeSource::Other(_) => "none",

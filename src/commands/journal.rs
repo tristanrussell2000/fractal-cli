@@ -299,6 +299,9 @@ fn restore_recipe(entry: &JournalEntry, blobs: &BlobStore) -> Option<RestoreReci
         ContentKind::Source => ("edit set", "--source-file"),
         ContentKind::Xml => ("edit set-xml", "--xml-file"),
     };
+    // A match, not `map_or_else`: each arm carries a note that would have to
+    // move out of line into a closure.
+    #[allow(clippy::option_if_let_else)]
     steps.push(match &content {
         // The blob path lives under the OS data directory, which has spaces in
         // it on macOS and Windows, so it is quoted to stay copy-pasteable.
