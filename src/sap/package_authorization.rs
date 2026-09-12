@@ -20,6 +20,7 @@ use thiserror::Error;
 
 use super::{
     adt_response::{AdtResponseParseError, parse_adt_document},
+    adt_version::AdtVersion,
     client::{SapClient, SapClientError},
     find_child, find_non_empty_attribute,
 };
@@ -187,12 +188,15 @@ pub async fn authorize_object_package(
         return Ok(());
     }
 
-    let xml = sap.get_text(object_uri).await.map_err(|source| {
-        PackageAuthorizationError::PackageLookup {
+    // A staged edit cannot move an object between packages, but naming the
+    // version keeps the guard from depending on that.
+    let xml = sap
+        .get_text_with_query(object_uri, &[("version", AdtVersion::Active.as_str())])
+        .await
+        .map_err(|source| PackageAuthorizationError::PackageLookup {
             name: name.to_owned(),
             source: Box::new(source),
-        }
-    })?;
+        })?;
     let package =
         package_of_object_xml(&xml).map_err(|source| PackageAuthorizationError::Parse {
             name: name.to_owned(),

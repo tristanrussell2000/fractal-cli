@@ -17,7 +17,7 @@ use fractal::sap::{
 };
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
-    matchers::{header, method, path},
+    matchers::{header, method, path, query_param},
 };
 
 const OBJECT_PATH: &str = "/sap/bc/adt/programs/programs/zsample";
@@ -99,7 +99,22 @@ async fn mount_csrf_session(server: &MockServer) {
 }
 
 /// Mounts the object read the guard uses to find out where an object lives.
+///
+/// Requires `version=active`: a read naming no version is served a pending
+/// edit, and where an object lives is a property of the object.
 async fn mount_package_read(server: &MockServer, package: &str, times: u64) {
+    Mock::given(method("GET"))
+        .and(path(OBJECT_PATH))
+        .and(query_param("version", "active"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(object_xml(package)))
+        .expect(times)
+        .mount(server)
+        .await;
+}
+
+/// Mounts the read-back a create makes, which names no version: a just-created
+/// object has only one.
+async fn mount_creation_read_back(server: &MockServer, package: &str, times: u64) {
     Mock::given(method("GET"))
         .and(path(OBJECT_PATH))
         .respond_with(ResponseTemplate::new(200).set_body_string(object_xml(package)))
@@ -143,7 +158,7 @@ async fn creating_inside_a_granted_package_proceeds() {
         .expect(1)
         .mount(&server)
         .await;
-    mount_package_read(&server, "ZPROJ_CORE", 1).await;
+    mount_creation_read_back(&server, "ZPROJ_CORE", 1).await;
 
     create_adt_object(
         &mut client(&server).await,
@@ -166,7 +181,7 @@ async fn scratch_objects_stay_creatable_under_a_restrictive_list() {
         .expect(1)
         .mount(&server)
         .await;
-    mount_package_read(&server, "$TMP", 1).await;
+    mount_creation_read_back(&server, "$TMP", 1).await;
 
     // $TMP is local throwaway work, not shared code. An allowlist that blocked
     // it would mostly be in the way.
@@ -338,7 +353,7 @@ async fn an_unrestricted_profile_pays_for_no_extra_request() {
         .await;
     // Exactly one GET: the creation read-back. If the guard looked the package
     // up for a profile that grants everything, this would see two.
-    mount_package_read(&server, "ZOTHER", 1).await;
+    mount_creation_read_back(&server, "ZOTHER", 1).await;
 
     create_adt_object(
         &mut client(&server).await,

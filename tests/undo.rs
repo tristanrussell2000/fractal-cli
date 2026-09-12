@@ -877,12 +877,11 @@ async fn undoing_a_metadata_activation_restores_the_document_and_the_pending_one
         .expect(1)
         .mount(&server)
         .await;
-    // The plain GETs the write path makes: before and after each of its two
-    // writes. `version` must be absent, or this would also answer the reads
-    // that ask for one.
+    // The write path's own reads: before and after each of its two writes,
+    // both naming the inactive layer, which is the one a write lands in.
     Mock::given(method("GET"))
         .and(path(DTEL_URI))
-        .and(wiremock::matchers::query_param_is_missing("version"))
+        .and(query_param("version", "inactive"))
         .respond_with(adt_edit_mock::SequentialResponses::sources(&[
             &labelled("inactive", STATES_LINK, "two"),
             &labelled("inactive", STATES_LINK, "one"),

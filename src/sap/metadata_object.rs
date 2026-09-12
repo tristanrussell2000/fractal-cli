@@ -23,6 +23,7 @@ use reqwest::header::HeaderValue;
 
 use super::{
     adt_object_identity::AdtObjectIdentity,
+    adt_version::AdtVersion,
     client::{SapClient, SapClientError},
     edit_session::{
         AdtEditSessionError, AdtObjectLock, acquire_adt_object_lock, release_adt_object_lock,
@@ -577,7 +578,8 @@ pub async fn write_metadata_object(
     // leaves one behind. That costs its own read, and only when a profile
     // actually restricts packages.
     if policy.restricts_packages() {
-        let current = read_metadata_object(sap, &identity).await?;
+        // The package is a property of the object, not of a pending edit.
+        let current = read_metadata_object(sap, &identity, AdtVersion::Active).await?;
         let package = package_of_object_xml(&current)
             .map_err(|source| PackageAuthorizationError::Parse {
                 name: identity.name.clone(),
@@ -596,7 +598,7 @@ pub async fn write_metadata_object(
     // Read the document under the lock, not before it. A hash checked against
     // an unlocked read proves nothing: the document could change between that
     // read and the lock, which is the exact race this guard exists to close.
-    let before = match read_metadata_object(sap, &identity).await {
+    let before = match read_metadata_object(sap, &identity, AdtVersion::Inactive).await {
         Ok(before) => before,
         Err(primary) => return Err(abandon_lock_if_stuck(sap, &identity, &lock, primary).await),
     };
@@ -621,7 +623,8 @@ pub async fn write_metadata_object(
     }
     let still_locked = released.is_err();
 
-    let stored_xml = read_metadata_object(sap, &identity).await?;
+    // The write landed in the inactive layer, so that is the layer to confirm.
+    let stored_xml = read_metadata_object(sap, &identity, AdtVersion::Inactive).await?;
     Ok(MetadataObjectWriteResult {
         changed: stored_xml != before,
         identity,
@@ -673,11 +676,17 @@ fn reports_a_missing_description(error: &SapClientError) -> bool {
     )
 }
 
+/// One named layer of the object's document.
+///
+/// `Inactive` is what a plain GET already served — SAP falls back to the active
+/// document when there is no inactive one — but naming it keeps that a decision
+/// rather than a coincidence.
 async fn read_metadata_object(
     sap: &SapClient,
     identity: &AdtObjectIdentity,
+    version: AdtVersion,
 ) -> Result<String, MetadataObjectWriteError> {
-    sap.get_text(&identity.object_uri)
+    sap.get_text_with_query(&identity.object_uri, &[("version", version.as_str())])
         .await
         .map_err(|source| MetadataObjectWriteError::Read {
             name: identity.name.clone(),

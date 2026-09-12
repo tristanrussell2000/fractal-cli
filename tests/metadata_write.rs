@@ -564,3 +564,76 @@ async fn a_document_with_its_links_stripped_is_sent_verbatim() {
     assert_eq!(body, document("new"));
     server.verify().await;
 }
+
+/// The same document, carrying the package the object lives in.
+fn packaged_document(label: &str, package: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<blue:wbobj xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="ZSAMPLE_DE" adtcore:description="Sample">
+  <adtcore:packageRef adtcore:name="{package}"/>
+  <dtel:dataElement><dtel:shortFieldLabel>{label}</dtel:shortFieldLabel></dtel:dataElement>
+</blue:wbobj>"#
+    )
+}
+
+#[tokio::test]
+async fn the_package_guard_reads_the_active_document_not_a_pending_edit() {
+    let server = MockServer::start().await;
+    let session = session();
+    session.mount_csrf_session(&server).await;
+    session.mount_lock(&server, None).await;
+    session
+        .unlock_request()
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(OBJECT_PATH))
+        .and(query_param("lockHandle", LOCK_HANDLE))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // The guard's read, and the only one that names the active layer. A
+    // pending edit cannot move an object between packages, and this pins that
+    // the guard does not depend on it: the inactive document below claims a
+    // package the profile does not grant.
+    Mock::given(method("GET"))
+        .and(path(OBJECT_PATH))
+        .and(query_param("version", "active"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(packaged_document("old", "ZGRANTED")),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    // The gate read and the read-back, both on the layer a write lands in.
+    Mock::given(method("GET"))
+        .and(path(OBJECT_PATH))
+        .and(query_param("version", "inactive"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(packaged_document("new", "ZREFUSED")),
+        )
+        .mount(&server)
+        .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let result = write_metadata_object(
+        &mut client,
+        &EditPolicy {
+            customer_namespaces: vec!["Z*".to_owned()],
+            edit_packages: Some(vec!["ZGRANTED".to_owned()]),
+            allow_temporary_package: true,
+        },
+        MetadataAdtObjectType::DataElement,
+        "zsample_de",
+        &packaged_document("new", "ZGRANTED"),
+        None,
+        None,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{:?}", result.err());
+    server.verify().await;
+}

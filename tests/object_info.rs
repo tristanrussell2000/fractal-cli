@@ -5,7 +5,7 @@ use fractal::{
 };
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
-    matchers::{method, path},
+    matchers::{method, path, query_param},
 };
 
 fn profile(base_url: String) -> Profile {
@@ -24,8 +24,11 @@ fn profile(base_url: String) -> Profile {
 #[tokio::test]
 async fn fetches_object_info_and_extracts_the_description() {
     let server = MockServer::start().await;
+    // `version=active` is required: a read naming no version is served a
+    // pending edit's description, which this command claims not to return.
     Mock::given(method("GET"))
         .and(path("/sap/bc/adt/oo/classes/zcl_test"))
+        .and(query_param("version", "active"))
         .respond_with(ResponseTemplate::new(200).set_body_string(
             r#"<?xml version="1.0"?><class:abapClass xmlns:class="urn:test" xmlns:adtcore="urn:adt" adtcore:description="Test class"><name>ZCL_TEST</name></class:abapClass>"#,
         ))
