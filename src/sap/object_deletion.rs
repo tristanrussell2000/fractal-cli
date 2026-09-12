@@ -437,6 +437,10 @@ async fn record_deletion(
 ///
 /// For a metadata object those are the same read: the document *is* the object.
 /// A source object needs both, and the two are different resources.
+///
+/// Both name the active version. This content is the journal's restore image,
+/// and a read naming no version is served somebody's pending edit whenever one
+/// exists — which was never what ran.
 async fn deletion_content(
     sap: &SapClient,
     identity: &AdtObjectIdentity,
@@ -455,14 +459,20 @@ async fn deletion_content(
                         source,
                     })?;
             let metadata = sap
-                .get_text(&identity.object_uri)
+                .get_text_with_query(
+                    &identity.object_uri,
+                    &[("version", AdtVersion::Active.as_str())],
+                )
                 .await
                 .map_err(unreadable)?;
             Ok((source.snapshot.source, metadata))
         }
         AdtObjectFamily::Metadata(_) => {
             let document = sap
-                .get_text(&identity.object_uri)
+                .get_text_with_query(
+                    &identity.object_uri,
+                    &[("version", AdtVersion::Active.as_str())],
+                )
                 .await
                 .map_err(unreadable)?;
             let document = strip_navigation_links(&document);
