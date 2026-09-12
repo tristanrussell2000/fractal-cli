@@ -4,8 +4,8 @@ use serde::Serialize;
 
 use crate::{
     cli::{DdicShowArgs, DdicTypeArg},
-    commands::{connect, tabular},
-    output::{OutputFormat, print_result},
+    commands::{connect, render_version, tabular},
+    output::{OutputFormat, print_json},
     reported::Reported,
 };
 use fractal::sap::{
@@ -45,7 +45,7 @@ pub async fn ddic_show(
 
 pub fn print_ddic_show(result: &DdicShowOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
 
@@ -146,21 +146,6 @@ fn render_ddic_show_readable(info: &DdicTypeInfo) -> String {
     }
 
     output
-}
-
-/// Which layer the caller is actually looking at.
-///
-/// Asking for a layer is not getting it: SAP serves the other one rather than
-/// refusing, and an object that has never been activated declares itself `new`.
-fn render_version(requested: &'static str, declared: Option<&str>) -> String {
-    match declared {
-        None => "unknown (the document does not say)".to_owned(),
-        Some("new") => "new (never activated)".to_owned(),
-        Some(version) if version == requested => version.to_owned(),
-        Some(version) => {
-            format!("{version} (asked for {requested}; this object has none)")
-        }
-    }
 }
 
 fn render_effective_type(info: &DdicTypeInfo) -> String {

@@ -19,23 +19,6 @@ pub fn default_output_format() -> OutputFormat {
     }
 }
 
-pub fn run_and_print<T, F>(operation: F, output: OutputFormat) -> i32
-where
-    T: Serialize,
-    F: FnOnce() -> Result<T, Reported>,
-{
-    run_and_print_with(operation, print_result, output)
-}
-
-pub async fn run_and_print_async<T, F, Fut>(operation: F, output: OutputFormat) -> i32
-where
-    T: Serialize,
-    F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<T, Reported>>,
-{
-    run_and_print_with_async(operation, print_result, output).await
-}
-
 pub fn run_and_print_with<T, F, P>(operation: F, print: P, output: OutputFormat) -> i32
 where
     T: Serialize,
@@ -77,17 +60,7 @@ where
     }
 }
 
-pub fn print_result<T: Serialize>(result: &T, output: OutputFormat) {
-    match output {
-        OutputFormat::Json => print_json(result),
-        OutputFormat::Readable => {
-            // Commands without a dedicated readable renderer use structured JSON for now.
-            print_json(result);
-        }
-    }
-}
-
-fn print_json<T: Serialize>(result: &T) {
+pub fn print_json<T: Serialize>(result: &T) {
     println!(
         "{}",
         serde_json::to_string_pretty(result).expect("result serializes")

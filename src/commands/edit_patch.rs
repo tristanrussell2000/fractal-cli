@@ -8,7 +8,7 @@ use super::{
 use crate::{
     cli::EditSourcePatchArgs,
     commands::connect,
-    output::{OutputFormat, print_result},
+    output::{OutputFormat, print_json},
     reported::Reported,
 };
 use fractal::sap::{
@@ -78,7 +78,7 @@ pub async fn edit_source_patch(
 
 pub fn print_edit_source_patch(result: &EditSourcePatchOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
 

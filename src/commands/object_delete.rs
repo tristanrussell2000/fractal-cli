@@ -7,7 +7,7 @@ use fractal::journal::recorder::Journal;
 use super::{connect, edit_object_identity::EditObjectIdentityOutput};
 use crate::{
     cli::ObjectDeleteArgs,
-    output::{OutputFormat, print_result},
+    output::{OutputFormat, print_json},
     reported::Reported,
 };
 use fractal::sap::{
@@ -107,7 +107,7 @@ pub async fn object_delete(
 
 pub fn print_object_delete(result: &EditObjectDeleteOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
     print!("{}", render_object_delete_readable(result));

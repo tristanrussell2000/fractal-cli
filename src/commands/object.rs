@@ -1,8 +1,10 @@
+use std::fmt::Write as _;
+
 use serde::Serialize;
 
 use crate::cli::{SearchArgs, SourceArgs, UriArgs, UsagesArgs, VersionArg, XmlArgs};
-use crate::commands::connect;
-use crate::output::{OutputFormat, print_result};
+use crate::commands::{connect, render_version, tabular};
+use crate::output::{OutputFormat, print_json};
 use crate::reported::Reported;
 use fractal::sap::{
     object_search::{ObjectSearchOptions, search_objects},
@@ -346,7 +348,7 @@ pub fn object_kinds() -> Result<ObjectKindsResultOutput, Reported> {
 
 pub fn print_object_kinds(result: &ObjectKindsResultOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
 
@@ -359,6 +361,182 @@ pub fn print_object_kinds(result: &ObjectKindsResultOutput, output: OutputFormat
     for kind in &result.kinds {
         println!("{:width$}  {}", kind.kind, kind.description);
     }
+}
+
+pub fn print_object_search(result: &ObjectSearchResultOutput, output: OutputFormat) {
+    if matches!(output, OutputFormat::Json) {
+        print_json(result);
+        return;
+    }
+
+    print!("{}", render_object_search_readable(result));
+}
+
+fn render_object_search_readable(result: &ObjectSearchResultOutput) -> String {
+    let mut output = String::new();
+    let _ = writeln!(output, "profile: {}", result.profile);
+    let _ = writeln!(output, "query: {}", result.query);
+    let _ = writeln!(
+        output,
+        "packages: {} ({})",
+        result.package_patterns.join(", "),
+        result.package_patterns_source
+    );
+    let _ = writeln!(
+        output,
+        "hits: {} of {} (offset {}, limit {})",
+        result.returned, result.total_matching, result.offset, result.limit
+    );
+    if let Some(next_offset) = result.next_offset {
+        let _ = writeln!(output, "next offset: {next_offset}");
+    }
+    if result.possibly_truncated_by_sap_cap {
+        let _ = writeln!(
+            output,
+            "warning: SAP caps a search at {} hits, so matches may be missing",
+            result.sap_search_cap
+        );
+    }
+
+    let columns = [
+        tabular::plain_column("TYPE"),
+        tabular::plain_column("NAME"),
+        tabular::plain_column("PACKAGE"),
+        tabular::plain_column("DESCRIPTION"),
+    ];
+    let rows: Vec<Vec<String>> = result
+        .hits
+        .iter()
+        .map(|hit| {
+            vec![
+                hit.object_type.clone(),
+                hit.name.clone(),
+                optional_cell(hit.package.as_deref()),
+                optional_cell(hit.description.as_deref()),
+            ]
+        })
+        .collect();
+    output.push_str(&tabular::render_grid(&columns, &rows));
+    output
+}
+
+pub fn print_object_usages(result: &ObjectUsagesResultOutput, output: OutputFormat) {
+    if matches!(output, OutputFormat::Json) {
+        print_json(result);
+        return;
+    }
+
+    print!("{}", render_object_usages_readable(result));
+}
+
+fn render_object_usages_readable(result: &ObjectUsagesResultOutput) -> String {
+    let mut output = String::new();
+    let _ = writeln!(output, "profile: {}", result.profile);
+    let _ = writeln!(output, "uri: {}", result.uri);
+    let _ = writeln!(
+        output,
+        "references: {} (direct: {}){}",
+        result.total,
+        result.direct_results,
+        if result.direct_results_only {
+            ", showing direct only"
+        } else {
+            ""
+        }
+    );
+
+    // A URI is meant to be pasted into the next command, so it gets a line of
+    // its own rather than a grid cell that would truncate it.
+    for reference in &result.references {
+        // Once the filter is on every reference is direct, so saying so adds
+        // nothing.
+        let direct = if reference.direct_result && !result.direct_results_only {
+            "  (direct)"
+        } else {
+            ""
+        };
+        let _ = writeln!(
+            output,
+            "- {} {} [{}]{direct}",
+            optional_cell(reference.object_type.as_deref()),
+            optional_cell(reference.name.as_deref()),
+            optional_cell(reference.package.as_deref())
+        );
+        let _ = writeln!(output, "  {}", reference.uri);
+    }
+    output
+}
+
+fn optional_cell(value: Option<&str>) -> String {
+    value.unwrap_or("-").to_owned()
+}
+
+pub fn print_object_info(result: &ObjectInfoResultOutput, output: OutputFormat) {
+    if matches!(output, OutputFormat::Json) {
+        print_json(result);
+        return;
+    }
+
+    println!("profile: {}", result.profile);
+    println!("uri: {}", result.uri);
+    println!("description: {}", result.description);
+}
+
+pub fn print_object_source(result: &ObjectSourceResultOutput, output: OutputFormat) {
+    if matches!(output, OutputFormat::Json) {
+        print_json(result);
+        return;
+    }
+
+    print!("{}", render_object_source_readable(result));
+}
+
+fn render_object_source_readable(result: &ObjectSourceResultOutput) -> String {
+    let mut output = String::new();
+    let _ = writeln!(output, "profile: {}", result.profile);
+    let _ = writeln!(output, "uri: {}", result.uri);
+    let _ = writeln!(output, "requested version: {}", result.requested_version);
+    let _ = writeln!(
+        output,
+        "bytes: {}-{} of {}",
+        result.start_byte, result.end_byte, result.total_bytes
+    );
+    if result.truncated {
+        let _ = writeln!(
+            output,
+            "truncated: yes (next offset: {})",
+            result
+                .next_offset
+                .map_or_else(|| "-".to_owned(), |offset| offset.to_string())
+        );
+    }
+    output.push_str("\nsource:\n");
+    output.push_str(&result.source);
+    output
+}
+
+pub fn print_object_xml(result: &ObjectXmlResultOutput, output: OutputFormat) {
+    if matches!(output, OutputFormat::Json) {
+        print_json(result);
+        return;
+    }
+
+    print!("{}", render_object_xml_readable(result));
+}
+
+fn render_object_xml_readable(result: &ObjectXmlResultOutput) -> String {
+    let mut output = String::new();
+    let _ = writeln!(output, "profile: {}", result.profile);
+    let _ = writeln!(output, "uri: {}", result.uri);
+    let _ = writeln!(
+        output,
+        "version: {}",
+        render_version(result.requested_version, result.version.as_deref())
+    );
+    let _ = writeln!(output, "sha256: {}", result.sha256);
+    output.push_str("\nxml:\n");
+    output.push_str(&result.xml);
+    output
 }
 
 #[cfg(test)]
@@ -674,5 +852,135 @@ mod tests {
         assert!(output.possibly_truncated_by_sap_cap);
         assert_eq!(output.hits[0].kind, "CLAS");
         assert_eq!(output.hits[0].name, "ZCL_VERSION");
+    }
+
+    #[test]
+    fn readable_search_output_tabulates_the_hits() {
+        let result = ObjectSearchResultOutput {
+            ok: true,
+            profile: "de2".to_owned(),
+            query: "SAMPLE".to_owned(),
+            package_patterns: vec!["ZAPP*".to_owned()],
+            package_patterns_source: "default".to_owned(),
+            total_matching: 42,
+            returned: 1,
+            offset: 0,
+            limit: 1,
+            next_offset: Some(1),
+            sap_search_cap: 100,
+            possibly_truncated_by_sap_cap: true,
+            hits: vec![ObjectSearchHitOutput {
+                name: "ZCL_SAMPLE".to_owned(),
+                kind: "CLAS".to_owned(),
+                object_type: "CLAS/OC".to_owned(),
+                package: None,
+                description: Some("Sample class".to_owned()),
+                uri: Some("/sap/bc/adt/oo/classes/zcl_sample".to_owned()),
+            }],
+        };
+
+        let rendered = render_object_search_readable(&result);
+
+        assert!(rendered.contains("hits: 1 of 42 (offset 0, limit 1)"));
+        assert!(rendered.contains("next offset: 1"));
+        assert!(rendered.contains("SAP caps a search at 100 hits"));
+        assert!(rendered.contains("ZCL_SAMPLE"));
+        assert!(rendered.contains("Sample class"));
+    }
+
+    #[test]
+    fn readable_usages_output_keeps_every_uri_whole() {
+        let long_uri =
+            "/sap/bc/adt/ddic/tables/zsample_long_table_name_that_runs_past_a_grid_cell".to_owned();
+        let reference = UsageReferenceOutput {
+            uri: long_uri.clone(),
+            parent_uri: None,
+            name: Some("ZCL_CALLER".to_owned()),
+            kind: Some("CLAS".to_owned()),
+            object_type: Some("CLAS/OC".to_owned()),
+            package: Some("ZAPP".to_owned()),
+            direct_result: true,
+        };
+        let mut result = ObjectUsagesResultOutput {
+            ok: true,
+            profile: "de2".to_owned(),
+            uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
+            direct_results_only: false,
+            total: 1,
+            direct_results: 1,
+            references: vec![reference],
+        };
+
+        let all = render_object_usages_readable(&result);
+        assert!(all.contains(&long_uri));
+        assert!(!all.contains('…'));
+        assert!(all.contains("(direct)"));
+        assert!(all.contains("references: 1 (direct: 1)"));
+
+        result.direct_results_only = true;
+        let direct_only = render_object_usages_readable(&result);
+        assert!(!direct_only.contains("(direct)"));
+        assert!(direct_only.contains("showing direct only"));
+        assert!(direct_only.contains("ZCL_CALLER"));
+    }
+
+    #[test]
+    fn readable_source_output_keeps_the_source_verbatim() {
+        let result = ObjectSourceResultOutput {
+            ok: true,
+            profile: "de2".to_owned(),
+            uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
+            start_byte: 0,
+            end_byte: 24,
+            total_bytes: 96,
+            truncated: true,
+            next_offset: Some(24),
+            requested_version: "active",
+            source: "CLASS zcl_sample DEFINITION.".to_owned(),
+        };
+
+        let rendered = render_object_source_readable(&result);
+
+        assert!(rendered.contains("bytes: 0-24 of 96"));
+        assert!(rendered.contains("truncated: yes (next offset: 24)"));
+        assert!(rendered.ends_with("CLASS zcl_sample DEFINITION."));
+        assert!(!rendered.contains('{'));
+    }
+
+    #[test]
+    fn readable_source_output_omits_truncation_when_the_whole_source_is_returned() {
+        let result = ObjectSourceResultOutput {
+            ok: true,
+            profile: "de2".to_owned(),
+            uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
+            start_byte: 0,
+            end_byte: 6,
+            total_bytes: 6,
+            truncated: false,
+            next_offset: None,
+            requested_version: "active",
+            source: "REPORT".to_owned(),
+        };
+
+        assert!(!render_object_source_readable(&result).contains("truncated"));
+    }
+
+    #[test]
+    fn readable_xml_output_keeps_the_document_verbatim() {
+        let result = ObjectXmlResultOutput {
+            ok: true,
+            profile: "de2".to_owned(),
+            uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
+            requested_version: "active",
+            version: Some("inactive".to_owned()),
+            sha256: "abc123".to_owned(),
+            xml: "<class:abapClass/>".to_owned(),
+        };
+
+        let rendered = render_object_xml_readable(&result);
+
+        assert!(rendered.contains("version: inactive (asked for active; this object has none)"));
+        assert!(rendered.contains("sha256: abc123"));
+        assert!(rendered.ends_with("<class:abapClass/>"));
     }
 }

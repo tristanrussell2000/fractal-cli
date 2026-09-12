@@ -27,6 +27,21 @@ mod tabular;
 use crate::reported::Reported;
 use fractal::{config, credentials, sap::client::SapClient};
 
+/// Which layer the caller is actually looking at.
+///
+/// Asking for a layer is not getting it: SAP serves the other one rather than
+/// refusing, and an object that has never been activated declares itself `new`.
+pub(super) fn render_version(requested: &'static str, declared: Option<&str>) -> String {
+    match declared {
+        None => "unknown (the document does not say)".to_owned(),
+        Some("new") => "new (never activated)".to_owned(),
+        Some(version) if version == requested => version.to_owned(),
+        Some(version) => {
+            format!("{version} (asked for {requested}; this object has none)")
+        }
+    }
+}
+
 /// Resolves the selected profile, loads its keychain password, and opens a
 /// `SapClient`. Shared by every command that needs to reach SAP; the profile
 /// is returned as an owned value (rather than borrowed from a local config

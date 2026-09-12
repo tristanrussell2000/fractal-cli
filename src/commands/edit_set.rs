@@ -11,7 +11,7 @@ use super::{
 use crate::{
     cli::EditSourceSetArgs,
     commands::connect,
-    output::{OutputFormat, print_result},
+    output::{OutputFormat, print_json},
     reported::Reported,
 };
 use fractal::sap::{
@@ -93,7 +93,7 @@ pub async fn edit_source_set(
 
 pub fn print_edit_source_set(result: &EditSourceSetOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
     print!("{}", render_edit_source_set_readable(result));

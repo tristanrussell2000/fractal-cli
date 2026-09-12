@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::io::{BufRead, IsTerminal, Read, Write};
 
 use serde::Serialize;
@@ -6,6 +7,7 @@ use thiserror::Error;
 use fractal::reportable_error::ReportableError;
 
 use crate::cli::{AuthSetArgs, LoginArgs, ProfileArgs};
+use crate::output::{OutputFormat, print_json};
 use crate::reported::Reported;
 use fractal::{config, credentials};
 
@@ -542,9 +544,264 @@ fn store_password(
     })
 }
 
+pub fn print_auth_login(result: &AuthLoginResult, output: OutputFormat) {
+    if matches!(output, OutputFormat::Json) {
+        print_json(result);
+        return;
+    }
+
+    print!("{}", render_auth_login_readable(result));
+}
+
+fn render_auth_login_readable(result: &AuthLoginResult) -> String {
+    let mut output = String::new();
+    let _ = writeln!(output, "profile: {}", result.profile);
+    let _ = writeln!(output, "config: {}", result.config_path);
+    let _ = writeln!(output, "default profile: {}", yes_no(result.became_default));
+    let _ = writeln!(output, "password: {}", result.password_storage);
+    if let Some(warning) = &result.warning {
+        let _ = writeln!(output, "warning: {warning}");
+    }
+    let _ = writeln!(output, "{}", result.message);
+    output
+}
+
+pub fn print_auth_list(result: &AuthListResult, output: OutputFormat) {
+    if matches!(output, OutputFormat::Json) {
+        print_json(result);
+        return;
+    }
+
+    print!("{}", render_auth_list_readable(result));
+}
+
+fn render_auth_list_readable(result: &AuthListResult) -> String {
+    let mut output = String::new();
+    let _ = writeln!(output, "config: {}", result.config_path);
+    let _ = writeln!(
+        output,
+        "default profile: {}",
+        result.default_profile.as_deref().unwrap_or("(none)")
+    );
+    if result.profiles.is_empty() {
+        let _ = writeln!(output, "profiles: (none)");
+        return output;
+    }
+
+    let _ = writeln!(output, "profiles:");
+    for profile in &result.profiles {
+        // The default profile is the one every command uses without --profile,
+        // so it is worth spotting at a glance.
+        let marker = if result.default_profile.as_deref() == Some(profile.name.as_str()) {
+            "*"
+        } else {
+            " "
+        };
+        let _ = writeln!(output, "  {marker} {}", profile.name);
+        let _ = writeln!(output, "      url: {}", profile.base_url);
+        let _ = writeln!(
+            output,
+            "      client {} user {}{}",
+            profile.client,
+            profile.username,
+            if profile.insecure_tls {
+                "  (TLS verification off)"
+            } else {
+                ""
+            }
+        );
+        let _ = writeln!(
+            output,
+            "      credential: {}{}",
+            profile.credential,
+            profile
+                .credential_error
+                .as_deref()
+                .map_or_else(String::new, |error| format!(" - {error}"))
+        );
+        let _ = writeln!(
+            output,
+            "      namespaces: {}",
+            render_patterns(&profile.customer_namespaces)
+        );
+        let _ = writeln!(
+            output,
+            "      edit packages: {}",
+            render_edit_packages(profile.edit_packages.as_deref())
+        );
+        let _ = writeln!(
+            output,
+            "      temporary package: {}",
+            if profile.allow_temporary_package {
+                "allowed"
+            } else {
+                "not allowed"
+            }
+        );
+    }
+    output
+}
+
+pub fn print_auth_set(result: &AuthSetResult, output: OutputFormat) {
+    if matches!(output, OutputFormat::Json) {
+        print_json(result);
+        return;
+    }
+
+    print!("{}", render_auth_set_readable(result));
+}
+
+fn render_auth_set_readable(result: &AuthSetResult) -> String {
+    let mut output = String::new();
+    let _ = writeln!(output, "profile: {}", result.profile);
+    let _ = writeln!(output, "config: {}", result.config_path);
+    let _ = writeln!(
+        output,
+        "namespaces: {}",
+        render_patterns(&result.customer_namespaces)
+    );
+    let _ = writeln!(
+        output,
+        "edit packages: {}",
+        render_edit_packages(result.edit_packages.as_deref())
+    );
+    let _ = writeln!(
+        output,
+        "temporary package: {}",
+        if result.allow_temporary_package {
+            "allowed"
+        } else {
+            "not allowed"
+        }
+    );
+    output
+}
+
+pub fn print_auth_remove(result: &AuthRemoveResult, output: OutputFormat) {
+    if matches!(output, OutputFormat::Json) {
+        print_json(result);
+        return;
+    }
+
+    print!("{}", render_auth_remove_readable(result));
+}
+
+fn render_auth_remove_readable(result: &AuthRemoveResult) -> String {
+    let mut output = String::new();
+    let _ = writeln!(output, "profile: {} removed", result.profile);
+    let _ = writeln!(output, "config: {}", result.config_path);
+    let _ = writeln!(output, "{}", result.message);
+    output
+}
+
+/// An empty pattern list is a real setting, not missing data: it means the
+/// profile may edit nothing.
+fn render_edit_packages(packages: Option<&[String]>) -> String {
+    match packages {
+        None => "any package".to_owned(),
+        Some([]) => "none".to_owned(),
+        Some(packages) => packages.join(", "),
+    }
+}
+
+fn render_patterns(patterns: &[String]) -> String {
+    if patterns.is_empty() {
+        return "(none)".to_owned();
+    }
+
+    patterns.join(", ")
+}
+
+const fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::cli::AuthSetArgs;
+
+    #[test]
+    fn readable_list_output_marks_the_default_and_names_a_credential_problem() {
+        let result = AuthListResult {
+            ok: true,
+            config_path: "/home/u/.config/fractal/config.toml".to_owned(),
+            default_profile: Some("de2".to_owned()),
+            profiles: vec![
+                AuthProfileSummary {
+                    name: "de2".to_owned(),
+                    base_url: "https://sap.example:44300".to_owned(),
+                    client: "900".to_owned(),
+                    username: "ZSAMPLE".to_owned(),
+                    insecure_tls: false,
+                    customer_namespaces: vec!["Z*".to_owned(), "Y*".to_owned()],
+                    edit_packages: Some(vec!["ZAPP*".to_owned()]),
+                    allow_temporary_package: true,
+                    credential: "stored".to_owned(),
+                    credential_error: None,
+                },
+                AuthProfileSummary {
+                    name: "de3".to_owned(),
+                    base_url: "https://sap3.example:44300".to_owned(),
+                    client: "900".to_owned(),
+                    username: "ZSAMPLE".to_owned(),
+                    insecure_tls: true,
+                    customer_namespaces: Vec::new(),
+                    edit_packages: None,
+                    allow_temporary_package: false,
+                    credential: "missing".to_owned(),
+                    credential_error: Some("no password stored for profile 'de3'".to_owned()),
+                },
+            ],
+        };
+
+        let rendered = render_auth_list_readable(&result);
+
+        assert!(rendered.contains("  * de2"));
+        assert!(rendered.contains("    de3"));
+        assert!(rendered.contains("edit packages: ZAPP*"));
+        assert!(rendered.contains("edit packages: any package"));
+        assert!(rendered.contains("credential: missing - no password stored"));
+        assert!(rendered.contains("(TLS verification off)"));
+        assert!(rendered.contains("namespaces: Z*, Y*"));
+    }
+
+    #[test]
+    fn readable_set_output_says_when_a_profile_may_edit_nothing() {
+        let result = AuthSetResult {
+            ok: true,
+            profile: "de2".to_owned(),
+            config_path: "/home/u/.config/fractal/config.toml".to_owned(),
+            customer_namespaces: vec!["Z*".to_owned()],
+            edit_packages: Some(Vec::new()),
+            allow_temporary_package: false,
+            restricts_packages: true,
+        };
+
+        let rendered = render_auth_set_readable(&result);
+
+        assert!(rendered.contains("edit packages: none"));
+        assert!(rendered.contains("temporary package: not allowed"));
+    }
+
+    #[test]
+    fn readable_login_output_keeps_the_plaintext_warning() {
+        let result = AuthLoginResult {
+            ok: true,
+            profile: "de2".to_owned(),
+            config_path: "/home/u/.config/fractal/config.toml".to_owned(),
+            became_default: true,
+            password_storage: "plaintext_file".to_owned(),
+            warning: Some("The password is stored unencrypted.".to_owned()),
+            message: "Profile saved and selected as the default profile.".to_owned(),
+        };
+
+        let rendered = render_auth_login_readable(&result);
+
+        assert!(rendered.contains("default profile: yes"));
+        assert!(rendered.contains("password: plaintext_file"));
+        assert!(rendered.contains("warning: The password is stored unencrypted."));
+    }
 
     fn set_args() -> AuthSetArgs {
         AuthSetArgs {

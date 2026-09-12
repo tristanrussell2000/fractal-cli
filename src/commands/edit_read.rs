@@ -6,7 +6,7 @@ use super::edit_object_identity::EditObjectIdentityOutput;
 use crate::{
     cli::EditSourceReadArgs,
     commands::connect,
-    output::{OutputFormat, print_result},
+    output::{OutputFormat, print_json},
     reported::Reported,
 };
 use fractal::sap::editable_source::{
@@ -39,7 +39,7 @@ pub async fn edit_source_read(
 
 pub fn print_edit_source_read(result: &EditSourceReadOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
 

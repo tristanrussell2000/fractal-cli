@@ -8,7 +8,10 @@ use cli::{
     AuthCommand, Cli, Command, DdicCommand, EditCommand, GuardCommand, JournalCommand,
     ObjectCommand, PackageCommand, SystemCommand, TableCommand, TransportCommand,
 };
-use commands::auth::{auth_list, auth_login, auth_remove, auth_set};
+use commands::auth::{
+    auth_list, auth_login, auth_remove, auth_set, print_auth_list, print_auth_login,
+    print_auth_remove, print_auth_set,
+};
 use commands::ddic::{ddic_show, print_ddic_show};
 use commands::edit_activate::{edit_object_activate, print_edit_object_activate};
 use commands::edit_check::{edit_source_check, print_edit_source_check};
@@ -26,22 +29,20 @@ use commands::journal::{
 };
 use commands::object::{
     object_info, object_kinds, object_search, object_source, object_usages, object_xml,
-    print_object_kinds,
+    print_object_info, print_object_kinds, print_object_search, print_object_source,
+    print_object_usages, print_object_xml,
 };
 use commands::object_delete::{object_delete, print_object_delete};
-use commands::package::{package_items, package_tree};
+use commands::package::{package_items, package_tree, print_package_items, print_package_tree};
 use commands::query::{print_query, query};
-use commands::system::{print_system_list, system_list, system_test};
+use commands::system::{print_system_list, print_system_test, system_list, system_test};
 use commands::table::{print_table_data, print_table_metadata, table_data, table_metadata};
 use commands::transport::{
     print_transport_create, print_transport_list, print_transport_show, transport_create,
     transport_list, transport_show,
 };
 use commands::undo::{object_undo, print_object_undo};
-use output::{
-    default_output_format, run_and_print, run_and_print_async, run_and_print_with,
-    run_and_print_with_async,
-};
+use output::{default_output_format, run_and_print_with, run_and_print_with_async};
 use reported::Reported;
 
 // A flat dispatch table: one arm per command, each forwarding to its handler.
@@ -57,22 +58,33 @@ async fn main() {
     let exit_code = match &cli.command {
         Command::Auth {
             command: AuthCommand::Login(args),
-        } => run_and_print(|| auth_login(args), output),
+        } => run_and_print_with(|| auth_login(args), print_auth_login, output),
         Command::Auth {
             command: AuthCommand::List,
-        } => run_and_print(auth_list, output),
+        } => run_and_print_with(auth_list, print_auth_list, output),
         Command::Auth {
             command: AuthCommand::Set(args),
-        } => run_and_print(|| auth_set(cli.profile.as_deref(), args), output),
+        } => run_and_print_with(
+            || auth_set(cli.profile.as_deref(), args),
+            print_auth_set,
+            output,
+        ),
         Command::Auth {
             command: AuthCommand::Remove(args),
-        } => run_and_print(|| auth_remove(args), output),
+        } => run_and_print_with(|| auth_remove(args), print_auth_remove, output),
         Command::System {
             command: SystemCommand::List,
         } => run_and_print_with(system_list, print_system_list, output),
         Command::System {
             command: SystemCommand::Test,
-        } => run_and_print_async(|| system_test(cli.profile.as_deref()), output).await,
+        } => {
+            run_and_print_with_async(
+                || system_test(cli.profile.as_deref()),
+                print_system_test,
+                output,
+            )
+            .await
+        }
         Command::Ddic {
             command: DdicCommand::Show(args),
         } => {
@@ -85,28 +97,77 @@ async fn main() {
         }
         Command::Object {
             command: ObjectCommand::Search(args),
-        } => run_and_print_async(|| object_search(cli.profile.as_deref(), args), output).await,
+        } => {
+            run_and_print_with_async(
+                || object_search(cli.profile.as_deref(), args),
+                print_object_search,
+                output,
+            )
+            .await
+        }
         Command::Object {
             command: ObjectCommand::Source(args),
-        } => run_and_print_async(|| object_source(cli.profile.as_deref(), args), output).await,
+        } => {
+            run_and_print_with_async(
+                || object_source(cli.profile.as_deref(), args),
+                print_object_source,
+                output,
+            )
+            .await
+        }
         Command::Object {
             command: ObjectCommand::Xml(args),
-        } => run_and_print_async(|| object_xml(cli.profile.as_deref(), args), output).await,
+        } => {
+            run_and_print_with_async(
+                || object_xml(cli.profile.as_deref(), args),
+                print_object_xml,
+                output,
+            )
+            .await
+        }
         Command::Object {
             command: ObjectCommand::Info(args),
-        } => run_and_print_async(|| object_info(cli.profile.as_deref(), args), output).await,
+        } => {
+            run_and_print_with_async(
+                || object_info(cli.profile.as_deref(), args),
+                print_object_info,
+                output,
+            )
+            .await
+        }
         Command::Object {
             command: ObjectCommand::Usages(args),
-        } => run_and_print_async(|| object_usages(cli.profile.as_deref(), args), output).await,
+        } => {
+            run_and_print_with_async(
+                || object_usages(cli.profile.as_deref(), args),
+                print_object_usages,
+                output,
+            )
+            .await
+        }
         Command::Object {
             command: ObjectCommand::Kinds,
         } => run_and_print_with(object_kinds, print_object_kinds, output),
         Command::Package {
             command: PackageCommand::Tree(args),
-        } => run_and_print_async(|| package_tree(cli.profile.as_deref(), args), output).await,
+        } => {
+            run_and_print_with_async(
+                || package_tree(cli.profile.as_deref(), args),
+                print_package_tree,
+                output,
+            )
+            .await
+        }
         Command::Package {
             command: PackageCommand::Items(args),
-        } => run_and_print_async(|| package_items(cli.profile.as_deref(), args), output).await,
+        } => {
+            run_and_print_with_async(
+                || package_items(cli.profile.as_deref(), args),
+                print_package_items,
+                output,
+            )
+            .await
+        }
         Command::Table {
             command: TableCommand::Data(args),
         } => {

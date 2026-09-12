@@ -8,7 +8,7 @@ use fractal::reportable_error::ReportableError;
 use crate::{
     cli::QueryArgs,
     commands::{connect, tabular},
-    output::{OutputFormat, print_result},
+    output::{OutputFormat, print_json},
     reported::Reported,
 };
 use fractal::sap::table::{QueryOptions, TableDataResult, run_query};
@@ -112,7 +112,7 @@ fn map_query_result(
 
 pub fn print_query(result: &QueryResultOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
 
