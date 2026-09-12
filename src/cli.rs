@@ -364,6 +364,11 @@ pub enum ObjectCommand {
 #[derive(Debug, Subcommand)]
 pub enum DdicCommand {
     /// Show one data element or domain, resolving a data element to its domain.
+    ///
+    /// Reads the active version by default, and reports which version it got.
+    /// Those are two separate answers: SAP serves the other layer rather than
+    /// refusing when the requested one does not exist, and an object that has
+    /// never been activated declares itself "new".
     Show(DdicShowArgs),
 }
 
@@ -377,6 +382,11 @@ pub struct DdicShowArgs {
     /// Report the data element alone, without reading its domain.
     #[arg(long, default_value_t = false)]
     pub(crate) no_resolve: bool,
+    /// Stored version to read. A resolved domain is read at the same version.
+    /// If the requested version does not exist, SAP serves the other one, and
+    /// the reported version says which arrived.
+    #[arg(long, value_enum, default_value = "active")]
+    pub(crate) version: VersionArg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -515,11 +525,13 @@ pub struct EditSourceReadArgs {
     pub(crate) name: String,
     /// Stored source version to request. If inactive does not exist, SAP returns active source.
     #[arg(long, value_enum, default_value = "active")]
-    pub(crate) version: EditSourceVersionArg,
+    pub(crate) version: VersionArg,
 }
 
+/// Which stored layer of an object to read. Shared by every command that
+/// selects one, because they all become the same `?version=` on the request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum EditSourceVersionArg {
+pub enum VersionArg {
     Active,
     Inactive,
 }
@@ -534,7 +546,7 @@ pub struct EditSourceCheckArgs {
     pub(crate) name: String,
     /// Stored source version to check.
     #[arg(long, value_enum, default_value = "inactive")]
-    pub(crate) version: EditSourceVersionArg,
+    pub(crate) version: VersionArg,
 }
 
 #[derive(Debug, Args)]
@@ -827,7 +839,7 @@ mod tests {
         };
         assert_eq!(args.object_type, "CLAS");
         assert_eq!(args.name, "ZCL_SAMPLE");
-        assert_eq!(args.version, super::EditSourceVersionArg::Inactive);
+        assert_eq!(args.version, super::VersionArg::Inactive);
 
         let cli =
             Cli::try_parse_from(suggested_command::object_search("INTF", "ZIF_SAMPLE").split(' '))

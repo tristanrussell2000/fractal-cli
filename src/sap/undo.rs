@@ -29,9 +29,9 @@ use super::{
     },
     metadata_activation::{
         ACTIVE_VERSION, MetadataObjectActivationError, MetadataObjectActivationRequest,
-        activate_metadata_object, document_version,
+        activate_metadata_object,
     },
-    metadata_document::strip_navigation_links,
+    metadata_document::{document_version, strip_navigation_links},
     metadata_object::{
         MetadataAdtObjectType, MetadataObjectWriteError, metadata_object_identity,
         write_metadata_object,

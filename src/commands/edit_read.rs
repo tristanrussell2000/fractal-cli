@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use super::edit_object_identity::EditObjectIdentityOutput;
 use crate::{
-    cli::{EditSourceReadArgs, EditSourceVersionArg},
+    cli::{EditSourceReadArgs, VersionArg},
     commands::connect,
     output::{OutputFormat, print_result},
     reported::Reported,
@@ -46,10 +46,10 @@ pub fn print_edit_source_read(result: &EditSourceReadOutput, output: OutputForma
     print!("{}", render_edit_source_readable(result));
 }
 
-pub(super) const fn map_source_version(version: EditSourceVersionArg) -> AdtSourceVersion {
+pub(super) const fn map_source_version(version: VersionArg) -> AdtSourceVersion {
     match version {
-        EditSourceVersionArg::Active => AdtSourceVersion::Active,
-        EditSourceVersionArg::Inactive => AdtSourceVersion::Inactive,
+        VersionArg::Active => AdtSourceVersion::Active,
+        VersionArg::Inactive => AdtSourceVersion::Inactive,
     }
 }
 
@@ -128,7 +128,7 @@ mod tests {
 
         assert_eq!(args.object_type, "clas");
         assert_eq!(args.name, "ZCL_EXAMPLE");
-        assert_eq!(args.version, EditSourceVersionArg::Active);
+        assert_eq!(args.version, VersionArg::Active);
     }
 
     #[test]
@@ -148,7 +148,7 @@ mod tests {
             .unwrap(),
         );
 
-        assert_eq!(args.version, EditSourceVersionArg::Inactive);
+        assert_eq!(args.version, VersionArg::Inactive);
     }
 
     #[test]

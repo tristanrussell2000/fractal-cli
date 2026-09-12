@@ -121,7 +121,7 @@ mod tests {
     use clap::Parser;
 
     use super::*;
-    use crate::cli::{Cli, Command, EditCommand, EditSourceVersionArg};
+    use crate::cli::{Cli, Command, EditCommand, VersionArg};
     use fractal::sap::{
         adt_message_severity::AdtMessageSeverity,
         editable_source::{AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceIdentity},
@@ -153,7 +153,7 @@ mod tests {
             .unwrap(),
         );
 
-        assert_eq!(args.version, EditSourceVersionArg::Inactive);
+        assert_eq!(args.version, VersionArg::Inactive);
     }
 
     #[test]
@@ -173,7 +173,7 @@ mod tests {
             .unwrap(),
         );
 
-        assert_eq!(args.version, EditSourceVersionArg::Active);
+        assert_eq!(args.version, VersionArg::Active);
     }
 
     #[test]

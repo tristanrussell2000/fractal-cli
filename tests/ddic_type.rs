@@ -4,12 +4,13 @@ use fractal::{
     sap::{
         client::SapClient,
         ddic_type::{DataElementTypeSource, DdicTypeOptions, get_ddic_type},
+        metadata_document::MetadataVersion,
         metadata_object::MetadataAdtObjectType,
     },
 };
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
-    matchers::{method, path},
+    matchers::{method, path, query_param},
 };
 
 fn profile(base_url: String) -> Profile {
@@ -29,11 +30,12 @@ fn resolving() -> DdicTypeOptions {
     DdicTypeOptions {
         object_type: None,
         resolve_domain: true,
+        version: MetadataVersion::Active,
     }
 }
 
 const DATA_ELEMENT_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
-<blue:wbobj adtcore:name="ZSAMPLE_STATUS" adtcore:type="DTEL/DE" adtcore:description="Sample status"
+<blue:wbobj adtcore:name="ZSAMPLE_STATUS" adtcore:type="DTEL/DE" adtcore:description="Sample status" adtcore:version="active"
     xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core">
   <adtcore:packageRef adtcore:uri="/sap/bc/adt/packages/zpkg" adtcore:type="DEVC/K" adtcore:name="ZPKG"/>
   <dtel:dataElement xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements">
@@ -61,7 +63,7 @@ const PREDEFINED_DATA_ELEMENT_XML: &str = r#"<?xml version="1.0" encoding="utf-8
 </blue:wbobj>"#;
 
 const DOMAIN_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
-<doma:domain adtcore:name="ZSAMPLE_STATUS_DOM" adtcore:type="DOMA/DD" adtcore:description="Sample status domain"
+<doma:domain adtcore:name="ZSAMPLE_STATUS_DOM" adtcore:type="DOMA/DD" adtcore:description="Sample status domain" adtcore:version="active"
     xmlns:doma="http://www.sap.com/dictionary/domain" xmlns:adtcore="http://www.sap.com/adt/core">
   <adtcore:packageRef adtcore:uri="/sap/bc/adt/packages/zcfg" adtcore:type="DEVC/K" adtcore:name="ZCFG"/>
   <doma:content>
@@ -76,6 +78,28 @@ const DOMAIN_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
     </doma:valueInformation>
   </doma:content>
 </doma:domain>"#;
+
+/// The same document staged as a pending edit, with a label nothing else has.
+const INACTIVE_DATA_ELEMENT_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<blue:wbobj adtcore:name="ZSAMPLE_STATUS" adtcore:type="DTEL/DE" adtcore:description="Sample status" adtcore:version="inactive"
+    xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core">
+  <dtel:dataElement xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements">
+    <dtel:typeKind>predefinedAbapType</dtel:typeKind>
+    <dtel:dataType>CHAR</dtel:dataType>
+    <dtel:dataTypeLength>000010</dtel:dataTypeLength>
+    <dtel:shortFieldLabel>Pending</dtel:shortFieldLabel>
+  </dtel:dataElement>
+</blue:wbobj>"#;
+
+/// Answers only when the request names this layer, so a read that omits the
+/// selector matches nothing and fails.
+fn mock_version(path_value: &'static str, version: &'static str, body: &'static str) -> Mock {
+    Mock::given(method("GET"))
+        .and(path(path_value))
+        .and(query_param("version", version))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .expect(1)
+}
 
 fn mock_ok(path_value: &'static str, body: &'static str) -> Mock {
     Mock::given(method("GET"))
@@ -146,6 +170,7 @@ async fn no_resolve_reads_the_data_element_alone() {
         &DdicTypeOptions {
             object_type: None,
             resolve_domain: false,
+            version: MetadataVersion::Active,
         },
     )
     .await
@@ -222,6 +247,7 @@ async fn an_explicit_type_skips_detection() {
         &DdicTypeOptions {
             object_type: Some(MetadataAdtObjectType::Domain),
             resolve_domain: true,
+            version: MetadataVersion::Active,
         },
     )
     .await
@@ -338,4 +364,115 @@ async fn a_standard_domain_outside_the_customer_namespaces_is_readable() {
 
     assert_eq!(info.kind, "DOMA");
     server.verify().await;
+}
+
+#[tokio::test]
+async fn every_read_names_the_layer_it_wants() {
+    let server = MockServer::start().await;
+    mock_version(
+        "/sap/bc/adt/ddic/dataelements/zsample_status",
+        "active",
+        DATA_ELEMENT_XML,
+    )
+    .mount(&server)
+    .await;
+    mock_version(
+        "/sap/bc/adt/ddic/domains/zsample_status_dom",
+        "active",
+        DOMAIN_XML,
+    )
+    .mount(&server)
+    .await;
+
+    let profile = profile(server.uri());
+    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let info = get_ddic_type(&mut client, "ZSAMPLE_STATUS", &resolving())
+        .await
+        .unwrap();
+
+    assert_eq!(info.requested_version, "active");
+    assert_eq!(info.version.as_deref(), Some("active"));
+    // The resolved domain is read at the same layer, so one report describes
+    // one point in time rather than two.
+    assert_eq!(
+        info.domain.expect("resolved the domain").version.as_deref(),
+        Some("active")
+    );
+}
+
+#[tokio::test]
+async fn the_inactive_layer_is_reported_as_the_inactive_layer() {
+    let server = MockServer::start().await;
+    // Both layers are on offer. Without a selector a plain GET would be served
+    // the pending edit, which is the bug this test exists for.
+    mock_version(
+        "/sap/bc/adt/ddic/dataelements/zsample_status",
+        "inactive",
+        INACTIVE_DATA_ELEMENT_XML,
+    )
+    .mount(&server)
+    .await;
+    mock_ok(
+        "/sap/bc/adt/ddic/dataelements/zsample_status",
+        DATA_ELEMENT_XML,
+    )
+    .expect(0)
+    .mount(&server)
+    .await;
+
+    let profile = profile(server.uri());
+    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let info = get_ddic_type(
+        &mut client,
+        "ZSAMPLE_STATUS",
+        &DdicTypeOptions {
+            object_type: Some(MetadataAdtObjectType::DataElement),
+            resolve_domain: true,
+            version: MetadataVersion::Inactive,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(info.requested_version, "inactive");
+    assert_eq!(info.version.as_deref(), Some("inactive"));
+    assert_eq!(info.effective_type.data_type.as_deref(), Some("CHAR"));
+}
+
+#[tokio::test]
+async fn a_layer_that_does_not_exist_is_reported_as_the_one_that_arrived() {
+    let server = MockServer::start().await;
+    // SAP falls back rather than refusing: ask for a layer an object does not
+    // have and it serves the other one, saying so only in the document.
+    mock_version(
+        "/sap/bc/adt/ddic/dataelements/zsample_status",
+        "inactive",
+        DATA_ELEMENT_XML,
+    )
+    .mount(&server)
+    .await;
+    mock_version(
+        "/sap/bc/adt/ddic/domains/zsample_status_dom",
+        "inactive",
+        DOMAIN_XML,
+    )
+    .mount(&server)
+    .await;
+
+    let profile = profile(server.uri());
+    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let info = get_ddic_type(
+        &mut client,
+        "ZSAMPLE_STATUS",
+        &DdicTypeOptions {
+            object_type: Some(MetadataAdtObjectType::DataElement),
+            resolve_domain: true,
+            version: MetadataVersion::Inactive,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(info.requested_version, "inactive");
+    assert_eq!(info.version.as_deref(), Some("active"));
 }

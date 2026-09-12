@@ -26,7 +26,10 @@
 //! `object xml` and `ddic show` still print what SAP sent. Whether they should
 //! strip for readability is a question about display, not about storage.
 
-use super::adt_response::parse_adt_document;
+use super::{
+    adt_response::{AdtResponseParseError, parse_adt_document},
+    find_non_empty_attribute,
+};
 
 const ATOM_NAMESPACE: &str = "http://www.w3.org/2005/Atom";
 
@@ -67,6 +70,47 @@ pub fn strip_navigation_links(xml: &str) -> String {
     }
     stripped.push_str(&xml[copied..]);
     stripped
+}
+
+/// Which stored layer of a metadata document to ask SAP for.
+///
+/// A plain GET is not a third option dressed as a default: it serves the
+/// *inactive* document whenever one exists, so a read without this selector
+/// answers a different question depending on whether somebody has pending
+/// work. Every read that cares states which layer it wants.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MetadataVersion {
+    #[default]
+    Active,
+    Inactive,
+}
+
+impl MetadataVersion {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Inactive => "inactive",
+        }
+    }
+}
+
+/// The layer a document says it belongs to: `new`, `inactive` or `active`.
+///
+/// This is the answer, not the request. SAP falls back — asking for the
+/// inactive layer of an object that has none serves the active document — so
+/// the selector records what was wanted and this records what arrived.
+///
+/// # Errors
+///
+/// Returns [`AdtResponseParseError`] when the document is not valid XML.
+pub fn document_version(xml: &str) -> Result<Option<String>, AdtResponseParseError> {
+    Ok(declared_version(parse_adt_document(xml)?.root_element()))
+}
+
+/// [`document_version`] for a caller that has already parsed the document.
+pub(super) fn declared_version(root: roxmltree::Node) -> Option<String> {
+    find_non_empty_attribute(root, "version")
 }
 
 /// Where the whitespace directly before `start` begins.
@@ -146,5 +190,35 @@ mod tests {
     #[test]
     fn an_unparseable_document_comes_back_unchanged() {
         assert_eq!(strip_navigation_links("<not-closed"), "<not-closed");
+    }
+
+    fn versioned(version: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<blue:wbobj xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core"
+    adtcore:name="ZSAMPLE_DE" adtcore:type="DTEL/DE" adtcore:version="{version}"/>"#
+        )
+    }
+
+    #[test]
+    fn reads_the_layer_a_document_declares() {
+        for version in ["active", "inactive", "new"] {
+            assert_eq!(
+                document_version(&versioned(version)).unwrap().as_deref(),
+                Some(version)
+            );
+        }
+    }
+
+    #[test]
+    fn a_document_without_a_version_is_not_treated_as_active() {
+        let xml =
+            r#"<blue:wbobj xmlns:blue="urn:b" xmlns:adtcore="urn:a" adtcore:name="ZSAMPLE_DE"/>"#;
+        assert_eq!(document_version(xml).unwrap(), None);
+    }
+
+    #[test]
+    fn malformed_metadata_is_a_parse_error() {
+        assert!(document_version("<not-closed").is_err());
     }
 }

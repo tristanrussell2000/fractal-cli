@@ -33,12 +33,11 @@ use super::{
     },
     adt_message_severity::AdtMessageSeverity,
     adt_object_identity::AdtObjectIdentity,
-    adt_response::{AdtResponseParseError, parse_adt_document},
+    adt_response::AdtResponseParseError,
     client::{SapClient, SapClientError},
     edit_session::{AdtEditSessionError, attach_adt_object_to_transport},
     editable_source::{AdtEditTargetValidationError, canonicalize_transport_request},
-    find_non_empty_attribute,
-    metadata_document::strip_navigation_links,
+    metadata_document::{document_version, strip_navigation_links},
     metadata_object::{MetadataAdtObjectType, metadata_object_identity},
     package_authorization::{PackageAuthorizationError, authorize_object_package},
     source_check::{AdtInactiveSourceProbeError, probe_inactive_adt_source},
@@ -432,45 +431,9 @@ async fn read_active_metadata_object(
         })
 }
 
-/// The layer a document says it belongs to: `new`, `inactive` or `active`.
-pub(super) fn document_version(xml: &str) -> Result<Option<String>, AdtResponseParseError> {
-    let document = parse_adt_document(xml)?;
-    Ok(find_non_empty_attribute(document.root_element(), "version"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn document(version: &str) -> String {
-        format!(
-            r#"<?xml version="1.0" encoding="utf-8"?>
-<blue:wbobj xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core"
-    adtcore:name="ZSAMPLE_DE" adtcore:type="DTEL/DE" adtcore:version="{version}"/>"#
-        )
-    }
-
-    #[test]
-    fn reads_the_layer_a_document_declares() {
-        for version in ["active", "inactive", "new"] {
-            assert_eq!(
-                document_version(&document(version)).unwrap().as_deref(),
-                Some(version)
-            );
-        }
-    }
-
-    #[test]
-    fn a_document_without_a_version_is_not_treated_as_active() {
-        let xml =
-            r#"<blue:wbobj xmlns:blue="urn:b" xmlns:adtcore="urn:a" adtcore:name="ZSAMPLE_DE"/>"#;
-        assert_eq!(document_version(xml).unwrap(), None);
-    }
-
-    #[test]
-    fn malformed_metadata_is_a_parse_error() {
-        assert!(document_version("<not-closed").is_err());
-    }
 
     #[test]
     fn a_refusal_summarizes_only_the_errors() {

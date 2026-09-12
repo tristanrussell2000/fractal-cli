@@ -3,13 +3,14 @@ use std::fmt::Write as _;
 use serde::Serialize;
 
 use crate::{
-    cli::{DdicShowArgs, DdicTypeArg},
+    cli::{DdicShowArgs, DdicTypeArg, VersionArg},
     commands::{connect, tabular},
     output::{OutputFormat, print_result},
     reported::Reported,
 };
 use fractal::sap::{
     ddic_type::{DataElementTypeSource, DdicTypeInfo, DdicTypeOptions, get_ddic_type},
+    metadata_document::MetadataVersion,
     metadata_object::MetadataAdtObjectType,
 };
 
@@ -31,6 +32,10 @@ pub async fn ddic_show(
             DdicTypeArg::Doma => MetadataAdtObjectType::Domain,
         }),
         resolve_domain: !args.no_resolve,
+        version: match args.version {
+            VersionArg::Active => MetadataVersion::Active,
+            VersionArg::Inactive => MetadataVersion::Inactive,
+        },
     };
     let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
     let info = get_ddic_type(&mut client, &args.name, &options).await?;
@@ -61,6 +66,11 @@ fn render_ddic_show_readable(info: &DdicTypeInfo) -> String {
         let _ = writeln!(output, "package: {package}");
     }
     let _ = writeln!(output, "uri: {}", info.uri);
+    let _ = writeln!(
+        output,
+        "version: {}",
+        render_version(info.requested_version, info.version.as_deref())
+    );
     let _ = writeln!(output, "type: {}", render_effective_type(info));
 
     if let Some(element) = &info.data_element {
@@ -97,6 +107,11 @@ fn render_ddic_show_readable(info: &DdicTypeInfo) -> String {
             let _ = writeln!(output, "  description: {description}");
         }
         let _ = writeln!(output, "  uri: {}", domain.uri);
+        let _ = writeln!(
+            output,
+            "  version: {}",
+            render_version(info.requested_version, domain.version.as_deref())
+        );
         if let Some(length) = domain.output_length.filter(|value| *value > 0) {
             let _ = writeln!(output, "  output length: {length}");
         }
@@ -135,6 +150,23 @@ fn render_ddic_show_readable(info: &DdicTypeInfo) -> String {
     }
 
     output
+}
+
+/// Which layer the caller is actually looking at.
+///
+/// Asking for a layer is not the same as getting it: SAP serves the other one
+/// rather than refusing, and an object that has never been activated declares
+/// itself `new`. Printing the requested version alone would state as fact the
+/// one thing this command got wrong before it had a selector at all.
+fn render_version(requested: &'static str, declared: Option<&str>) -> String {
+    match declared {
+        None => "unknown (the document does not say)".to_owned(),
+        Some("new") => "new (never activated)".to_owned(),
+        Some(version) if version == requested => version.to_owned(),
+        Some(version) => {
+            format!("{version} (asked for {requested}; this object has none)")
+        }
+    }
 }
 
 fn render_effective_type(info: &DdicTypeInfo) -> String {
@@ -202,6 +234,8 @@ mod tests {
             name: "ZSAMPLE_STATUS".to_owned(),
             kind: "DTEL",
             uri: "/sap/bc/adt/ddic/dataelements/zsample_status".to_owned(),
+            requested_version: "active",
+            version: Some("active".to_owned()),
             description: Some("Sample status".to_owned()),
             package: Some("ZPKG".to_owned()),
             effective_type: EffectiveType {
@@ -228,6 +262,7 @@ mod tests {
         DomainInfo {
             name: "ZSAMPLE_STATUS_DOM".to_owned(),
             uri: "/sap/bc/adt/ddic/domains/zsample_status_dom".to_owned(),
+            version: Some("active".to_owned()),
             description: Some("Sample status domain".to_owned()),
             package: Some("ZCFG".to_owned()),
             data_type: Some("NUMC".to_owned()),
@@ -271,6 +306,56 @@ mod tests {
         );
         assert_eq!(args.object_type, Some(DdicTypeArg::Doma));
         assert!(args.no_resolve);
+    }
+
+    #[test]
+    fn reads_the_active_version_unless_told_otherwise() {
+        let args = show_args(Cli::try_parse_from(["fractal", "ddic", "show", "ZFIELD"]).unwrap());
+        assert_eq!(args.version, VersionArg::Active);
+
+        let args = show_args(
+            Cli::try_parse_from(["fractal", "ddic", "show", "ZFIELD", "--version", "inactive"])
+                .unwrap(),
+        );
+        assert_eq!(args.version, VersionArg::Inactive);
+    }
+
+    #[test]
+    fn the_reported_version_is_the_one_that_arrived_not_the_one_requested() {
+        // Asking for a layer an object does not have gets the other one, so
+        // echoing the request back would state the very thing this command
+        // used to get wrong.
+        assert_eq!(render_version("active", Some("active")), "active");
+        assert_eq!(
+            render_version("inactive", Some("active")),
+            "active (asked for inactive; this object has none)"
+        );
+        assert_eq!(
+            render_version("active", Some("new")),
+            "new (never activated)"
+        );
+        assert_eq!(
+            render_version("active", None),
+            "unknown (the document does not say)"
+        );
+    }
+
+    #[test]
+    fn readable_output_states_the_version_of_both_documents() {
+        let mut info = data_element_info();
+        info.requested_version = "inactive";
+        info.version = Some("inactive".to_owned());
+        let mut domain = domain_info();
+        // The domain had no pending edit, so the same request fell back.
+        domain.version = Some("active".to_owned());
+        info.domain = Some(domain);
+        let rendered = render_ddic_show_readable(&info);
+
+        assert!(rendered.contains("version: inactive\n"), "{rendered}");
+        assert!(
+            rendered.contains("  version: active (asked for inactive; this object has none)"),
+            "{rendered}"
+        );
     }
 
     #[test]
@@ -357,6 +442,8 @@ mod tests {
             name: domain.name.clone(),
             kind: "DOMA",
             uri: domain.uri.clone(),
+            requested_version: "active",
+            version: domain.version.clone(),
             description: domain.description.clone(),
             package: domain.package.clone(),
             effective_type: EffectiveType {
