@@ -30,7 +30,7 @@ use commands::object::{
     print_object_xml,
 };
 use commands::object_delete::{object_delete, print_object_delete};
-use commands::package::{package_items, package_tree};
+use commands::package::{package_items, package_tree, print_package_items, print_package_tree};
 use commands::query::{print_query, query};
 use commands::system::{print_system_list, system_list, system_test};
 use commands::table::{print_table_data, print_table_metadata, table_data, table_metadata};
@@ -131,10 +131,24 @@ async fn main() {
         } => run_and_print_with(object_kinds, print_object_kinds, output),
         Command::Package {
             command: PackageCommand::Tree(args),
-        } => run_and_print_async(|| package_tree(cli.profile.as_deref(), args), output).await,
+        } => {
+            run_and_print_with_async(
+                || package_tree(cli.profile.as_deref(), args),
+                print_package_tree,
+                output,
+            )
+            .await
+        }
         Command::Package {
             command: PackageCommand::Items(args),
-        } => run_and_print_async(|| package_items(cli.profile.as_deref(), args), output).await,
+        } => {
+            run_and_print_with_async(
+                || package_items(cli.profile.as_deref(), args),
+                print_package_items,
+                output,
+            )
+            .await
+        }
         Command::Table {
             command: TableCommand::Data(args),
         } => {
