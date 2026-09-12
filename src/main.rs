@@ -26,7 +26,7 @@ use commands::journal::{
 };
 use commands::object::{
     object_info, object_kinds, object_search, object_source, object_usages, object_xml,
-    print_object_kinds,
+    print_object_kinds, print_object_source, print_object_xml,
 };
 use commands::object_delete::{object_delete, print_object_delete};
 use commands::package::{package_items, package_tree};
@@ -87,10 +87,24 @@ async fn main() {
         } => run_and_print_async(|| object_search(cli.profile.as_deref(), args), output).await,
         Command::Object {
             command: ObjectCommand::Source(args),
-        } => run_and_print_async(|| object_source(cli.profile.as_deref(), args), output).await,
+        } => {
+            run_and_print_with_async(
+                || object_source(cli.profile.as_deref(), args),
+                print_object_source,
+                output,
+            )
+            .await
+        }
         Command::Object {
             command: ObjectCommand::Xml(args),
-        } => run_and_print_async(|| object_xml(cli.profile.as_deref(), args), output).await,
+        } => {
+            run_and_print_with_async(
+                || object_xml(cli.profile.as_deref(), args),
+                print_object_xml,
+                output,
+            )
+            .await
+        }
         Command::Object {
             command: ObjectCommand::Info(args),
         } => run_and_print_async(|| object_info(cli.profile.as_deref(), args), output).await,

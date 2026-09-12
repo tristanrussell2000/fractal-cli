@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use serde::Serialize;
 
 use crate::cli::{SearchArgs, SourceArgs, UriArgs, UsagesArgs, XmlArgs};
@@ -336,6 +338,57 @@ pub fn print_object_kinds(result: &ObjectKindsResultOutput, output: OutputFormat
     }
 }
 
+pub fn print_object_source(result: &ObjectSourceResultOutput, output: OutputFormat) {
+    if matches!(output, OutputFormat::Json) {
+        print_result(result, output);
+        return;
+    }
+
+    print!("{}", render_object_source_readable(result));
+}
+
+fn render_object_source_readable(result: &ObjectSourceResultOutput) -> String {
+    let mut output = String::new();
+    let _ = writeln!(output, "profile: {}", result.profile);
+    let _ = writeln!(output, "uri: {}", result.uri);
+    let _ = writeln!(
+        output,
+        "bytes: {}-{} of {}",
+        result.start_byte, result.end_byte, result.total_bytes
+    );
+    if result.truncated {
+        let _ = writeln!(
+            output,
+            "truncated: yes (next offset: {})",
+            result
+                .next_offset
+                .map_or_else(|| "-".to_owned(), |offset| offset.to_string())
+        );
+    }
+    output.push_str("\nsource:\n");
+    output.push_str(&result.source);
+    output
+}
+
+pub fn print_object_xml(result: &ObjectXmlResultOutput, output: OutputFormat) {
+    if matches!(output, OutputFormat::Json) {
+        print_result(result, output);
+        return;
+    }
+
+    print!("{}", render_object_xml_readable(result));
+}
+
+fn render_object_xml_readable(result: &ObjectXmlResultOutput) -> String {
+    let mut output = String::new();
+    let _ = writeln!(output, "profile: {}", result.profile);
+    let _ = writeln!(output, "uri: {}", result.uri);
+    let _ = writeln!(output, "sha256: {}", result.sha256);
+    output.push_str("\nxml:\n");
+    output.push_str(&result.xml);
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
@@ -613,5 +666,60 @@ mod tests {
         assert!(output.possibly_truncated_by_sap_cap);
         assert_eq!(output.hits[0].kind, "CLAS");
         assert_eq!(output.hits[0].name, "ZCL_VERSION");
+    }
+
+    #[test]
+    fn readable_source_output_keeps_the_source_verbatim() {
+        let result = ObjectSourceResultOutput {
+            ok: true,
+            profile: "de2".to_owned(),
+            uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
+            start_byte: 0,
+            end_byte: 24,
+            total_bytes: 96,
+            truncated: true,
+            next_offset: Some(24),
+            source: "CLASS zcl_sample DEFINITION.".to_owned(),
+        };
+
+        let rendered = render_object_source_readable(&result);
+
+        assert!(rendered.contains("bytes: 0-24 of 96"));
+        assert!(rendered.contains("truncated: yes (next offset: 24)"));
+        assert!(rendered.ends_with("CLASS zcl_sample DEFINITION."));
+        assert!(!rendered.contains('{'));
+    }
+
+    #[test]
+    fn readable_source_output_omits_truncation_when_the_whole_source_is_returned() {
+        let result = ObjectSourceResultOutput {
+            ok: true,
+            profile: "de2".to_owned(),
+            uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
+            start_byte: 0,
+            end_byte: 6,
+            total_bytes: 6,
+            truncated: false,
+            next_offset: None,
+            source: "REPORT".to_owned(),
+        };
+
+        assert!(!render_object_source_readable(&result).contains("truncated"));
+    }
+
+    #[test]
+    fn readable_xml_output_keeps_the_document_verbatim() {
+        let result = ObjectXmlResultOutput {
+            ok: true,
+            profile: "de2".to_owned(),
+            uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
+            sha256: "abc123".to_owned(),
+            xml: "<class:abapClass/>".to_owned(),
+        };
+
+        let rendered = render_object_xml_readable(&result);
+
+        assert!(rendered.contains("sha256: abc123"));
+        assert!(rendered.ends_with("<class:abapClass/>"));
     }
 }
