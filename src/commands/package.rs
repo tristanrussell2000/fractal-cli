@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::cli::PackageItemsArgs;
 use crate::commands::{connect, tabular};
-use crate::output::{OutputFormat, print_result};
+use crate::output::{OutputFormat, print_json};
 use crate::{cli::PackageTreeArgs, reported::Reported};
 use fractal::sap::{
     package::{PackageItemsOptions, get_package_items, get_package_tree},
@@ -162,7 +162,7 @@ pub async fn package_items(
 
 pub fn print_package_tree(result: &PackageTreeResultOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
 
@@ -236,7 +236,7 @@ fn write_package_children(
 
 pub fn print_package_items(result: &PackageItemsResultOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
 

@@ -5,7 +5,7 @@ use serde::Serialize;
 use super::{connect, edit_object_identity::EditObjectIdentityOutput};
 use crate::{
     cli::EditActivateArgs,
-    output::{OutputFormat, print_result},
+    output::{OutputFormat, print_json},
     reported::Reported,
 };
 use fractal::journal::recorder::Journal;
@@ -118,7 +118,7 @@ pub async fn edit_object_activate(
 
 pub fn print_edit_object_activate(result: &EditActivationOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
     print!("{}", render_activation_readable(result));

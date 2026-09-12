@@ -5,7 +5,7 @@ use serde::Serialize;
 use super::{connect, edit_object_identity::EditObjectIdentityOutput};
 use crate::{
     cli::EditObjectCreateArgs,
-    output::{OutputFormat, print_result},
+    output::{OutputFormat, print_json},
     reported::Reported,
 };
 use fractal::reportable_error::ReportableError;
@@ -131,7 +131,7 @@ impl ReportableError for IncompleteBindingError {
 
 pub fn print_edit_object_create(result: &EditObjectCreateOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
     print!("{}", render_object_create_readable(result));

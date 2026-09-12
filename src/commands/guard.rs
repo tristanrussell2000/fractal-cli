@@ -18,7 +18,7 @@ use thiserror::Error;
 
 use crate::{
     cli::{GuardHarnessArg, GuardInstallArgs},
-    output::{OutputFormat, print_result},
+    output::{OutputFormat, print_json},
     reported::Reported,
 };
 use fractal::reportable_error::ReportableError;
@@ -173,7 +173,7 @@ pub fn guard_install(args: &GuardInstallArgs) -> Result<GuardInstallResult, Repo
 
 pub fn print_guard_install(result: &GuardInstallResult, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
 

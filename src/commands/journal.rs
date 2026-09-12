@@ -11,7 +11,7 @@ use serde::Serialize;
 
 use crate::{
     cli::{JournalClearArgs, JournalListArgs, JournalShowArgs},
-    output::{OutputFormat, print_result},
+    output::{OutputFormat, print_json},
     reported::Reported,
 };
 use fractal::config;
@@ -356,7 +356,7 @@ fn content_paths(entry: &JournalEntry, blobs: &BlobStore) -> Vec<JournalContentP
 
 pub fn print_journal_list(result: &JournalListOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
     let mut rendered = String::new();
@@ -382,7 +382,7 @@ pub fn print_journal_list(result: &JournalListOutput, output: OutputFormat) {
 
 pub fn print_journal_show(result: &JournalShowOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
     let entry = &result.entry;
@@ -430,7 +430,7 @@ pub fn print_journal_show(result: &JournalShowOutput, output: OutputFormat) {
 
 pub fn print_journal_clear(result: &JournalClearOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
     let mut rendered = String::new();

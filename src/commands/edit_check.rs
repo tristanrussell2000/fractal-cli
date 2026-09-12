@@ -7,7 +7,7 @@ use super::{
 };
 use crate::{
     cli::EditSourceCheckArgs,
-    output::{OutputFormat, print_result},
+    output::{OutputFormat, print_json},
     reported::Reported,
 };
 use fractal::sap::{
@@ -52,7 +52,7 @@ pub async fn edit_source_check(
 
 pub fn print_edit_source_check(result: &EditSourceCheckOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
     print!("{}", render_source_check_readable(result));

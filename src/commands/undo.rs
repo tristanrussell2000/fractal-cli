@@ -12,7 +12,7 @@ use serde::Serialize;
 use super::connect;
 use crate::{
     cli::UndoArgs,
-    output::{OutputFormat, print_result},
+    output::{OutputFormat, print_json},
     reported::Reported,
 };
 use fractal::journal::blobs::BlobStore;
@@ -299,7 +299,7 @@ fn content_paths(plan: &UndoPlan, blobs: &BlobStore) -> Vec<UndoContentPath> {
 
 pub fn print_object_undo(result: &UndoOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
     let mut rendered = String::new();

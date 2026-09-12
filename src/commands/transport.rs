@@ -5,7 +5,7 @@ use serde::Serialize;
 use super::connect;
 use crate::{
     cli::{TransportCreateArgs, TransportListArgs, TransportShowArgs},
-    output::{OutputFormat, print_result},
+    output::{OutputFormat, print_json},
     reported::Reported,
 };
 use fractal::sap::transport::{
@@ -120,7 +120,7 @@ pub async fn transport_create(
 
 pub fn print_transport_create(result: &TransportCreateOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
     let mut readable = String::new();
@@ -289,7 +289,7 @@ fn map_object(object: TransportObject) -> TransportObjectOutput {
 
 pub fn print_transport_show(result: &TransportShowOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
     print!("{}", render_transport_show_readable(result));
@@ -338,7 +338,7 @@ fn render_transport_show_readable(result: &TransportShowOutput) -> String {
 
 pub fn print_transport_list(result: &TransportListOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
     print!("{}", render_transport_list_readable(result));

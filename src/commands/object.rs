@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use crate::cli::{SearchArgs, SourceArgs, UriArgs, UsagesArgs, XmlArgs};
 use crate::commands::{connect, tabular};
-use crate::output::{OutputFormat, print_result};
+use crate::output::{OutputFormat, print_json};
 use crate::reported::Reported;
 use fractal::sap::{
     object_search::{ObjectSearchOptions, search_objects},
@@ -323,7 +323,7 @@ pub fn object_kinds() -> Result<ObjectKindsResultOutput, Reported> {
 
 pub fn print_object_kinds(result: &ObjectKindsResultOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
 
@@ -340,7 +340,7 @@ pub fn print_object_kinds(result: &ObjectKindsResultOutput, output: OutputFormat
 
 pub fn print_object_search(result: &ObjectSearchResultOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
 
@@ -397,7 +397,7 @@ fn render_object_search_readable(result: &ObjectSearchResultOutput) -> String {
 
 pub fn print_object_usages(result: &ObjectUsagesResultOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
 
@@ -446,9 +446,20 @@ fn optional_cell(value: Option<&str>) -> String {
     value.unwrap_or("-").to_owned()
 }
 
+pub fn print_object_info(result: &ObjectInfoResultOutput, output: OutputFormat) {
+    if matches!(output, OutputFormat::Json) {
+        print_json(result);
+        return;
+    }
+
+    println!("profile: {}", result.profile);
+    println!("uri: {}", result.uri);
+    println!("description: {}", result.description);
+}
+
 pub fn print_object_source(result: &ObjectSourceResultOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
 
@@ -480,7 +491,7 @@ fn render_object_source_readable(result: &ObjectSourceResultOutput) -> String {
 
 pub fn print_object_xml(result: &ObjectXmlResultOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
 

@@ -5,7 +5,7 @@ use serde::Serialize;
 use crate::{
     cli::{DdicShowArgs, DdicTypeArg},
     commands::{connect, tabular},
-    output::{OutputFormat, print_result},
+    output::{OutputFormat, print_json},
     reported::Reported,
 };
 use fractal::sap::{
@@ -44,7 +44,7 @@ pub async fn ddic_show(
 
 pub fn print_ddic_show(result: &DdicShowOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
 

@@ -8,7 +8,7 @@ use super::{
 };
 use crate::{
     cli::EditXmlSetArgs,
-    output::{OutputFormat, print_result},
+    output::{OutputFormat, print_json},
     reported::Reported,
 };
 use fractal::sap::metadata_object::{MetadataAdtObjectType, write_metadata_object};
@@ -101,7 +101,7 @@ pub async fn edit_xml_set(
 
 pub fn print_edit_xml_set(result: &EditXmlSetOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
     let mut readable = String::new();

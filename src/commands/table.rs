@@ -5,7 +5,7 @@ use serde::Serialize;
 use crate::{
     cli::{TableDataArgs, TableMetadataArgs},
     commands::{connect, tabular},
-    output::{OutputFormat, print_result},
+    output::{OutputFormat, print_json},
     reported::Reported,
 };
 use fractal::sap::table::{
@@ -163,7 +163,7 @@ fn map_table_field_metadata(field: TableFieldMetadata) -> TableFieldMetadataOutp
 
 pub fn print_table_data(result: &TableDataResultOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
 
@@ -172,7 +172,7 @@ pub fn print_table_data(result: &TableDataResultOutput, output: OutputFormat) {
 
 pub fn print_table_metadata(result: &TableMetadataResultOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
 

@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 use crate::commands::connect;
-use crate::output::{OutputFormat, print_result};
+use crate::output::{OutputFormat, print_json};
 use crate::reported::Reported;
 use fractal::{config, sap::client::DiscoveryResult};
 
@@ -38,7 +38,7 @@ pub struct SystemTestResult {
 
 pub fn print_system_list(result: &SystemListResult, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
-        print_result(result, output);
+        print_json(result);
         return;
     }
 
@@ -65,6 +65,26 @@ pub fn print_system_list(result: &SystemListResult, output: OutputFormat) {
             profile.name, profile.base_url, profile.client, profile.username
         );
     }
+}
+
+pub fn print_system_test(result: &SystemTestResult, output: OutputFormat) {
+    if matches!(output, OutputFormat::Json) {
+        print_json(result);
+        return;
+    }
+
+    println!("profile: {}", result.profile);
+    println!("url: {}", result.base_url);
+    println!("status: {}", result.status);
+    println!(
+        "csrf token: {}",
+        if result.csrf_token_received {
+            "received"
+        } else {
+            "not received"
+        }
+    );
+    println!("{}", result.message);
 }
 
 pub fn system_list() -> Result<SystemListResult, Reported> {
