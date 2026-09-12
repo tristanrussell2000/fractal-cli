@@ -155,6 +155,7 @@ fractal transport  list | show | create
 fractal edit       create | read | patch | set | set-xml | check | activate | discard
 fractal delete     <one destructive verb, kept out of `edit` on purpose>
 fractal journal    list | show | clear
+fractal undo       <reverse a recorded operation; activations today>
 fractal guard      install
 ```
 
@@ -196,6 +197,46 @@ fractal auth set <profile> --any-package          # remove the restriction
 off with `--allow-temporary-package false`. Deletion lives at `fractal delete` rather than
 under `edit` so that a single prefix identifies the one irreversible verb.
 
+### The edit journal and `fractal undo`
+
+Before Fractal changes the **active** version of an object, it records what was there. That
+record is what `fractal undo` restores.
+
+```bash
+fractal journal list                     # what was recorded, newest first
+fractal journal show <entry-id>          # one entry, and where its content is on disk
+fractal undo --type PROG --name ZFOO --dry-run
+fractal undo --type PROG --name ZFOO
+fractal journal clear --older-than 30    # apply the retention policy
+```
+
+**This is a short-horizon undo buffer, not a backup.** Be clear about what it does not cover:
+
+- Only operations that reach the **active** version are recorded: `edit activate` and
+  `fractal delete`. Inactive edits are not. `edit set`, `edit patch` and `edit set-xml` stage
+  work without publishing it, and what gets recorded is the activation that follows.
+- Entries are pruned by age and by count, so old ones go. The newest entry for each object is
+  always kept.
+- The journal is **local to one machine and one user**, under your OS data directory. It is not
+  shared, not transported, and not a substitute for a transport request.
+- `--no-journal` on `edit activate` and `fractal delete` skips it entirely.
+
+Undoing an activation is three steps, not one: the previous active version is written as
+inactive, activated, and the pending work the activation consumed is put back — so the object
+ends where it started on **both** layers rather than losing whatever was staged.
+
+It refuses unless the object still holds what the entry recorded activating, so an undo cannot
+quietly discard somebody else's later change. A refusal prints the path to the content anyway,
+so the answer is "here is what it was" rather than "no". `--force` overrides the refusals that
+are judgement calls and says which; it will not undo an object's first activation, because that
+would mean deleting it.
+
+Deletes are recorded but **not** restored automatically: recreating an object is create, write
+and activate, and it needs a package and a transport. `fractal journal show` prints those steps
+for you to run. One trap it warns about is real and unavoidable — SAP's editing lock outlives
+the object, so recreating under the same name can be refused with
+`403 ... is currently editing` until it clears.
+
 ### Running Fractal under a coding agent
 
 Be clear about where the boundary is: **nothing this CLI checks about its own invocation can
@@ -213,6 +254,14 @@ fractal guard install --dry-run          # show what would be written
 
 It denies the irreversible commands, asks for the ones that write, leaves read-only commands
 alone, and merges into an existing settings file without removing anything already there.
+`fractal undo` and `fractal journal clear` are on the ask list — the first publishes a version,
+the second destroys the only record of what was replaced.
+
+One gap is worth stating rather than papering over: Claude Code's rules match a command
+**prefix**, so they cannot see a flag. Approving `fractal edit activate` also approves
+`fractal edit activate --no-journal`, which turns the record off. The Codex hook is handed the
+whole command and says so in its reason; the declarative install prints a note admitting it
+cannot.
 
 The two harnesses work differently. Claude Code takes a list of rules. Codex instead runs a
 `PreToolUse` hook program, so the installed hook calls `fractal guard hook` — which means

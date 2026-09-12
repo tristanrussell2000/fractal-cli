@@ -61,6 +61,16 @@ pub enum Command {
         command: TransportCommand,
     },
     /// Inspect what Fractal recorded before it changed an object.
+    ///
+    /// A short-horizon undo buffer for the active version, not a backup. Only
+    /// operations that change the active version are recorded — an activation
+    /// and a delete — and entries are pruned by age and by count.
+    ///
+    /// Inactive edits are not covered. `edit set`, `edit patch` and
+    /// `edit set-xml` stage work without publishing it; what gets recorded is
+    /// the activation that follows.
+    ///
+    /// The journal is local to this machine and this user.
     Journal {
         #[command(subcommand)]
         command: JournalCommand,
@@ -76,7 +86,18 @@ pub enum Command {
     /// a permission rule in an agent harness matches `fractal delete` by
     /// prefix, with nothing read-only sharing that prefix.
     Delete(ObjectDeleteArgs),
-    /// Undo an activation Fractal recorded, restoring the previous active version.
+    /// Reverse an operation Fractal recorded, restoring what was there before.
+    ///
+    /// Today that means an activation, which is reversed in three steps:
+    /// the previous active version is written as inactive, activated, and the
+    /// pending work the original activation consumed is put back. More of the
+    /// journal is expected to become undoable — a delete is already recorded in
+    /// full, and `fractal journal show` prints the steps to restore one by hand
+    /// until that is automated.
+    ///
+    /// It acts only on operations this machine's journal recorded, and only
+    /// while the object still holds what was activated — otherwise it refuses
+    /// and prints where the content is.
     ///
     /// A top-level verb for the same reason `delete` is one: it mutates, and a
     /// harness rule matches it by prefix.
@@ -185,8 +206,14 @@ pub enum JournalCommand {
     /// List recorded operations, newest first.
     List(JournalListArgs),
     /// Show one entry and the paths of the content it holds.
+    ///
+    /// Prints paths rather than content, so `diff` and an editor can do the
+    /// work. For a delete it also prints what recreating the object needs.
     Show(JournalShowArgs),
     /// Apply the retention policy, then delete content nothing references.
+    ///
+    /// Destroys before-images permanently. The newest entry for each object is
+    /// always kept, whatever its age.
     Clear(JournalClearArgs),
 }
 
