@@ -2,9 +2,9 @@ use fractal::reportable_error::ReportableError;
 use fractal::{
     config::Profile,
     sap::{
+        adt_version::AdtVersion,
         client::SapClient,
         ddic_type::{DataElementTypeSource, DdicTypeOptions, get_ddic_type},
-        metadata_document::MetadataVersion,
         metadata_object::MetadataAdtObjectType,
     },
 };
@@ -30,7 +30,7 @@ fn resolving() -> DdicTypeOptions {
     DdicTypeOptions {
         object_type: None,
         resolve_domain: true,
-        version: MetadataVersion::Active,
+        version: AdtVersion::Active,
     }
 }
 
@@ -170,7 +170,7 @@ async fn no_resolve_reads_the_data_element_alone() {
         &DdicTypeOptions {
             object_type: None,
             resolve_domain: false,
-            version: MetadataVersion::Active,
+            version: AdtVersion::Active,
         },
     )
     .await
@@ -247,7 +247,7 @@ async fn an_explicit_type_skips_detection() {
         &DdicTypeOptions {
             object_type: Some(MetadataAdtObjectType::Domain),
             resolve_domain: true,
-            version: MetadataVersion::Active,
+            version: AdtVersion::Active,
         },
     )
     .await
@@ -428,7 +428,7 @@ async fn the_inactive_layer_is_reported_as_the_inactive_layer() {
         &DdicTypeOptions {
             object_type: Some(MetadataAdtObjectType::DataElement),
             resolve_domain: true,
-            version: MetadataVersion::Inactive,
+            version: AdtVersion::Inactive,
         },
     )
     .await
@@ -467,7 +467,7 @@ async fn a_layer_that_does_not_exist_is_reported_as_the_one_that_arrived() {
         &DdicTypeOptions {
             object_type: Some(MetadataAdtObjectType::DataElement),
             resolve_domain: true,
-            version: MetadataVersion::Inactive,
+            version: AdtVersion::Inactive,
         },
     )
     .await

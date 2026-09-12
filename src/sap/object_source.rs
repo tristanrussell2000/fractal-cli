@@ -10,7 +10,9 @@ use super::{
     adt_object_uri::{
         AdtObjectUriError, SOURCE_SUFFIX, validate_adt_object_uri, validate_source_object_uri,
     },
+    adt_version::AdtVersion,
     client::{SapClient, SapClientError},
+    metadata_document::document_version,
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
 use crate::suggested_command;
@@ -83,6 +85,16 @@ pub struct ByteRangeOptions {
     pub limit: Option<usize>,
 }
 
+/// A metadata document plus the layer it declared itself to be.
+///
+/// Separate from [`ByteRangeResult`] because only an XML document carries a
+/// layer marker; ABAP source does not.
+#[derive(Debug, Clone)]
+pub struct XmlReadResult {
+    pub page: ByteRangeResult,
+    pub declared_version: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ByteRangeResult {
     pub start_byte: usize,
@@ -105,6 +117,7 @@ pub struct ByteRangeResult {
 pub async fn get_source(
     sap: &SapClient,
     uri: &str,
+    version: AdtVersion,
     options: ByteRangeOptions,
 ) -> Result<ByteRangeResult, ObjectSourceError> {
     validate_source_object_uri(uri)?;
@@ -117,7 +130,9 @@ pub async fn get_source(
     }
 
     let source_uri = format!("{}{}", uri.trim_end_matches('/'), SOURCE_SUFFIX);
-    let source = sap.get_text_with_query(&source_uri, &[]).await?;
+    let source = sap
+        .get_text_with_query(&source_uri, &[("version", version.as_str())])
+        .await?;
     page_text(&source, options)
 }
 
@@ -130,11 +145,21 @@ pub async fn get_source(
 pub async fn get_xml(
     sap: &mut SapClient,
     uri: &str,
+    version: AdtVersion,
     options: ByteRangeOptions,
-) -> Result<ByteRangeResult, ObjectSourceError> {
+) -> Result<XmlReadResult, ObjectSourceError> {
     validate_adt_object_uri(uri)?;
-    let xml = sap.get_text(uri).await?;
-    page_text(&xml, options)
+    let xml = sap
+        .get_text_with_query(uri, &[("version", version.as_str())])
+        .await?;
+    // From the whole document, before paging: a short page still has to report
+    // which version it came from. An unparseable response is not a failure here
+    // — this command returns whatever ADT served — it just has no version.
+    let declared_version = document_version(&xml).ok().flatten();
+    Ok(XmlReadResult {
+        page: page_text(&xml, options)?,
+        declared_version,
+    })
 }
 
 fn page_text(text: &str, options: ByteRangeOptions) -> Result<ByteRangeResult, ObjectSourceError> {

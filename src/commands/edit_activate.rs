@@ -294,15 +294,14 @@ fn render_diagnostics(output: &mut String, messages: &[EditActivationDiagnosticO
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use fractal::sap::adt_version::AdtVersion;
 
     use super::*;
     use crate::cli::{Cli, Command, EditCommand};
     use fractal::sap::{
         activation_request::AdtActivationMessage,
         adt_message_severity::AdtMessageSeverity,
-        editable_source::{
-            AdtSourceSnapshot, AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceIdentity,
-        },
+        editable_source::{AdtSourceSnapshot, EditableAdtObjectType, EditableAdtSourceIdentity},
         source_activation::AdtSourceActivationResult,
         source_check::AdtSourceCheckResult,
     };
@@ -353,7 +352,7 @@ mod tests {
                         object_uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
                         source_uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
                     },
-                    requested_version: AdtSourceVersion::Inactive,
+                    requested_version: AdtVersion::Inactive,
                     check_executed: true,
                     inactive_version_exists: Some(true),
                     clean: true,

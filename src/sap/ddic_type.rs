@@ -14,10 +14,11 @@ use thiserror::Error;
 
 use super::{
     adt_response::{AdtResponseParseError, parse_adt_document},
+    adt_version::AdtVersion,
     client::{SapClient, SapClientError},
     editable_source::validate_object_name,
     find_child, find_non_empty_attribute,
-    metadata_document::{MetadataVersion, declared_version},
+    metadata_document::declared_version,
     metadata_object::MetadataAdtObjectType,
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
@@ -127,8 +128,8 @@ pub struct DdicTypeInfo {
     /// The layer that was asked for.
     pub requested_version: &'static str,
     /// The layer the document declared itself to be — `active`, `inactive` or
-    /// `new`. SAP falls back rather than refusing, so this is the only honest
-    /// answer to "which version am I looking at".
+    /// `new`. Not always [`Self::requested_version`]: SAP falls back rather than
+    /// refusing.
     pub version: Option<String>,
     pub description: Option<String>,
     pub package: Option<String>,
@@ -144,9 +145,8 @@ pub struct DdicTypeOptions {
     pub object_type: Option<MetadataAdtObjectType>,
     /// Whether to follow a data element's domain reference.
     pub resolve_domain: bool,
-    /// Which stored layer to read. A resolved domain is read at the same layer,
-    /// so one request answers one question about one point in time.
-    pub version: MetadataVersion,
+    /// Which stored layer to read. A resolved domain is read at the same layer.
+    pub version: AdtVersion,
 }
 
 /// A failure while inspecting a DDIC type.
@@ -298,7 +298,7 @@ fn supported_type(object_type: MetadataAdtObjectType) -> Result<(), DdicTypeErro
 async fn detect_and_read(
     sap: &mut SapClient,
     name: &str,
-    version: MetadataVersion,
+    version: AdtVersion,
 ) -> Result<(MetadataAdtObjectType, String), DdicTypeError> {
     let element_uri = ddic_object_uri(MetadataAdtObjectType::DataElement, name);
     match read_layer(sap, &element_uri, version).await {
@@ -319,7 +319,7 @@ async fn read_domain(
     sap: &mut SapClient,
     domain: &str,
     data_element: &str,
-    version: MetadataVersion,
+    version: AdtVersion,
 ) -> Result<DomainInfo, DdicTypeError> {
     let uri = ddic_object_uri(MetadataAdtObjectType::Domain, domain);
     let xml = match read_layer(sap, &uri, version).await {
@@ -337,13 +337,12 @@ async fn read_domain(
 
 /// Reads one named layer of a document.
 ///
-/// The selector is never omitted. A plain GET serves the *inactive* document
-/// whenever one exists, so a read without it reports the pending edit as though
-/// it were the current definition, and says nothing about having done so.
+/// Never omits the selector: a read without one is served the inactive document
+/// whenever it exists.
 async fn read_layer(
     sap: &SapClient,
     uri: &str,
-    version: MetadataVersion,
+    version: AdtVersion,
 ) -> Result<String, SapClientError> {
     sap.get_text_with_query(uri, &[("version", version.as_str())])
         .await
@@ -359,7 +358,7 @@ fn ddic_object_uri(object_type: MetadataAdtObjectType, name: &str) -> String {
 fn parse_data_element(
     xml: &str,
     name: &str,
-    requested: MetadataVersion,
+    requested: AdtVersion,
 ) -> Result<DdicTypeInfo, DdicTypeError> {
     let document = parse_adt_document(xml)?;
     let root = document.root_element();
@@ -401,7 +400,7 @@ fn parse_data_element(
 fn parse_domain_object(
     xml: &str,
     name: &str,
-    requested: MetadataVersion,
+    requested: AdtVersion,
 ) -> Result<DdicTypeInfo, DdicTypeError> {
     let domain = parse_domain(xml, name)?;
     Ok(DdicTypeInfo {
@@ -545,7 +544,7 @@ mod tests {
         let info = parse_data_element(
             &data_element_xml("domain", "ZSAMPLE_STATUS_DOM"),
             "ZSAMPLE_FIELD",
-            MetadataVersion::Active,
+            AdtVersion::Active,
         )
         .expect("parses");
         let element = info.data_element.expect("has data element detail");
@@ -574,8 +573,12 @@ mod tests {
 
     #[test]
     fn a_predefined_type_names_no_domain() {
-        let info = parse_data_element(&data_element_xml("predefinedAbapType", ""), "ZSAMPLE_FIELD", MetadataVersion::Active)
-            .expect("parses");
+        let info = parse_data_element(
+            &data_element_xml("predefinedAbapType", ""),
+            "ZSAMPLE_FIELD",
+            AdtVersion::Active,
+        )
+        .expect("parses");
         let element = info.data_element.expect("has data element detail");
 
         assert_eq!(
@@ -591,7 +594,7 @@ mod tests {
         let info = parse_data_element(
             &data_element_xml("referenceType", "IF_SAMPLE"),
             "ZSAMPLE_FIELD",
-            MetadataVersion::Active,
+            AdtVersion::Active,
         )
         .expect("parses");
         let element = info.data_element.expect("has data element detail");
@@ -633,7 +636,8 @@ mod tests {
 
     #[test]
     fn a_domain_read_directly_reports_its_own_type_as_effective() {
-        let info = parse_domain_object(DOMAIN_XML, "ZSAMPLE_STATUS_DOM", MetadataVersion::Active).expect("parses");
+        let info = parse_domain_object(DOMAIN_XML, "ZSAMPLE_STATUS_DOM", AdtVersion::Active)
+            .expect("parses");
 
         assert_eq!(info.kind, "DOMA");
         assert_eq!(info.data_element, None);

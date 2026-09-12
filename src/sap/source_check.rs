@@ -5,10 +5,11 @@ use crate::suggested_command;
 
 use super::{
     adt_message_severity::AdtMessageSeverity,
+    adt_version::AdtVersion,
     client::{SapClient, SapClientError},
     editable_source::{
-        AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceIdentity,
-        EditableAdtSourceTargetError, editable_source_identity,
+        EditableAdtObjectType, EditableAdtSourceIdentity, EditableAdtSourceTargetError,
+        editable_source_identity,
     },
     find_attribute_value,
 };
@@ -27,7 +28,7 @@ pub struct AdtSourceCheckMessage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdtSourceCheckResult {
     pub identity: EditableAdtSourceIdentity,
-    pub requested_version: AdtSourceVersion,
+    pub requested_version: AdtVersion,
     pub check_executed: bool,
     pub inactive_version_exists: Option<bool>,
     pub clean: bool,
@@ -44,14 +45,14 @@ pub enum AdtSourceCheckError {
     #[error("SAP source check failed: {source}")]
     Sap {
         identity: Box<EditableAdtSourceIdentity>,
-        version: AdtSourceVersion,
+        version: AdtVersion,
         #[source]
         source: SapClientError,
     },
     #[error("SAP returned malformed source-check XML: {source}")]
     Parse {
         identity: Box<EditableAdtSourceIdentity>,
-        version: AdtSourceVersion,
+        version: AdtVersion,
         #[source]
         source: roxmltree::Error,
     },
@@ -155,11 +156,11 @@ pub async fn check_adt_stored_source(
     sap: &mut SapClient,
     object_type: EditableAdtObjectType,
     name: &str,
-    version: AdtSourceVersion,
+    version: AdtVersion,
 ) -> Result<AdtSourceCheckResult, AdtSourceCheckError> {
     let identity =
         editable_source_identity(object_type, name).map_err(AdtSourceCheckError::InvalidObject)?;
-    let inactive_version_exists = if version == AdtSourceVersion::Inactive {
+    let inactive_version_exists = if version == AdtVersion::Inactive {
         probe_inactive_adt_source(sap, &identity.object_uri)
             .await
             .ok()
@@ -185,7 +186,7 @@ pub async fn check_adt_stored_source(
 pub(super) async fn check_adt_source_by_identity(
     sap: &SapClient,
     identity: &EditableAdtSourceIdentity,
-    version: AdtSourceVersion,
+    version: AdtVersion,
     inactive_version_exists: Option<bool>,
 ) -> Result<AdtSourceCheckResult, AdtSourceCheckError> {
     if inactive_version_exists == Some(false) {
@@ -267,7 +268,7 @@ fn inactive_object_response_contains_uri(
     }))
 }
 
-fn build_checkrun_request(source_uri: &str, version: AdtSourceVersion) -> String {
+fn build_checkrun_request(source_uri: &str, version: AdtVersion) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?><chkrun:checkObjectList xmlns:chkrun=\"http://www.sap.com/adt/checkrun\" xmlns:adtcore=\"http://www.sap.com/adt/core\"><chkrun:checkObject adtcore:uri=\"{source_uri}\" chkrun:version=\"{}\"/></chkrun:checkObjectList>",
         version.as_str()
@@ -284,7 +285,7 @@ struct ParsedCheckrunResponse {
 fn parse_checkrun_response(
     response: &str,
     identity: &EditableAdtSourceIdentity,
-    version: AdtSourceVersion,
+    version: AdtVersion,
 ) -> Result<ParsedCheckrunResponse, AdtSourceCheckError> {
     let document =
         roxmltree::Document::parse(response).map_err(|source| AdtSourceCheckError::Parse {
@@ -345,7 +346,7 @@ mod tests {
                 <chkrun:checkMessage chkrun:type="I" chkrun:shortText="Check completed" chkrun:line="not-a-number"/>
             </chkrun:checkMessageList>"#,
             &sample_identity(),
-            AdtSourceVersion::Inactive,
+            AdtVersion::Inactive,
         )
         .unwrap();
 
@@ -362,7 +363,7 @@ mod tests {
         let parsed = parse_checkrun_response(
             r#"<chkrun:checkMessageList xmlns:chkrun="http://www.sap.com/adt/checkrun"/>"#,
             &sample_identity(),
-            AdtSourceVersion::Inactive,
+            AdtVersion::Inactive,
         )
         .unwrap();
 
@@ -373,11 +374,7 @@ mod tests {
     #[test]
     fn rejects_malformed_checkrun_xml() {
         assert!(matches!(
-            parse_checkrun_response(
-                "<not-closed>",
-                &sample_identity(),
-                AdtSourceVersion::Inactive,
-            ),
+            parse_checkrun_response("<not-closed>", &sample_identity(), AdtVersion::Inactive,),
             Err(AdtSourceCheckError::Parse { .. })
         ));
     }

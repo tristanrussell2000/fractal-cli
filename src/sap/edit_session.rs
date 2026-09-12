@@ -2,10 +2,10 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use thiserror::Error;
 
 use super::{
+    adt_version::AdtVersion,
     client::{SapClient, SapClientError},
     editable_source::{
-        AdtSourceReadError, AdtSourceReadResult, AdtSourceVersion, EditableAdtSourceIdentity,
-        read_adt_source,
+        AdtSourceReadError, AdtSourceReadResult, EditableAdtSourceIdentity, read_adt_source,
     },
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
@@ -191,7 +191,7 @@ pub(super) async fn write_adt_source(
 pub(super) async fn read_adt_source_in_stateful_session(
     sap: &SapClient,
     identity: &EditableAdtSourceIdentity,
-    version: AdtSourceVersion,
+    version: AdtVersion,
 ) -> Result<AdtSourceReadResult, AdtSourceReadError> {
     read_adt_source(sap, identity, version, stateful_session_headers()).await
 }

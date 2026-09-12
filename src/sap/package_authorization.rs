@@ -208,10 +208,9 @@ pub async fn authorize_object_package(
 
 /// Reads the package name out of an object's metadata XML.
 ///
-/// Every ADT family carries the same element — verified live on classes, DDL
-/// sources, data elements, domains and a `$TMP` program. Read `adtcore:name`
-/// rather than the URI: DDLS adds a redundant `adtcore:packageName`, and the
-/// URI is percent-encoded (`$TMP` appears there as `%24tmp`).
+/// Every ADT family carries the same element. Read `adtcore:name` rather than
+/// the URI: DDLS adds a redundant `adtcore:packageName`, and the URI is
+/// percent-encoded (`$TMP` appears there as `%24tmp`).
 ///
 /// # Errors
 ///
@@ -311,7 +310,7 @@ mod tests {
 
     #[test]
     fn reads_the_scratch_package_verbatim_rather_than_from_the_uri() {
-        // Verified live: the URI percent-encodes the `$`, the name does not.
+        // The URI percent-encodes the `$`; the name does not.
         let xml = r#"<program:abapProgram xmlns:program="urn:p" xmlns:adtcore="urn:a">
             <adtcore:packageRef adtcore:uri="/sap/bc/adt/packages/%24tmp" adtcore:type="DEVC/K" adtcore:name="$TMP"/>
         </program:abapProgram>"#;

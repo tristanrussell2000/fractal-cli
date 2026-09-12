@@ -3,14 +3,13 @@ use std::fmt::Write as _;
 use serde::Serialize;
 
 use crate::{
-    cli::{DdicShowArgs, DdicTypeArg, VersionArg},
+    cli::{DdicShowArgs, DdicTypeArg},
     commands::{connect, tabular},
     output::{OutputFormat, print_result},
     reported::Reported,
 };
 use fractal::sap::{
     ddic_type::{DataElementTypeSource, DdicTypeInfo, DdicTypeOptions, get_ddic_type},
-    metadata_document::MetadataVersion,
     metadata_object::MetadataAdtObjectType,
 };
 
@@ -32,10 +31,7 @@ pub async fn ddic_show(
             DdicTypeArg::Doma => MetadataAdtObjectType::Domain,
         }),
         resolve_domain: !args.no_resolve,
-        version: match args.version {
-            VersionArg::Active => MetadataVersion::Active,
-            VersionArg::Inactive => MetadataVersion::Inactive,
-        },
+        version: args.version.into(),
     };
     let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
     let info = get_ddic_type(&mut client, &args.name, &options).await?;
@@ -154,10 +150,8 @@ fn render_ddic_show_readable(info: &DdicTypeInfo) -> String {
 
 /// Which layer the caller is actually looking at.
 ///
-/// Asking for a layer is not the same as getting it: SAP serves the other one
-/// rather than refusing, and an object that has never been activated declares
-/// itself `new`. Printing the requested version alone would state as fact the
-/// one thing this command got wrong before it had a selector at all.
+/// Asking for a layer is not getting it: SAP serves the other one rather than
+/// refusing, and an object that has never been activated declares itself `new`.
 fn render_version(requested: &'static str, declared: Option<&str>) -> String {
     match declared {
         None => "unknown (the document does not say)".to_owned(),
@@ -214,7 +208,7 @@ mod tests {
     use clap::Parser;
 
     use super::*;
-    use crate::cli::{Cli, Command, DdicCommand};
+    use crate::cli::{Cli, Command, DdicCommand, VersionArg};
     use fractal::sap::ddic_type::{
         DataElementInfo, DdicObjectRef, DomainFixedValue, DomainInfo, EffectiveType,
     };

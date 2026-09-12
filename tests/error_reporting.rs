@@ -14,11 +14,12 @@ use fractal::{
     reportable_error::ReportableError,
     sap::{
         adt_object_uri::AdtObjectUriError,
+        adt_version::AdtVersion,
         client::{SapClientError, SapHttpErrorKind},
         edit_session::AdtEditSessionError,
         editable_source::{
-            AdtEditTargetValidationError, AdtSourceReadError, AdtSourceVersion,
-            EditableAdtObjectType, EditableAdtSourceIdentity, EditableAdtSourceTargetError,
+            AdtEditTargetValidationError, AdtSourceReadError, EditableAdtObjectType,
+            EditableAdtSourceIdentity, EditableAdtSourceTargetError,
         },
         object_info::ObjectInfoError,
         object_source::ObjectSourceError,
@@ -207,7 +208,7 @@ fn contract() -> Vec<Expectation> {
         Expectation {
             error: Box::new(AdtSourceCheckError::Sap {
                 identity: identity(),
-                version: AdtSourceVersion::Inactive,
+                version: AdtVersion::Inactive,
                 source: http(
                     SapHttpErrorKind::Forbidden,
                     StatusCode::FORBIDDEN,

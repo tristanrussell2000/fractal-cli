@@ -4,13 +4,13 @@ use serde::Serialize;
 
 use super::edit_object_identity::EditObjectIdentityOutput;
 use crate::{
-    cli::{EditSourceReadArgs, VersionArg},
+    cli::EditSourceReadArgs,
     commands::connect,
     output::{OutputFormat, print_result},
     reported::Reported,
 };
 use fractal::sap::editable_source::{
-    AdtSourceReadResult, AdtSourceVersion, EditableAdtObjectType, read_adt_source_for_edit,
+    AdtSourceReadResult, EditableAdtObjectType, read_adt_source_for_edit,
 };
 
 #[derive(Debug, Serialize)]
@@ -30,7 +30,7 @@ pub async fn edit_source_read(
     args: &EditSourceReadArgs,
 ) -> Result<EditSourceReadOutput, Reported> {
     let object_type = EditableAdtObjectType::parse(&args.object_type)?;
-    let version = map_source_version(args.version);
+    let version = args.version.into();
     let (profile_name, _profile, client) = connect(explicit_profile).await?;
     let result = read_adt_source_for_edit(&client, object_type, &args.name, version).await?;
 
@@ -44,13 +44,6 @@ pub fn print_edit_source_read(result: &EditSourceReadOutput, output: OutputForma
     }
 
     print!("{}", render_edit_source_readable(result));
-}
-
-pub(super) const fn map_source_version(version: VersionArg) -> AdtSourceVersion {
-    match version {
-        VersionArg::Active => AdtSourceVersion::Active,
-        VersionArg::Inactive => AdtSourceVersion::Inactive,
-    }
 }
 
 fn map_edit_source_read_result(
@@ -96,9 +89,10 @@ fn render_edit_source_readable(result: &EditSourceReadOutput) -> String {
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use fractal::sap::adt_version::AdtVersion;
 
     use super::*;
-    use crate::cli::{Cli, Command, EditCommand};
+    use crate::cli::{Cli, Command, EditCommand, VersionArg};
     use fractal::sap::editable_source::{AdtSourceSnapshot, EditableAdtSourceIdentity};
 
     fn read_args(cli: Cli) -> EditSourceReadArgs {
@@ -181,7 +175,7 @@ mod tests {
                     object_uri: "/sap/bc/adt/oo/classes/zcl_example".to_owned(),
                     source_uri: "/sap/bc/adt/oo/classes/zcl_example/source/main".to_owned(),
                 },
-                requested_version: AdtSourceVersion::Active,
+                requested_version: AdtVersion::Active,
                 snapshot: AdtSourceSnapshot::from_parts(
                     source.to_owned(),
                     "a".repeat(64),

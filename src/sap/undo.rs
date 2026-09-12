@@ -22,10 +22,11 @@ use thiserror::Error;
 
 use super::{
     adt_object_identity::AdtObjectIdentity,
+    adt_version::AdtVersion,
     client::{SapClient, SapClientError},
     editable_source::{
-        AdtEditTargetValidationError, AdtSourceVersion, EditableAdtObjectType,
-        editable_source_identity, read_adt_source_for_edit,
+        AdtEditTargetValidationError, EditableAdtObjectType, editable_source_identity,
+        read_adt_source_for_edit,
     },
     metadata_activation::{
         ACTIVE_VERSION, MetadataObjectActivationError, MetadataObjectActivationRequest,
@@ -502,15 +503,14 @@ async fn current_inactive_content(
     identity: &AdtObjectIdentity,
 ) -> Result<Option<String>, UndoError> {
     match identity.object_type {
-        AdtObjectFamily::Source(object_type) => Ok(read_adt_source_for_edit(
-            sap,
-            object_type,
-            &identity.name,
-            AdtSourceVersion::Inactive,
-        )
-        .await
-        .ok()
-        .map(|read| read.snapshot.source)),
+        AdtObjectFamily::Source(object_type) => {
+            Ok(
+                read_adt_source_for_edit(sap, object_type, &identity.name, AdtVersion::Inactive)
+                    .await
+                    .ok()
+                    .map(|read| read.snapshot.source),
+            )
+        }
         AdtObjectFamily::Metadata(_) => {
             let document = sap
                 .get_text_with_query(&identity.object_uri, &[("version", "inactive")])
@@ -535,13 +535,8 @@ async fn current_active_content(
 ) -> Result<Option<String>, UndoError> {
     match identity.object_type {
         AdtObjectFamily::Source(object_type) => {
-            match read_adt_source_for_edit(
-                sap,
-                object_type,
-                &identity.name,
-                AdtSourceVersion::Active,
-            )
-            .await
+            match read_adt_source_for_edit(sap, object_type, &identity.name, AdtVersion::Active)
+                .await
             {
                 Ok(read) => Ok(Some(read.snapshot.source)),
                 // ABAP text carries no layer marker, so a refused read is the
@@ -724,8 +719,8 @@ async fn write_inactive(
 /// Writes the whole document back, which for this family is the whole object.
 ///
 /// The document the journal holds is the canonical one, stripped of its
-/// `atom:link` navigation; SAP regenerates those on the next read, verified
-/// live — see [`super::metadata_document`].
+/// `atom:link` navigation; SAP regenerates those on the next read. See
+/// [`super::metadata_document`].
 async fn write_inactive_document(
     sap: &mut SapClient,
     policy: &EditPolicy,

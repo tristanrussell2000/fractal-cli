@@ -1,30 +1,18 @@
 //! The canonical form of a metadata document.
 //!
-//! ADT decorates every document it serves with `atom:link` navigation
-//! elements, and one of them is **conditional**: a complementary
-//! active/inactive link appears on the active document as soon as somebody has
-//! pending work on the object, and disappears again when they do not.
+//! ADT decorates every document with `atom:link` navigation elements, one of
+//! them conditional: a complementary active/inactive link is present only while
+//! somebody has pending work on the object. The bytes of the active document
+//! therefore change without the object changing, which makes a hash gate report
+//! staleness that is not there.
 //!
-//! ```xml
-//! <atom:link href="./zsample?version=inactive"
-//!            rel="http://www.sap.com/adt/relations/objectstates"
-//!            title="Complementary active/inactive version"/>
-//! ```
+//! The links are read-time decoration, not part of the object: a stripped
+//! document is accepted by `edit set-xml`, and the links come back on the next
+//! read. So the journal stores the stripped form and an undo writes it back —
+//! one form in and out, rather than a raw hash and a canonical hash that have to
+//! be kept in step.
 //!
-//! So the bytes of the active document change without the object changing,
-//! which would make undo's hash gate report staleness in exactly the situation
-//! somebody reaches for undo. Stripping the links removes that: two reads of an
-//! unchanged object then hash identically.
-//!
-//! The links are read-time decoration rather than part of the object, verified
-//! live: a document with every one removed was accepted by `edit set-xml`, the
-//! edit landed, the links were regenerated on the next read, and the object
-//! activated normally. So the stripped document is what the journal stores and
-//! what an undo writes back — one form, on the way in and on the way out,
-//! rather than a raw hash and a canonical hash that have to be kept in step.
-//!
-//! `object xml` and `ddic show` still print what SAP sent. Whether they should
-//! strip for readability is a question about display, not about storage.
+//! `object xml` and `ddic show` print what SAP sent.
 
 use super::{
     adt_response::{AdtResponseParseError, parse_adt_document},
@@ -72,34 +60,10 @@ pub fn strip_navigation_links(xml: &str) -> String {
     stripped
 }
 
-/// Which stored layer of a metadata document to ask SAP for.
-///
-/// A plain GET is not a third option dressed as a default: it serves the
-/// *inactive* document whenever one exists, so a read without this selector
-/// answers a different question depending on whether somebody has pending
-/// work. Every read that cares states which layer it wants.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum MetadataVersion {
-    #[default]
-    Active,
-    Inactive,
-}
-
-impl MetadataVersion {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Active => "active",
-            Self::Inactive => "inactive",
-        }
-    }
-}
-
 /// The layer a document says it belongs to: `new`, `inactive` or `active`.
 ///
-/// This is the answer, not the request. SAP falls back — asking for the
-/// inactive layer of an object that has none serves the active document — so
-/// the selector records what was wanted and this records what arrived.
+/// The answer, not the request: SAP serves the other layer rather than refusing
+/// when the requested one does not exist.
 ///
 /// # Errors
 ///

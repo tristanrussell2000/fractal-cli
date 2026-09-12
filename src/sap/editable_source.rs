@@ -5,6 +5,7 @@ use reqwest::header::HeaderMap;
 use thiserror::Error;
 
 use super::{
+    adt_version::AdtVersion,
     client::{SapClient, SapClientError},
     repository_kind::{AdtObjectType, RepositoryKind},
 };
@@ -128,28 +129,11 @@ impl TryFrom<RepositoryKind> for EditableAdtObjectType {
     }
 }
 
-/// The stored source version requested from SAP.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AdtSourceVersion {
-    Active,
-    Inactive,
-}
-
-impl AdtSourceVersion {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Active => "active",
-            Self::Inactive => "inactive",
-        }
-    }
-}
-
 /// Complete source and concurrency metadata returned by the edit-read boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdtSourceReadResult {
     pub identity: EditableAdtSourceIdentity,
-    pub requested_version: AdtSourceVersion,
+    pub requested_version: AdtVersion,
     pub snapshot: AdtSourceSnapshot,
 }
 
@@ -390,7 +374,7 @@ pub async fn read_adt_source_for_edit(
     sap: &SapClient,
     object_type: EditableAdtObjectType,
     name: &str,
-    version: AdtSourceVersion,
+    version: AdtVersion,
 ) -> Result<AdtSourceReadResult, AdtSourceReadError> {
     let identity = editable_source_identity(object_type, name)?;
     read_adt_source_by_identity(sap, &identity, version).await
@@ -399,7 +383,7 @@ pub async fn read_adt_source_for_edit(
 pub(super) async fn read_adt_source_by_identity(
     sap: &SapClient,
     identity: &EditableAdtSourceIdentity,
-    version: AdtSourceVersion,
+    version: AdtVersion,
 ) -> Result<AdtSourceReadResult, AdtSourceReadError> {
     read_adt_source(sap, identity, version, HeaderMap::new()).await
 }
@@ -407,7 +391,7 @@ pub(super) async fn read_adt_source_by_identity(
 pub(super) async fn read_adt_source(
     sap: &SapClient,
     identity: &EditableAdtSourceIdentity,
-    version: AdtSourceVersion,
+    version: AdtVersion,
     headers: HeaderMap,
 ) -> Result<AdtSourceReadResult, AdtSourceReadError> {
     let response_bytes = sap

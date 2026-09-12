@@ -3,10 +3,11 @@ use crate::config::EditPolicy;
 use thiserror::Error;
 
 use super::editable_source::{
-    AdtEditTargetValidationError, AdtSourceReadError, AdtSourceVersion, EditableAdtObjectType,
+    AdtEditTargetValidationError, AdtSourceReadError, EditableAdtObjectType,
     EditableAdtSourceIdentity, read_adt_source_for_edit,
 };
 use super::{
+    adt_version::AdtVersion,
     client::{SapClient, SapClientError},
     edit_session::AdtEditSessionError,
     editable_source::{AdtSourceSnapshot, validate_adt_edit_target},
@@ -150,7 +151,7 @@ impl ReportableError for AdtSourcePatchError {
                     suggested_command::edit_read(
                         identity.object_type.as_str(),
                         &identity.name,
-                        AdtSourceVersion::Inactive.as_str()
+                        AdtVersion::Inactive.as_str()
                     )
                 ),
                 _ => source.hint()?,
@@ -160,7 +161,7 @@ impl ReportableError for AdtSourcePatchError {
                 suggested_command::edit_read(
                     identity.object_type.as_str(),
                     &identity.name,
-                    AdtSourceVersion::Inactive.as_str()
+                    AdtVersion::Inactive.as_str()
                 )
             ),
         })
@@ -184,7 +185,7 @@ impl ReportableError for AdtSourcePatchError {
             | Self::StoredSourceRead { identity, .. } => Some(suggested_command::edit_read(
                 identity.object_type.as_str(),
                 &identity.name,
-                AdtSourceVersion::Inactive.as_str(),
+                AdtVersion::Inactive.as_str(),
             )),
             Self::LockedSourceRead(error) | Self::PreviewSourceRead(error) => {
                 error.suggested_command()
@@ -301,7 +302,7 @@ pub async fn preview_adt_source_patch(
         sap,
         identity.object_type,
         &identity.name,
-        AdtSourceVersion::Inactive,
+        AdtVersion::Inactive,
     )
     .await
     .map_err(AdtSourcePatchError::PreviewSourceRead)?;

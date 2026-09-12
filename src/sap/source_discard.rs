@@ -5,6 +5,7 @@ use thiserror::Error;
 use crate::suggested_command;
 
 use super::{
+    adt_version::AdtVersion,
     client::{SapClient, SapClientError},
     edit_session::{
         AdtEditSessionError, AdtObjectLock, acquire_adt_object_lock,
@@ -12,7 +13,7 @@ use super::{
     },
     editable_source::{
         AdtEditTargetValidationError, AdtSourceReadError, AdtSourceReadResult, AdtSourceSnapshot,
-        AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
+        EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
         validate_adt_edit_target,
     },
     source_activation::{AdtSourceActivationError, activate_validated_adt_source},
@@ -166,7 +167,7 @@ impl ReportableError for AdtInactiveSourceDiscardError {
             }
             Self::RestoreVerificationMismatch { identity, .. } => format!(
                 "The inactive source was overwritten but not activated because SAP did not preserve the active bytes exactly. Inspect both versions before continuing, starting with `{}`.",
-                suggested_command::edit_read(identity.object_type.as_str(), &identity.name, AdtSourceVersion::Inactive.as_str())
+                suggested_command::edit_read(identity.object_type.as_str(), &identity.name, AdtVersion::Inactive.as_str())
             ),
             Self::RestoredSourceActivation(error) => format!(
                 "The inactive source now contains the previous active source, but activation did not complete. {}",
@@ -174,7 +175,7 @@ impl ReportableError for AdtInactiveSourceDiscardError {
             ),
             Self::ActiveSourceChanged { identity, .. } => format!(
                 "Do not retry blindly: a discard must preserve active source exactly, so inspect the object history, starting with `{}`.",
-                suggested_command::edit_read(identity.object_type.as_str(), &identity.name, AdtSourceVersion::Active.as_str())
+                suggested_command::edit_read(identity.object_type.as_str(), &identity.name, AdtVersion::Active.as_str())
             ),
         })
     }
@@ -192,13 +193,13 @@ impl ReportableError for AdtInactiveSourceDiscardError {
                 Some(suggested_command::edit_read(
                     identity.object_type.as_str(),
                     &identity.name,
-                    AdtSourceVersion::Inactive.as_str(),
+                    AdtVersion::Inactive.as_str(),
                 ))
             }
             Self::ActiveSourceChanged { identity, .. } => Some(suggested_command::edit_read(
                 identity.object_type.as_str(),
                 &identity.name,
-                AdtSourceVersion::Active.as_str(),
+                AdtVersion::Active.as_str(),
             )),
             Self::ActiveSourceRead(error)
             | Self::InactiveSourceRead(error)
@@ -326,9 +327,8 @@ async fn prepare_discard_while_locked(
         });
     }
 
-    let active_read = read_adt_source_in_stateful_session(sap, identity, AdtSourceVersion::Active);
-    let inactive_read =
-        read_adt_source_in_stateful_session(sap, identity, AdtSourceVersion::Inactive);
+    let active_read = read_adt_source_in_stateful_session(sap, identity, AdtVersion::Active);
+    let inactive_read = read_adt_source_in_stateful_session(sap, identity, AdtVersion::Inactive);
     let (active_before, inactive_before) = tokio::join!(active_read, inactive_read);
     let active_before = active_before.map_err(AdtInactiveSourceDiscardError::ActiveSourceRead)?;
     let inactive_before =
@@ -338,7 +338,7 @@ async fn prepare_discard_while_locked(
         .await
         .map_err(AdtInactiveSourceDiscardError::Session)?;
     let restored_inactive =
-        read_adt_source_in_stateful_session(sap, identity, AdtSourceVersion::Inactive)
+        read_adt_source_in_stateful_session(sap, identity, AdtVersion::Inactive)
             .await
             .map_err(AdtInactiveSourceDiscardError::RestoredSourceRead)?;
 
