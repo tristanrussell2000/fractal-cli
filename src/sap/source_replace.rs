@@ -3,12 +3,13 @@ use crate::config::EditPolicy;
 use thiserror::Error;
 
 use super::{
+    adt_version::AdtVersion,
     client::{SapClient, SapClientError},
     edit_session::AdtEditSessionError,
     editable_source::{
-        AdtEditTargetValidationError, AdtSourceReadError, AdtSourceSnapshot, AdtSourceVersion,
-        EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
-        read_adt_source_for_edit, validate_adt_edit_target,
+        AdtEditTargetValidationError, AdtSourceReadError, AdtSourceSnapshot, EditableAdtObjectType,
+        EditableAdtSourceIdentity, ValidatedAdtEditTarget, read_adt_source_for_edit,
+        validate_adt_edit_target,
     },
     inactive_source_save::{
         InactiveSourceSaveError, PlannedInactiveSourceChange, save_inactive_source_atomically,
@@ -156,7 +157,7 @@ impl ReportableError for AdtSourceReplacementError {
                 suggested_command::edit_read(
                     identity.object_type.as_str(),
                     &identity.name,
-                    AdtSourceVersion::Inactive.as_str()
+                    AdtVersion::Inactive.as_str()
                 )
             ),
             Self::Replacement { source, .. } => source.hint()?,
@@ -166,7 +167,7 @@ impl ReportableError for AdtSourceReplacementError {
                 suggested_command::edit_read(
                     identity.object_type.as_str(),
                     &identity.name,
-                    AdtSourceVersion::Inactive.as_str()
+                    AdtVersion::Inactive.as_str()
                 )
             ),
         })
@@ -189,7 +190,7 @@ impl ReportableError for AdtSourceReplacementError {
             | Self::StoredSourceRead { identity, .. } => Some(suggested_command::edit_read(
                 identity.object_type.as_str(),
                 &identity.name,
-                AdtSourceVersion::Inactive.as_str(),
+                AdtVersion::Inactive.as_str(),
             )),
             Self::LockedSourceRead(error) | Self::PreviewSourceRead(error) => {
                 error.suggested_command()
@@ -227,7 +228,7 @@ pub async fn preview_adt_source_replacement(
         sap,
         identity.object_type,
         &identity.name,
-        AdtSourceVersion::Inactive,
+        AdtVersion::Inactive,
     )
     .await
     .map_err(AdtSourceReplacementError::PreviewSourceRead)?;

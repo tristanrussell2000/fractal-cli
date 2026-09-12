@@ -3,8 +3,9 @@ use fractal::{
     config::Profile,
     sap::{
         adt_message_severity::AdtMessageSeverity,
+        adt_version::AdtVersion,
         client::SapClient,
-        editable_source::{AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceTargetError},
+        editable_source::{EditableAdtObjectType, EditableAdtSourceTargetError},
         source_check::{AdtSourceCheckError, check_adt_stored_source},
     },
 };
@@ -94,7 +95,7 @@ async fn checks_active_source_and_returns_structured_messages() {
         &mut client,
         EditableAdtObjectType::Class,
         "zcl_sample",
-        AdtSourceVersion::Active,
+        AdtVersion::Active,
     )
     .await
     .unwrap();
@@ -142,7 +143,7 @@ async fn verifies_an_inactive_version_exists_before_checking_it() {
         &mut client,
         EditableAdtObjectType::Class,
         "ZCL_SAMPLE",
-        AdtSourceVersion::Inactive,
+        AdtVersion::Inactive,
     )
     .await
     .unwrap();
@@ -170,7 +171,7 @@ async fn does_not_run_a_fabricated_check_when_no_inactive_version_exists() {
         &mut client,
         EditableAdtObjectType::Class,
         "ZCL_SAMPLE",
-        AdtSourceVersion::Inactive,
+        AdtVersion::Inactive,
     )
     .await
     .unwrap();
@@ -204,7 +205,7 @@ async fn rejects_malformed_checkrun_xml_with_a_stable_error() {
         &mut client,
         EditableAdtObjectType::Class,
         "ZCL_SAMPLE",
-        AdtSourceVersion::Active,
+        AdtVersion::Active,
     )
     .await
     .unwrap_err();
@@ -231,7 +232,7 @@ async fn preserves_sap_failures_from_the_checkrun_request() {
         &mut client,
         EditableAdtObjectType::Class,
         "ZCL_SAMPLE",
-        AdtSourceVersion::Active,
+        AdtVersion::Active,
     )
     .await
     .unwrap_err();
@@ -260,7 +261,7 @@ async fn rejects_an_invalid_object_name_before_any_http_request() {
         &mut client,
         EditableAdtObjectType::Class,
         "ZCL;DELETE",
-        AdtSourceVersion::Active,
+        AdtVersion::Active,
     )
     .await
     .unwrap_err();

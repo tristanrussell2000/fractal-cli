@@ -119,7 +119,7 @@ fn host_of(base_url: &str) -> Result<String, JournalError> {
     let url = url::Url::parse(base_url.trim())
         .map_err(|_| JournalError::UnusableBaseUrl(base_url.to_owned()))?;
     url.host_str()
-        .map(|host| host.to_ascii_lowercase())
+        .map(str::to_ascii_lowercase)
         .ok_or_else(|| JournalError::UnusableBaseUrl(base_url.to_owned()))
 }
 

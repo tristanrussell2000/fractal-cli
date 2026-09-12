@@ -14,7 +14,7 @@ use super::store::EntryStore;
 /// A temporary from a moment ago is very likely another Fractal process writing
 /// right now, and removing it would corrupt that write. An hour is four orders
 /// of magnitude past any real write.
-pub const TEMPORARY_GRACE: Duration = Duration::from_secs(60 * 60);
+pub const TEMPORARY_GRACE: Duration = Duration::from_hours(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetentionPolicy {
@@ -25,10 +25,11 @@ pub struct RetentionPolicy {
 }
 
 impl Default for RetentionPolicy {
+    // Hours because `Duration::from_days` is still unstable.
     fn default() -> Self {
         Self {
             keep_per_object: 20,
-            max_age: Duration::from_secs(60 * 60 * 24 * 30),
+            max_age: Duration::from_hours(24 * 30),
         }
     }
 }
@@ -137,6 +138,9 @@ pub fn prune_entries(
 ///
 /// Returns [`JournalError::Read`] when the store cannot be listed, or
 /// [`JournalError::Write`] when a blob cannot be removed.
+// One caller, one hasher. A `BuildHasher` parameter would add a type parameter
+// to the signature this module is documented by, for nothing.
+#[allow(clippy::implicit_hasher)]
 pub fn sweep_blobs(
     blobs: &BlobStore,
     live: &HashSet<String>,
@@ -579,7 +583,7 @@ mod tests {
                 },
                 JournalOperation::activate(),
                 None,
-                Some("about to be referenced".to_owned()),
+                Some("about to be referenced"),
                 None,
             )
             .unwrap();

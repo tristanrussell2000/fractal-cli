@@ -19,14 +19,14 @@ use thiserror::Error;
 use super::{
     adt_object_identity::AdtObjectIdentity,
     adt_response::parse_adt_document,
+    adt_version::AdtVersion,
     client::{SapClient, SapClientError},
     edit_session::{
         AdtEditSessionError, acquire_adt_object_lock, release_adt_object_lock,
         stateful_session_headers,
     },
     editable_source::{
-        AdtEditTargetValidationError, AdtSourceVersion, read_adt_source_for_edit,
-        validate_adt_edit_target,
+        AdtEditTargetValidationError, read_adt_source_for_edit, validate_adt_edit_target,
     },
     find_non_empty_attribute,
     metadata_document::strip_navigation_links,
@@ -426,7 +426,7 @@ async fn record_deletion(
         },
         JournalOperation::delete(package, description),
         transport.map(str::to_owned),
-        Some(content),
+        Some(&content),
         // A delete takes the object with both its layers, and the recipe
         // restores one object. Pending work is not separately recoverable.
         None,
@@ -437,6 +437,10 @@ async fn record_deletion(
 ///
 /// For a metadata object those are the same read: the document *is* the object.
 /// A source object needs both, and the two are different resources.
+///
+/// Both name the active version. This content is the journal's restore image,
+/// and a read naming no version is served somebody's pending edit whenever one
+/// exists — which was never what ran.
 async fn deletion_content(
     sap: &SapClient,
     identity: &AdtObjectIdentity,
@@ -447,26 +451,28 @@ async fn deletion_content(
     };
     match identity.object_type {
         AdtObjectFamily::Source(object_type) => {
-            let source = read_adt_source_for_edit(
-                sap,
-                object_type,
-                &identity.name,
-                AdtSourceVersion::Active,
-            )
-            .await
-            .map_err(|source| AdtObjectDeletionError::SourceUnreadable {
-                name: identity.name.clone(),
-                source,
-            })?;
+            let source =
+                read_adt_source_for_edit(sap, object_type, &identity.name, AdtVersion::Active)
+                    .await
+                    .map_err(|source| AdtObjectDeletionError::SourceUnreadable {
+                        name: identity.name.clone(),
+                        source,
+                    })?;
             let metadata = sap
-                .get_text(&identity.object_uri)
+                .get_text_with_query(
+                    &identity.object_uri,
+                    &[("version", AdtVersion::Active.as_str())],
+                )
                 .await
                 .map_err(unreadable)?;
             Ok((source.snapshot.source, metadata))
         }
         AdtObjectFamily::Metadata(_) => {
             let document = sap
-                .get_text(&identity.object_uri)
+                .get_text_with_query(
+                    &identity.object_uri,
+                    &[("version", AdtVersion::Active.as_str())],
+                )
                 .await
                 .map_err(unreadable)?;
             let document = strip_navigation_links(&document);

@@ -2,13 +2,14 @@ use fractal::{
     config::Profile,
     sap::{
         adt_object_uri::AdtObjectUriError,
+        adt_version::AdtVersion,
         client::SapClient,
         object_source::{ByteRangeOptions, ObjectSourceError, get_source},
     },
 };
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
-    matchers::{method, path},
+    matchers::{method, path, query_param},
 };
 
 fn profile(base_url: String) -> Profile {
@@ -40,6 +41,7 @@ async fn fetches_complete_source_and_pages_utf8_safely() {
     let first = get_source(
         &client,
         "/sap/bc/adt/oo/classes/zcl_test",
+        AdtVersion::Active,
         ByteRangeOptions {
             offset: 0,
             limit: Some(4),
@@ -58,6 +60,7 @@ async fn fetches_complete_source_and_pages_utf8_safely() {
     let second = get_source(
         &client,
         "/sap/bc/adt/oo/classes/zcl_test",
+        AdtVersion::Active,
         ByteRangeOptions {
             offset: first.next_offset.unwrap(),
             limit: None,
@@ -75,9 +78,14 @@ async fn rejects_invalid_source_uris_before_http() {
     let profile = profile("http://127.0.0.1:1".to_owned());
     let client = SapClient::new(&profile, "password".to_owned()).unwrap();
 
-    let error = get_source(&client, "not-an-adt-uri", ByteRangeOptions::default())
-        .await
-        .unwrap_err();
+    let error = get_source(
+        &client,
+        "not-an-adt-uri",
+        AdtVersion::Active,
+        ByteRangeOptions::default(),
+    )
+    .await
+    .unwrap_err();
     assert!(matches!(
         error,
         ObjectSourceError::Uri(AdtObjectUriError::NotAnAdtUri(_))
@@ -92,6 +100,7 @@ async fn rejects_doubled_source_suffix_and_known_no_source_kinds() {
     let doubled = get_source(
         &client,
         "/sap/bc/adt/oo/classes/zcl_test/source/main",
+        AdtVersion::Active,
         ByteRangeOptions::default(),
     )
     .await
@@ -104,9 +113,55 @@ async fn rejects_doubled_source_suffix_and_known_no_source_kinds() {
     let domain = get_source(
         &client,
         "/sap/bc/adt/ddic/domains/zdomain",
+        AdtVersion::Active,
         ByteRangeOptions::default(),
     )
     .await
     .unwrap_err();
     assert!(matches!(domain, ObjectSourceError::NoSourceForKind { .. }));
+}
+
+#[tokio::test]
+async fn a_source_read_names_the_version_it_wants() {
+    let server = MockServer::start().await;
+    // Each layer answers only when named. A read that omits the selector would
+    // be served the inactive source whenever one exists, established live, and
+    // ABAP text carries no marker that would let the caller notice.
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/programs/programs/zsample/source/main"))
+        .and(query_param("version", "active"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("WRITE / 'ACTIVE'."))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/programs/programs/zsample/source/main"))
+        .and(query_param("version", "inactive"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("WRITE / 'PENDING'."))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let profile = profile(server.uri());
+    let client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let active = get_source(
+        &client,
+        "/sap/bc/adt/programs/programs/zsample",
+        AdtVersion::Active,
+        ByteRangeOptions::default(),
+    )
+    .await
+    .unwrap();
+    let inactive = get_source(
+        &client,
+        "/sap/bc/adt/programs/programs/zsample",
+        AdtVersion::Inactive,
+        ByteRangeOptions::default(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(active.content, "WRITE / 'ACTIVE'.");
+    assert_eq!(inactive.content, "WRITE / 'PENDING'.");
+    server.verify().await;
 }

@@ -5,6 +5,7 @@ use thiserror::Error;
 use super::{
     adt_object_uri::{AdtObjectUriError, validate_adt_object_uri},
     adt_response::{AdtResponseParseError, parse_adt_document},
+    adt_version::AdtVersion,
     client::{SapClient, SapClientError},
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
@@ -93,7 +94,11 @@ pub async fn get_object_info(
     uri: &str,
 ) -> Result<ObjectInfoResult, ObjectInfoError> {
     validate_adt_object_uri(uri)?;
-    let xml = sap.get_text(uri).await?;
+    // The activated object's description. A read naming no version is served a
+    // pending edit's instead, which is not what "authoritative" means here.
+    let xml = sap
+        .get_text_with_query(uri, &[("version", AdtVersion::Active.as_str())])
+        .await?;
     parse_object_info(&xml, uri)
 }
 

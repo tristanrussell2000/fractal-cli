@@ -440,14 +440,20 @@ fn journal(dir: &tempfile::TempDir) -> Journal {
 
 /// The reads a journaled delete adds: the source to keep, and the object's own
 /// document for its package and description.
+///
+/// Both require `version=active`, so a read that names no version — which SAP
+/// answers with somebody's pending edit — matches nothing and fails. The blob
+/// this stores is the journal's restore image.
 async fn mount_content_reads(server: &MockServer) {
     Mock::given(method("GET"))
         .and(path("/sap/bc/adt/programs/programs/zsample/source/main"))
+        .and(query_param("version", "active"))
         .respond_with(ResponseTemplate::new(200).set_body_string(SOURCE))
         .mount(server)
         .await;
     Mock::given(method("GET"))
         .and(path(OBJECT_PATH))
+        .and(query_param("version", "active"))
         .respond_with(ResponseTemplate::new(200).set_body_string(object_xml()))
         .up_to_n_times(1)
         .expect(1)

@@ -14,9 +14,11 @@ use thiserror::Error;
 
 use super::{
     adt_response::{AdtResponseParseError, parse_adt_document},
+    adt_version::AdtVersion,
     client::{SapClient, SapClientError},
     editable_source::validate_object_name,
     find_child, find_non_empty_attribute,
+    metadata_document::declared_version,
     metadata_object::MetadataAdtObjectType,
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
@@ -99,6 +101,9 @@ pub struct DataElementInfo {
 pub struct DomainInfo {
     pub name: String,
     pub uri: String,
+    /// The layer this document declared itself to be, which is not always the
+    /// layer that was asked for.
+    pub version: Option<String>,
     pub description: Option<String>,
     pub package: Option<String>,
     pub data_type: Option<String>,
@@ -120,6 +125,12 @@ pub struct DdicTypeInfo {
     pub name: String,
     pub kind: &'static str,
     pub uri: String,
+    /// The layer that was asked for.
+    pub requested_version: &'static str,
+    /// The layer the document declared itself to be — `active`, `inactive` or
+    /// `new`. Not always [`Self::requested_version`]: SAP falls back rather than
+    /// refusing.
+    pub version: Option<String>,
     pub description: Option<String>,
     pub package: Option<String>,
     pub effective_type: EffectiveType,
@@ -134,6 +145,8 @@ pub struct DdicTypeOptions {
     pub object_type: Option<MetadataAdtObjectType>,
     /// Whether to follow a data element's domain reference.
     pub resolve_domain: bool,
+    /// Which stored layer to read. A resolved domain is read at the same layer.
+    pub version: AdtVersion,
 }
 
 /// A failure while inspecting a DDIC type.
@@ -232,25 +245,26 @@ impl ReportableError for DdicTypeError {
 /// [`DdicTypeError::DomainMissing`] when a referenced domain cannot be read,
 /// or [`DdicTypeError::Parse`] for a response that is not valid XML.
 pub async fn get_ddic_type(
-    sap: &mut SapClient,
+    sap: &SapClient,
     name: &str,
     options: &DdicTypeOptions,
 ) -> Result<DdicTypeInfo, DdicTypeError> {
     let name =
         validate_object_name(name).map_err(|_| DdicTypeError::InvalidName(name.to_owned()))?;
 
+    let version = options.version;
     let (object_type, xml) = match options.object_type {
         Some(object_type) => {
             supported_type(object_type)?;
-            let xml = sap.get_text(&ddic_object_uri(object_type, &name)).await?;
+            let xml = read_layer(sap, &ddic_object_uri(object_type, &name), version).await?;
             (object_type, xml)
         }
-        None => detect_and_read(sap, &name).await?,
+        None => detect_and_read(sap, &name, version).await?,
     };
 
     match object_type {
         MetadataAdtObjectType::DataElement => {
-            let mut info = parse_data_element(&xml, &name)?;
+            let mut info = parse_data_element(&xml, &name, version)?;
             if options.resolve_domain
                 && let Some(domain) = info
                     .data_element
@@ -258,11 +272,11 @@ pub async fn get_ddic_type(
                     .and_then(|element| element.type_source.domain_name())
                     .map(str::to_owned)
             {
-                info.domain = Some(read_domain(sap, &domain, &name).await?);
+                info.domain = Some(read_domain(sap, &domain, &name, version).await?);
             }
             Ok(info)
         }
-        MetadataAdtObjectType::Domain => parse_domain_object(&xml, &name),
+        MetadataAdtObjectType::Domain => parse_domain_object(&xml, &name, version),
         unsupported => Err(DdicTypeError::UnsupportedType(
             unsupported.as_str().to_owned(),
         )),
@@ -282,18 +296,19 @@ fn supported_type(object_type: MetadataAdtObjectType) -> Result<(), DdicTypeErro
 /// candidate: any other failure is the real answer and must not be reported as
 /// "neither".
 async fn detect_and_read(
-    sap: &mut SapClient,
+    sap: &SapClient,
     name: &str,
+    version: AdtVersion,
 ) -> Result<(MetadataAdtObjectType, String), DdicTypeError> {
     let element_uri = ddic_object_uri(MetadataAdtObjectType::DataElement, name);
-    match sap.get_text(&element_uri).await {
+    match read_layer(sap, &element_uri, version).await {
         Ok(xml) => return Ok((MetadataAdtObjectType::DataElement, xml)),
         Err(error) if error.is_not_found() => {}
         Err(error) => return Err(error.into()),
     }
 
     let domain_uri = ddic_object_uri(MetadataAdtObjectType::Domain, name);
-    match sap.get_text(&domain_uri).await {
+    match read_layer(sap, &domain_uri, version).await {
         Ok(xml) => Ok((MetadataAdtObjectType::Domain, xml)),
         Err(error) if error.is_not_found() => Err(DdicTypeError::NotFound(name.to_owned())),
         Err(error) => Err(error.into()),
@@ -301,12 +316,13 @@ async fn detect_and_read(
 }
 
 async fn read_domain(
-    sap: &mut SapClient,
+    sap: &SapClient,
     domain: &str,
     data_element: &str,
+    version: AdtVersion,
 ) -> Result<DomainInfo, DdicTypeError> {
     let uri = ddic_object_uri(MetadataAdtObjectType::Domain, domain);
-    let xml = match sap.get_text(&uri).await {
+    let xml = match read_layer(sap, &uri, version).await {
         Ok(xml) => xml,
         Err(error) if error.is_not_found() => {
             return Err(DdicTypeError::DomainMissing {
@@ -319,6 +335,19 @@ async fn read_domain(
     parse_domain(&xml, domain)
 }
 
+/// Reads one named layer of a document.
+///
+/// Never omits the selector: a read without one is served the inactive document
+/// whenever it exists.
+async fn read_layer(
+    sap: &SapClient,
+    uri: &str,
+    version: AdtVersion,
+) -> Result<String, SapClientError> {
+    sap.get_text_with_query(uri, &[("version", version.as_str())])
+        .await
+}
+
 /// Builds the ADT URI for a DDIC name. Registered namespaces are percent-
 /// encoded so `/ACME/SAMPLE_TEXT` stays one path segment.
 fn ddic_object_uri(object_type: MetadataAdtObjectType, name: &str) -> String {
@@ -326,7 +355,11 @@ fn ddic_object_uri(object_type: MetadataAdtObjectType, name: &str) -> String {
     format!("{}/{path_name}", object_type.collection_path())
 }
 
-fn parse_data_element(xml: &str, name: &str) -> Result<DdicTypeInfo, DdicTypeError> {
+fn parse_data_element(
+    xml: &str,
+    name: &str,
+    requested: AdtVersion,
+) -> Result<DdicTypeInfo, DdicTypeError> {
     let document = parse_adt_document(xml)?;
     let root = document.root_element();
     let element = find_child(root, "dataElement");
@@ -350,6 +383,8 @@ fn parse_data_element(xml: &str, name: &str) -> Result<DdicTypeInfo, DdicTypeErr
         name: name.to_owned(),
         kind: MetadataAdtObjectType::DataElement.as_str(),
         uri: ddic_object_uri(MetadataAdtObjectType::DataElement, name),
+        requested_version: requested.as_str(),
+        version: declared_version(root),
         description: find_non_empty_attribute(root, "description"),
         package: package_name(root),
         effective_type: EffectiveType {
@@ -362,12 +397,18 @@ fn parse_data_element(xml: &str, name: &str) -> Result<DdicTypeInfo, DdicTypeErr
     })
 }
 
-fn parse_domain_object(xml: &str, name: &str) -> Result<DdicTypeInfo, DdicTypeError> {
+fn parse_domain_object(
+    xml: &str,
+    name: &str,
+    requested: AdtVersion,
+) -> Result<DdicTypeInfo, DdicTypeError> {
     let domain = parse_domain(xml, name)?;
     Ok(DdicTypeInfo {
         name: domain.name.clone(),
         kind: MetadataAdtObjectType::Domain.as_str(),
         uri: domain.uri.clone(),
+        requested_version: requested.as_str(),
+        version: domain.version.clone(),
         description: domain.description.clone(),
         package: domain.package.clone(),
         effective_type: EffectiveType {
@@ -391,6 +432,7 @@ fn parse_domain(xml: &str, name: &str) -> Result<DomainInfo, DdicTypeError> {
     Ok(DomainInfo {
         name: name.to_owned(),
         uri: ddic_object_uri(MetadataAdtObjectType::Domain, name),
+        version: declared_version(root),
         description: find_non_empty_attribute(root, "description"),
         package: package_name(root),
         data_type: type_information.and_then(|node| child_text(node, "datatype")),
@@ -502,6 +544,7 @@ mod tests {
         let info = parse_data_element(
             &data_element_xml("domain", "ZSAMPLE_STATUS_DOM"),
             "ZSAMPLE_FIELD",
+            AdtVersion::Active,
         )
         .expect("parses");
         let element = info.data_element.expect("has data element detail");
@@ -530,8 +573,12 @@ mod tests {
 
     #[test]
     fn a_predefined_type_names_no_domain() {
-        let info = parse_data_element(&data_element_xml("predefinedAbapType", ""), "ZSAMPLE_FIELD")
-            .expect("parses");
+        let info = parse_data_element(
+            &data_element_xml("predefinedAbapType", ""),
+            "ZSAMPLE_FIELD",
+            AdtVersion::Active,
+        )
+        .expect("parses");
         let element = info.data_element.expect("has data element detail");
 
         assert_eq!(
@@ -547,6 +594,7 @@ mod tests {
         let info = parse_data_element(
             &data_element_xml("referenceType", "IF_SAMPLE"),
             "ZSAMPLE_FIELD",
+            AdtVersion::Active,
         )
         .expect("parses");
         let element = info.data_element.expect("has data element detail");
@@ -588,7 +636,8 @@ mod tests {
 
     #[test]
     fn a_domain_read_directly_reports_its_own_type_as_effective() {
-        let info = parse_domain_object(DOMAIN_XML, "ZSAMPLE_STATUS_DOM").expect("parses");
+        let info = parse_domain_object(DOMAIN_XML, "ZSAMPLE_STATUS_DOM", AdtVersion::Active)
+            .expect("parses");
 
         assert_eq!(info.kind, "DOMA");
         assert_eq!(info.data_element, None);

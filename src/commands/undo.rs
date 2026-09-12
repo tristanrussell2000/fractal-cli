@@ -23,6 +23,9 @@ use fractal::journal::store::EntryStore;
 use fractal::reportable_error::ReportableError;
 use fractal::sap::undo::{UndoOutcome, UndoPlan, plan_activation_undo, undo_activation};
 
+// The flags are the JSON contract, as with the other edit outputs: each answers
+// a question a caller must be able to ask without parsing prose.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Serialize)]
 pub struct UndoOutput {
     ok: bool,
@@ -235,9 +238,9 @@ fn report(
             .collect(),
         pending_work_at_risk: plan.pending_work_at_risk,
         steps_run: outcome
-            .map(|outcome| outcome.steps_run.iter().map(step_name).collect())
+            .map(|outcome| outcome.steps_run.iter().copied().map(step_name).collect())
             .unwrap_or_default(),
-        resumed_from: outcome.and_then(|outcome| outcome.resumed_from.as_ref().map(step_name)),
+        resumed_from: outcome.and_then(|outcome| outcome.resumed_from.map(step_name)),
         still_locked: outcome.is_some_and(|outcome| outcome.still_locked),
         journal_entry_incomplete: outcome.is_some_and(|outcome| outcome.journal_entry_incomplete),
         steps: steps(plan),
@@ -272,7 +275,7 @@ fn steps(plan: &UndoPlan) -> Vec<String> {
 }
 
 /// The JSON spelling of a step, which is what a caller reading the output sees.
-const fn step_name(step: &ActivationUndoStep) -> &'static str {
+const fn step_name(step: ActivationUndoStep) -> &'static str {
     match step {
         ActivationUndoStep::WroteInactive => "wrote_inactive",
         ActivationUndoStep::Activated => "activated",

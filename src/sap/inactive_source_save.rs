@@ -1,12 +1,13 @@
 use super::{
+    adt_version::AdtVersion,
     client::SapClient,
     edit_session::{
         AdtEditSessionError, AdtObjectLock, acquire_adt_object_lock,
         read_adt_source_in_stateful_session, release_adt_object_lock, write_adt_source,
     },
     editable_source::{
-        AdtSourceReadError, AdtSourceSnapshot, AdtSourceVersion, EditableAdtSourceIdentity,
-        ValidatedAdtEditTarget, read_adt_source_by_identity,
+        AdtSourceReadError, AdtSourceSnapshot, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
+        read_adt_source_by_identity,
     },
 };
 
@@ -78,7 +79,7 @@ where
     };
     let still_locked = unlock.is_err();
 
-    let stored = read_adt_source_by_identity(sap, identity, AdtSourceVersion::Inactive)
+    let stored = read_adt_source_by_identity(sap, identity, AdtVersion::Inactive)
         .await
         .map(|read| read.snapshot)
         .map_err(InactiveSourceSaveError::StoredSourceRead)?;
@@ -101,7 +102,7 @@ async fn plan_and_write_while_locked<M, E, F>(
 where
     F: FnOnce(&AdtSourceSnapshot) -> Result<PlannedInactiveSourceChange<M>, E>,
 {
-    let original = read_adt_source_in_stateful_session(sap, identity, AdtSourceVersion::Inactive)
+    let original = read_adt_source_in_stateful_session(sap, identity, AdtVersion::Inactive)
         .await
         .map(|read| read.snapshot)
         .map_err(InactiveSourceSaveError::LockedSourceRead)?;

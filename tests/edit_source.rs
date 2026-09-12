@@ -2,10 +2,9 @@ use fractal::reportable_error::ReportableError;
 use fractal::{
     config::Profile,
     sap::{
+        adt_version::AdtVersion,
         client::SapClient,
-        editable_source::{
-            AdtSourceReadError, AdtSourceVersion, EditableAdtObjectType, read_adt_source_for_edit,
-        },
+        editable_source::{AdtSourceReadError, EditableAdtObjectType, read_adt_source_for_edit},
     },
     source_change::source_sha256,
 };
@@ -44,7 +43,7 @@ async fn fetches_complete_active_class_source_with_exact_hash_metadata() {
         &client,
         EditableAdtObjectType::Class,
         " zcl_example ",
-        AdtSourceVersion::Active,
+        AdtVersion::Active,
     )
     .await
     .unwrap();
@@ -59,7 +58,7 @@ async fn fetches_complete_active_class_source_with_exact_hash_metadata() {
         result.identity.source_uri,
         "/sap/bc/adt/oo/classes/zcl_example/source/main"
     );
-    assert_eq!(result.requested_version, AdtSourceVersion::Active);
+    assert_eq!(result.requested_version, AdtVersion::Active);
     assert_eq!(result.snapshot.source, source);
     assert_eq!(result.snapshot.bytes, source.len());
     assert_eq!(result.snapshot.sha256, source_sha256(source));
@@ -85,13 +84,13 @@ async fn requests_inactive_namespaced_ddl_source_with_an_encoded_name() {
         &client,
         EditableAdtObjectType::DdlSource,
         "/ACME/EXAMPLE",
-        AdtSourceVersion::Inactive,
+        AdtVersion::Inactive,
     )
     .await
     .unwrap();
 
     assert_eq!(result.identity.name, "/ACME/EXAMPLE");
-    assert_eq!(result.requested_version, AdtSourceVersion::Inactive);
+    assert_eq!(result.requested_version, AdtVersion::Inactive);
     assert_eq!(result.snapshot.source, source);
     server.verify().await;
 }
@@ -108,7 +107,7 @@ async fn rejects_an_invalid_name_before_an_http_request() {
         &client,
         EditableAdtObjectType::Program,
         "ZREPORT;DELETE",
-        AdtSourceVersion::Active,
+        AdtVersion::Active,
     )
     .await
     .unwrap_err();
@@ -133,7 +132,7 @@ async fn rejects_non_utf8_source_without_hashing_decoded_replacement_text() {
         &client,
         EditableAdtObjectType::Program,
         "ZBAD",
-        AdtSourceVersion::Inactive,
+        AdtVersion::Inactive,
     )
     .await
     .unwrap_err();
@@ -162,7 +161,7 @@ async fn preserves_sap_errors_from_the_source_request() {
         &client,
         EditableAdtObjectType::Interface,
         "ZIF_MISSING",
-        AdtSourceVersion::Active,
+        AdtVersion::Active,
     )
     .await
     .unwrap_err();

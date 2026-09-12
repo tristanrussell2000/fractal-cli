@@ -5,6 +5,7 @@ use super::{
     metadata::merge_table_metadata, parse_table_data, parse_table_ddl,
 };
 use crate::sap::{
+    adt_version::AdtVersion,
     client::{SapClient, SapClientError},
     object_source::{ByteRangeOptions, get_source},
 };
@@ -82,7 +83,9 @@ pub struct TableMetadataOptions {
 pub async fn get_table_ddl(sap: &SapClient, entity: &str) -> Result<TableDdl, TableError> {
     let entity = validate_entity_name(entity)?;
     let uri = table_adt_uri(&entity);
-    let source = get_source(sap, &uri, ByteRangeOptions::default())
+    // Active, always: this DDL becomes the columns later queries run against,
+    // and a pending edit describes fields the database does not have.
+    let source = get_source(sap, &uri, AdtVersion::Active, ByteRangeOptions::default())
         .await
         .map_err(TableError::DdlSource)?;
     parse_table_ddl(&source.content).map_err(TableError::from)

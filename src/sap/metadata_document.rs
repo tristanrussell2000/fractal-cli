@@ -1,32 +1,23 @@
 //! The canonical form of a metadata document.
 //!
-//! ADT decorates every document it serves with `atom:link` navigation
-//! elements, and one of them is **conditional**: a complementary
-//! active/inactive link appears on the active document as soon as somebody has
-//! pending work on the object, and disappears again when they do not.
+//! ADT decorates every document with `atom:link` navigation elements, one of
+//! them conditional: a complementary active/inactive link is present only while
+//! somebody has pending work on the object. The bytes of the active document
+//! therefore change without the object changing, which makes a hash gate report
+//! staleness that is not there.
 //!
-//! ```xml
-//! <atom:link href="./zsample?version=inactive"
-//!            rel="http://www.sap.com/adt/relations/objectstates"
-//!            title="Complementary active/inactive version"/>
-//! ```
+//! The links are read-time decoration, not part of the object: a stripped
+//! document is accepted by `edit set-xml`, and the links come back on the next
+//! read. So the journal stores the stripped form and an undo writes it back —
+//! one form in and out, rather than a raw hash and a canonical hash that have to
+//! be kept in step.
 //!
-//! So the bytes of the active document change without the object changing,
-//! which would make undo's hash gate report staleness in exactly the situation
-//! somebody reaches for undo. Stripping the links removes that: two reads of an
-//! unchanged object then hash identically.
-//!
-//! The links are read-time decoration rather than part of the object, verified
-//! live: a document with every one removed was accepted by `edit set-xml`, the
-//! edit landed, the links were regenerated on the next read, and the object
-//! activated normally. So the stripped document is what the journal stores and
-//! what an undo writes back — one form, on the way in and on the way out,
-//! rather than a raw hash and a canonical hash that have to be kept in step.
-//!
-//! `object xml` and `ddic show` still print what SAP sent. Whether they should
-//! strip for readability is a question about display, not about storage.
+//! `object xml` and `ddic show` print what SAP sent.
 
-use super::adt_response::parse_adt_document;
+use super::{
+    adt_response::{AdtResponseParseError, parse_adt_document},
+    find_non_empty_attribute,
+};
 
 const ATOM_NAMESPACE: &str = "http://www.w3.org/2005/Atom";
 
@@ -67,6 +58,23 @@ pub fn strip_navigation_links(xml: &str) -> String {
     }
     stripped.push_str(&xml[copied..]);
     stripped
+}
+
+/// The layer a document says it belongs to: `new`, `inactive` or `active`.
+///
+/// The answer, not the request: SAP serves the other layer rather than refusing
+/// when the requested one does not exist.
+///
+/// # Errors
+///
+/// Returns [`AdtResponseParseError`] when the document is not valid XML.
+pub fn document_version(xml: &str) -> Result<Option<String>, AdtResponseParseError> {
+    Ok(declared_version(parse_adt_document(xml)?.root_element()))
+}
+
+/// [`document_version`] for a caller that has already parsed the document.
+pub(super) fn declared_version(root: roxmltree::Node) -> Option<String> {
+    find_non_empty_attribute(root, "version")
 }
 
 /// Where the whitespace directly before `start` begins.
@@ -146,5 +154,35 @@ mod tests {
     #[test]
     fn an_unparseable_document_comes_back_unchanged() {
         assert_eq!(strip_navigation_links("<not-closed"), "<not-closed");
+    }
+
+    fn versioned(version: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<blue:wbobj xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core"
+    adtcore:name="ZSAMPLE_DE" adtcore:type="DTEL/DE" adtcore:version="{version}"/>"#
+        )
+    }
+
+    #[test]
+    fn reads_the_layer_a_document_declares() {
+        for version in ["active", "inactive", "new"] {
+            assert_eq!(
+                document_version(&versioned(version)).unwrap().as_deref(),
+                Some(version)
+            );
+        }
+    }
+
+    #[test]
+    fn a_document_without_a_version_is_not_treated_as_active() {
+        let xml =
+            r#"<blue:wbobj xmlns:blue="urn:b" xmlns:adtcore="urn:a" adtcore:name="ZSAMPLE_DE"/>"#;
+        assert_eq!(document_version(xml).unwrap(), None);
+    }
+
+    #[test]
+    fn malformed_metadata_is_a_parse_error() {
+        assert!(document_version("<not-closed").is_err());
     }
 }

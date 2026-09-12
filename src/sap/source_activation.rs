@@ -13,11 +13,12 @@ use super::{
         AdtActivationMessage, ParsedActivationResponse, first_message_hint,
         parse_activation_response, post_activation,
     },
+    adt_version::AdtVersion,
     client::{SapClient, SapClientError},
     edit_session::{AdtEditSessionError, attach_adt_object_to_transport},
     editable_source::{
         AdtEditTargetValidationError, AdtSourceReadError, AdtSourceReadResult, AdtSourceSnapshot,
-        AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
+        EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
         read_adt_source_for_edit, validate_adt_edit_target,
     },
     source_check::{
@@ -122,7 +123,6 @@ impl AdtSourceActivationError {
     #[must_use]
     pub const fn sap_error(&self) -> Option<&SapClientError> {
         match self {
-            Self::Journal(_) => None,
             Self::PackageNotAllowed(error) => error.sap_error(),
             Self::InactiveSourceRead(error) | Self::ActiveSourceRead { source: error, .. } => {
                 error.sap_error()
@@ -133,7 +133,8 @@ impl AdtSourceActivationError {
             Self::ActivationRequest { source, .. } => Some(source),
             Self::Precheck(error) => error.sap_error(),
             Self::TransportAttachment(error) => error.sap_error(),
-            Self::Validation(_)
+            Self::Journal(_)
+            | Self::Validation(_)
             | Self::NoInactiveVersion { .. }
             | Self::PrecheckRejected { .. }
             | Self::ActivationResponseInvalid(_)
@@ -180,7 +181,7 @@ impl ReportableError for AdtSourceActivationError {
             Self::InactiveVersionProbe(error) => error.hint()?,
             Self::NoInactiveVersion { identity } => format!(
                 "Create or save an inactive change first. Run `{}` to inspect what is already live.",
-                suggested_command::edit_read(identity.object_type.as_str(), &identity.name, AdtSourceVersion::Active.as_str())
+                suggested_command::edit_read(identity.object_type.as_str(), &identity.name, AdtVersion::Active.as_str())
             ),
             Self::InactiveSourceRead(error) => error.hint()?,
             Self::Precheck(error) => error.hint()?,
@@ -190,13 +191,13 @@ impl ReportableError for AdtSourceActivationError {
                 messages.iter().map(|message| message.text.as_str()),
                 &format!(
                     "Run `{}` to inspect every syntax finding.",
-                    suggested_command::edit_check(identity.object_type.as_str(), &identity.name, AdtSourceVersion::Inactive.as_str())
+                    suggested_command::edit_check(identity.object_type.as_str(), &identity.name, AdtVersion::Inactive.as_str())
                 ),
             ),
             Self::TransportAttachment(error) => error.hint()?,
             Self::ActivationRequest { identity, .. } => format!(
                 "The request may have reached SAP. Re-run `{}` before retrying activation.",
-                suggested_command::edit_check(identity.object_type.as_str(), &identity.name, AdtSourceVersion::Inactive.as_str())
+                suggested_command::edit_check(identity.object_type.as_str(), &identity.name, AdtVersion::Inactive.as_str())
             ),
             Self::ActivationResponseInvalid(_) => {
                 "SAP did not clear the inactive version, and its response could not be interpreted; inspect the object in ADT before retrying."
@@ -209,12 +210,12 @@ impl ReportableError for AdtSourceActivationError {
             Self::ActiveSourceRead { identity, .. } | Self::PostActivationProbe { identity, .. } => {
                 format!(
                     "Activation may have succeeded. Read both active source and the inactive-object state before retrying. Run `{}`.",
-                    suggested_command::edit_read(identity.object_type.as_str(), &identity.name, AdtSourceVersion::Active.as_str())
+                    suggested_command::edit_read(identity.object_type.as_str(), &identity.name, AdtVersion::Active.as_str())
                 )
             }
             Self::VerificationMismatch { identity, .. } => format!(
                 "Do not retry blindly: SAP activated different source than the version Fractal prechecked. Review the object history, starting with `{}`.",
-                suggested_command::edit_read(identity.object_type.as_str(), &identity.name, AdtSourceVersion::Active.as_str())
+                suggested_command::edit_read(identity.object_type.as_str(), &identity.name, AdtVersion::Active.as_str())
             ),
         })
     }
@@ -225,7 +226,6 @@ impl ReportableError for AdtSourceActivationError {
     /// the activation with a different request, which is a mutation.
     fn suggested_command(&self) -> Option<String> {
         match self {
-            Self::Journal(_) => None,
             Self::PackageNotAllowed(error) => error.suggested_command(),
             Self::NoInactiveVersion { identity }
             | Self::ActiveSourceRead { identity, .. }
@@ -233,17 +233,18 @@ impl ReportableError for AdtSourceActivationError {
             | Self::VerificationMismatch { identity, .. } => Some(suggested_command::edit_read(
                 identity.object_type.as_str(),
                 &identity.name,
-                AdtSourceVersion::Active.as_str(),
+                AdtVersion::Active.as_str(),
             )),
             Self::PrecheckRejected { identity, .. } | Self::ActivationRequest { identity, .. } => {
                 Some(suggested_command::edit_check(
                     identity.object_type.as_str(),
                     &identity.name,
-                    AdtSourceVersion::Inactive.as_str(),
+                    AdtVersion::Inactive.as_str(),
                 ))
             }
             Self::InactiveSourceRead(error) => error.suggested_command(),
-            Self::Validation(_)
+            Self::Journal(_)
+            | Self::Validation(_)
             | Self::InactiveVersionProbe(_)
             | Self::Precheck(_)
             | Self::TransportAttachment(_)
@@ -299,45 +300,26 @@ pub(super) async fn activate_validated_adt_source(
     let identity = target.identity;
     let transport = target.transport;
 
-    let inactive_exists = probe_inactive_adt_source(sap, &identity.object_uri)
-        .await
-        .map_err(AdtSourceActivationError::InactiveVersionProbe)?;
-    if !inactive_exists {
-        return Err(AdtSourceActivationError::NoInactiveVersion {
-            identity: Box::new(identity),
-        });
-    }
-
-    sap.establish_csrf_session().await.map_err(|source| {
-        AdtSourceActivationError::Precheck(AdtSourceCheckError::Sap {
-            identity: Box::new(identity.clone()),
-            version: AdtSourceVersion::Inactive,
-            source,
-        })
-    })?;
-    let (inactive, precheck) = read_and_precheck_inactive_source(sap, &identity).await?;
-
-    if let Some(transport) = &transport {
-        attach_adt_object_to_transport(sap, &identity.object_uri, transport)
-            .await
-            .map_err(AdtSourceActivationError::TransportAttachment)?;
-    }
+    let (inactive, precheck) = prepare_activation(sap, &identity, transport.as_deref()).await?;
 
     let entry = match journal {
-        Some(journal) => Some(
+        Some(journal) => {
             // The one thing an undo of this activation needs, and the one thing
             // nothing read before: what the active version was beforehand.
             // Costs a request, so it is only made when it will be recorded.
-            journal
-                .begin(
-                    journal_object(&identity),
-                    JournalOperation::activate(),
-                    transport.clone(),
-                    read_active_source_if_any(sap, &identity).await,
-                    Some(inactive.snapshot.source.clone()),
-                )
-                .map_err(AdtSourceActivationError::Journal)?,
-        ),
+            let active_before = read_active_source_if_any(sap, &identity).await;
+            Some(
+                journal
+                    .begin(
+                        journal_object(&identity),
+                        JournalOperation::activate(),
+                        transport.clone(),
+                        active_before.as_deref(),
+                        Some(&inactive.snapshot.source),
+                    )
+                    .map_err(AdtSourceActivationError::Journal)?,
+            )
+        }
         None => None,
     };
 
@@ -455,11 +437,46 @@ async fn read_active_source_if_any(
         sap,
         identity.object_type,
         &identity.name,
-        AdtSourceVersion::Active,
+        AdtVersion::Active,
     )
     .await
     .ok()
     .map(|read| read.snapshot.source)
+}
+
+/// Everything that must hold before the activation is posted.
+///
+/// Refuses without an inactive version, syntax-checks what is about to be
+/// published, and attaches the object to its transport.
+async fn prepare_activation(
+    sap: &mut SapClient,
+    identity: &EditableAdtSourceIdentity,
+    transport: Option<&str>,
+) -> Result<(AdtSourceReadResult, AdtSourceCheckResult), AdtSourceActivationError> {
+    let inactive_exists = probe_inactive_adt_source(sap, &identity.object_uri)
+        .await
+        .map_err(AdtSourceActivationError::InactiveVersionProbe)?;
+    if !inactive_exists {
+        return Err(AdtSourceActivationError::NoInactiveVersion {
+            identity: Box::new(identity.clone()),
+        });
+    }
+
+    sap.establish_csrf_session().await.map_err(|source| {
+        AdtSourceActivationError::Precheck(AdtSourceCheckError::Sap {
+            identity: Box::new(identity.clone()),
+            version: AdtVersion::Inactive,
+            source,
+        })
+    })?;
+    let checked = read_and_precheck_inactive_source(sap, identity).await?;
+
+    if let Some(transport) = transport {
+        attach_adt_object_to_transport(sap, &identity.object_uri, transport)
+            .await
+            .map_err(AdtSourceActivationError::TransportAttachment)?;
+    }
+    Ok(checked)
 }
 
 async fn read_and_precheck_inactive_source(
@@ -471,14 +488,14 @@ async fn read_and_precheck_inactive_source(
             sap,
             identity.object_type,
             &identity.name,
-            AdtSourceVersion::Inactive,
+            AdtVersion::Inactive,
         )
         .await
         .map_err(AdtSourceActivationError::InactiveSourceRead)
     };
     let precheck_run = async {
         let precheck =
-            check_adt_source_by_identity(sap, identity, AdtSourceVersion::Inactive, Some(true))
+            check_adt_source_by_identity(sap, identity, AdtVersion::Inactive, Some(true))
                 .await
                 .map_err(AdtSourceActivationError::Precheck)?;
         if precheck.clean {
@@ -510,7 +527,7 @@ async fn verify_activation_post_state(
         sap,
         identity.object_type,
         &identity.name,
-        AdtSourceVersion::Active,
+        AdtVersion::Active,
     );
     let inactive_probe = probe_inactive_adt_source(sap, &identity.object_uri);
     tokio::pin!(active_read, inactive_probe);

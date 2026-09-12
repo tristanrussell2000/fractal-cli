@@ -42,6 +42,9 @@ async fn mount_source(server: &MockServer) {
     Mock::given(method("GET"))
         .and(path("/sap/bc/adt/ddic/tables/zsample_record/source/main"))
         .and(query_param("sap-client", "903"))
+        // The active definition, never whatever a plain GET happens to serve:
+        // these fields become the columns a query then runs against.
+        .and(query_param("version", "active"))
         .and(header("cookie", "SAP_SESSIONID=metadata-test"))
         .and(basic_auth("developer", "password"))
         .respond_with(ResponseTemplate::new(200).set_body_string(

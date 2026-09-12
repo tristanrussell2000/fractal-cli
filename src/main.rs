@@ -43,6 +43,7 @@ use commands::transport::{
 };
 use commands::undo::{object_undo, print_object_undo};
 use output::{default_output_format, run_and_print_with, run_and_print_with_async};
+use reported::Reported;
 
 // A flat dispatch table: one arm per command, each forwarding to its handler.
 // Splitting it into per-family functions would add a layer of indirection
@@ -265,7 +266,14 @@ async fn main() {
         } => run_and_print_with(|| guard_install(args), print_guard_install, output),
         Command::Guard {
             command: GuardCommand::Hook(args),
-        } => run_and_print_with(|| guard_hook(args), |(), _| {}, output),
+        } => run_and_print_with(
+            || {
+                guard_hook(args);
+                Ok::<_, Reported>(())
+            },
+            |(), _| {},
+            output,
+        ),
         Command::Delete(args) => {
             run_and_print_with_async(
                 || object_delete(cli.profile.as_deref(), args),

@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use fractal::sap::adt_version::AdtVersion;
 
 use crate::output::OutputFormat;
 
@@ -350,8 +351,16 @@ pub enum ObjectCommand {
     /// Search for repository objects by name.
     Search(SearchArgs),
     /// Read source for an ADT object URI.
+    ///
+    /// Reads the active version by default. A read that names no version is
+    /// served the inactive one whenever it exists, which is why this always
+    /// names one.
     Source(SourceArgs),
     /// Read metadata XML for an ADT object URI.
+    ///
+    /// Reads the active version by default and reports which version arrived,
+    /// which is not always the one requested: SAP serves the other layer rather
+    /// than refusing when the requested one does not exist.
     Xml(XmlArgs),
     /// Read the authoritative short description for an ADT object URI.
     Info(UriArgs),
@@ -364,6 +373,11 @@ pub enum ObjectCommand {
 #[derive(Debug, Subcommand)]
 pub enum DdicCommand {
     /// Show one data element or domain, resolving a data element to its domain.
+    ///
+    /// Reads the active version by default, and reports which version it got.
+    /// Those are two separate answers: SAP serves the other layer rather than
+    /// refusing when the requested one does not exist, and an object that has
+    /// never been activated declares itself "new".
     Show(DdicShowArgs),
 }
 
@@ -377,6 +391,11 @@ pub struct DdicShowArgs {
     /// Report the data element alone, without reading its domain.
     #[arg(long, default_value_t = false)]
     pub(crate) no_resolve: bool,
+    /// Stored version to read. A resolved domain is read at the same version.
+    /// If the requested version does not exist, SAP serves the other one, and
+    /// the reported version says which arrived.
+    #[arg(long, value_enum, default_value = "active")]
+    pub(crate) version: VersionArg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -515,13 +534,24 @@ pub struct EditSourceReadArgs {
     pub(crate) name: String,
     /// Stored source version to request. If inactive does not exist, SAP returns active source.
     #[arg(long, value_enum, default_value = "active")]
-    pub(crate) version: EditSourceVersionArg,
+    pub(crate) version: VersionArg,
 }
 
+/// Which stored layer of an object to read. Shared by every command that
+/// selects one, because they all become the same `?version=` on the request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum EditSourceVersionArg {
+pub enum VersionArg {
     Active,
     Inactive,
+}
+
+impl From<VersionArg> for AdtVersion {
+    fn from(version: VersionArg) -> Self {
+        match version {
+            VersionArg::Active => Self::Active,
+            VersionArg::Inactive => Self::Inactive,
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -534,7 +564,7 @@ pub struct EditSourceCheckArgs {
     pub(crate) name: String,
     /// Stored source version to check.
     #[arg(long, value_enum, default_value = "inactive")]
-    pub(crate) version: EditSourceVersionArg,
+    pub(crate) version: VersionArg,
 }
 
 #[derive(Debug, Args)]
@@ -743,6 +773,10 @@ pub struct SearchArgs {
 pub struct SourceArgs {
     /// ADT object URI, without a source suffix.
     pub(crate) uri: String,
+    /// Stored version to read. ABAP source carries no marker saying which
+    /// version it is, so ask for the one you mean.
+    #[arg(long, value_enum, default_value = "active")]
+    pub(crate) version: VersionArg,
     /// Byte offset to start returning from.
     #[arg(long, default_value_t = 0)]
     pub(crate) offset: usize,
@@ -755,6 +789,11 @@ pub struct SourceArgs {
 pub struct XmlArgs {
     /// ADT object URI.
     pub(crate) uri: String,
+    /// Stored version to read. Pass `inactive` when reading a document in order
+    /// to edit it: that is the version `edit set-xml` compares its
+    /// --expected-sha256 against, so the two agree.
+    #[arg(long, value_enum, default_value = "active")]
+    pub(crate) version: VersionArg,
     /// Byte offset to start returning from.
     #[arg(long, default_value_t = 0)]
     pub(crate) offset: usize,
@@ -827,7 +866,7 @@ mod tests {
         };
         assert_eq!(args.object_type, "CLAS");
         assert_eq!(args.name, "ZCL_SAMPLE");
-        assert_eq!(args.version, super::EditSourceVersionArg::Inactive);
+        assert_eq!(args.version, super::VersionArg::Inactive);
 
         let cli =
             Cli::try_parse_from(suggested_command::object_search("INTF", "ZIF_SAMPLE").split(' '))

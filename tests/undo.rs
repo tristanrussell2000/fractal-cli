@@ -88,8 +88,8 @@ fn recorded(
             object,
             JournalOperation::activate(),
             None,
-            active_before.map(str::to_owned),
-            inactive_before.map(str::to_owned),
+            active_before,
+            inactive_before,
         )
         .unwrap();
     journal.succeeded(entry, Some(active_after), None).unwrap()
@@ -313,7 +313,7 @@ async fn a_delete_entry_is_not_something_undo_reverses() {
             class(),
             JournalOperation::delete(None, None),
             None,
-            Some(PREVIOUS_ACTIVE.to_owned()),
+            Some(PREVIOUS_ACTIVE),
             None,
         )
         .unwrap();
@@ -336,8 +336,8 @@ async fn a_refused_operation_left_nothing_to_undo() {
             class(),
             JournalOperation::activate(),
             None,
-            Some(PREVIOUS_ACTIVE.to_owned()),
-            Some(PENDING.to_owned()),
+            Some(PREVIOUS_ACTIVE),
+            Some(PENDING),
         )
         .unwrap();
     let entry = journal.failed(entry).unwrap();
@@ -362,8 +362,8 @@ async fn an_unresolved_entry_can_be_forced_because_its_before_image_is_genuine()
             class(),
             JournalOperation::activate(),
             None,
-            Some(PREVIOUS_ACTIVE.to_owned()),
-            Some(PENDING.to_owned()),
+            Some(PREVIOUS_ACTIVE),
+            Some(PENDING),
         )
         .unwrap();
 
@@ -877,12 +877,11 @@ async fn undoing_a_metadata_activation_restores_the_document_and_the_pending_one
         .expect(1)
         .mount(&server)
         .await;
-    // The plain GETs the write path makes: before and after each of its two
-    // writes. `version` must be absent, or this would also answer the reads
-    // that ask for one.
+    // The write path's own reads: before and after each of its two writes,
+    // both naming the inactive layer, which is the one a write lands in.
     Mock::given(method("GET"))
         .and(path(DTEL_URI))
-        .and(wiremock::matchers::query_param_is_missing("version"))
+        .and(query_param("version", "inactive"))
         .respond_with(adt_edit_mock::SequentialResponses::sources(&[
             &labelled("inactive", STATES_LINK, "two"),
             &labelled("inactive", STATES_LINK, "one"),

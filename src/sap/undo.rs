@@ -22,16 +22,17 @@ use thiserror::Error;
 
 use super::{
     adt_object_identity::AdtObjectIdentity,
+    adt_version::AdtVersion,
     client::{SapClient, SapClientError},
     editable_source::{
-        AdtEditTargetValidationError, AdtSourceVersion, EditableAdtObjectType,
-        editable_source_identity, read_adt_source_for_edit,
+        AdtEditTargetValidationError, EditableAdtObjectType, editable_source_identity,
+        read_adt_source_for_edit,
     },
     metadata_activation::{
         ACTIVE_VERSION, MetadataObjectActivationError, MetadataObjectActivationRequest,
-        activate_metadata_object, document_version,
+        activate_metadata_object,
     },
-    metadata_document::strip_navigation_links,
+    metadata_document::{document_version, strip_navigation_links},
     metadata_object::{
         MetadataAdtObjectType, MetadataObjectWriteError, metadata_object_identity,
         write_metadata_object,
@@ -317,44 +318,8 @@ pub async fn plan_activation_undo(
         });
     };
 
-    let mut overridden = Vec::new();
-    if !entry.status.is_undoable() {
-        // Named apart from the unresolved case: an already-undone entry is
-        // also stale by construction, and "you undid this already" says more
-        // than either of the refusals that would otherwise fire.
-        let already_undone = entry.status == EntryStatus::Undone;
-        if !force {
-            return Err(if already_undone {
-                UndoError::AlreadyUndone {
-                    id: entry.id.clone(),
-                    name: entry.object.name.clone(),
-                }
-            } else {
-                UndoError::Unresolved {
-                    id: entry.id.clone(),
-                    status: format!("{:?}", entry.status).to_lowercase(),
-                }
-            });
-        }
-        overridden.push(if already_undone {
-            Override::AlreadyUndone
-        } else {
-            Override::Unresolved
-        });
-    }
-    let expected_active_sha256 = entry
-        .active_after
-        .as_ref()
-        .and_then(ContentRef::sha256)
-        .map(str::to_owned);
-    if expected_active_sha256.is_none() {
-        if !force {
-            return Err(UndoError::Ungated {
-                id: entry.id.clone(),
-            });
-        }
-        overridden.push(Override::Ungated);
-    }
+    let overridden = entry_refusals(&entry, force)?;
+    let expected_active_sha256 = expected_active_sha256(&entry);
 
     // Read the content before touching SAP: a blob that is gone makes the whole
     // question moot, and the read costs nothing.
@@ -436,6 +401,57 @@ pub async fn plan_activation_undo(
 /// [`AdtObjectIdentity`] carries the family as a typed value, so every step
 /// below routes on `identity.object_type` and the family cannot disagree with
 /// the identity it came from.
+/// The refusals that can be decided from the entry alone, before SAP is touched.
+///
+/// Each is forceable, so with `force` they become a list of what was overridden
+/// rather than an error.
+fn entry_refusals(entry: &JournalEntry, force: bool) -> Result<Vec<Override>, UndoError> {
+    let mut overridden = Vec::new();
+    if !entry.status.is_undoable() {
+        // Named apart from the unresolved case: an already-undone entry is
+        // also stale by construction, and "you undid this already" says more
+        // than either of the refusals that would otherwise fire.
+        let already_undone = entry.status == EntryStatus::Undone;
+        if !force {
+            return Err(if already_undone {
+                UndoError::AlreadyUndone {
+                    id: entry.id.clone(),
+                    name: entry.object.name.clone(),
+                }
+            } else {
+                UndoError::Unresolved {
+                    id: entry.id.clone(),
+                    status: format!("{:?}", entry.status).to_lowercase(),
+                }
+            });
+        }
+        overridden.push(if already_undone {
+            Override::AlreadyUndone
+        } else {
+            Override::Unresolved
+        });
+    }
+    if expected_active_sha256(entry).is_none() {
+        if !force {
+            return Err(UndoError::Ungated {
+                id: entry.id.clone(),
+            });
+        }
+        overridden.push(Override::Ungated);
+    }
+    Ok(overridden)
+}
+
+/// What the object's active version was left at, and so what the gate compares
+/// against. Absent on an entry whose operation was never confirmed.
+fn expected_active_sha256(entry: &JournalEntry) -> Option<String> {
+    entry
+        .active_after
+        .as_ref()
+        .and_then(ContentRef::sha256)
+        .map(str::to_owned)
+}
+
 fn undo_identity(
     entry: &JournalEntry,
     policy: &EditPolicy,
@@ -502,15 +518,14 @@ async fn current_inactive_content(
     identity: &AdtObjectIdentity,
 ) -> Result<Option<String>, UndoError> {
     match identity.object_type {
-        AdtObjectFamily::Source(object_type) => Ok(read_adt_source_for_edit(
-            sap,
-            object_type,
-            &identity.name,
-            AdtSourceVersion::Inactive,
-        )
-        .await
-        .ok()
-        .map(|read| read.snapshot.source)),
+        AdtObjectFamily::Source(object_type) => {
+            Ok(
+                read_adt_source_for_edit(sap, object_type, &identity.name, AdtVersion::Inactive)
+                    .await
+                    .ok()
+                    .map(|read| read.snapshot.source),
+            )
+        }
         AdtObjectFamily::Metadata(_) => {
             let document = sap
                 .get_text_with_query(&identity.object_uri, &[("version", "inactive")])
@@ -535,13 +550,8 @@ async fn current_active_content(
 ) -> Result<Option<String>, UndoError> {
     match identity.object_type {
         AdtObjectFamily::Source(object_type) => {
-            match read_adt_source_for_edit(
-                sap,
-                object_type,
-                &identity.name,
-                AdtSourceVersion::Active,
-            )
-            .await
+            match read_adt_source_for_edit(sap, object_type, &identity.name, AdtVersion::Active)
+                .await
             {
                 Ok(read) => Ok(Some(read.snapshot.source)),
                 // ABAP text carries no layer marker, so a refused read is the
@@ -638,16 +648,17 @@ pub async fn undo_activation(
     // Step 3, and the reason an undo is three steps rather than one: the
     // activation consumed the caller's pending work, and restoring only the
     // active version would discard it silently.
-    let mut inactive_restored = false;
-    if let Some(pending) = &plan.restore_inactive
+    let inactive_restored = if let Some(pending) = &plan.restore_inactive
         && !already_done(resumed_from, ActivationUndoStep::RestoredInactive)
     {
         let write = write_inactive(sap, policy, &identity, pending, transport).await?;
         still_locked |= write.still_locked;
         record_progress(journal, &mut entry, ActivationUndoStep::RestoredInactive)?;
         steps_run.push(ActivationUndoStep::RestoredInactive);
-        inactive_restored = true;
-    }
+        true
+    } else {
+        false
+    };
 
     // Only now: a partway failure leaves the entry resolved and its progress
     // recorded, so a rerun resumes rather than treating the undo as finished.
@@ -724,8 +735,8 @@ async fn write_inactive(
 /// Writes the whole document back, which for this family is the whole object.
 ///
 /// The document the journal holds is the canonical one, stripped of its
-/// `atom:link` navigation; SAP regenerates those on the next read, verified
-/// live — see [`super::metadata_document`].
+/// `atom:link` navigation; SAP regenerates those on the next read. See
+/// [`super::metadata_document`].
 async fn write_inactive_document(
     sap: &mut SapClient,
     policy: &EditPolicy,

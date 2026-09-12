@@ -38,6 +38,9 @@ pub struct EditActivationDiagnosticOutput {
 /// `source_details` and omitted entirely for a metadata object, rather than
 /// being filled with plausible-looking defaults: a caller must never read
 /// `precheck_errors: 0` and conclude a check passed when none was possible.
+// The flags are the JSON contract, as with the other edit outputs: each answers
+// a question a caller must be able to ask without parsing prose.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Serialize)]
 pub struct EditActivationOutput {
     ok: bool,
@@ -294,15 +297,14 @@ fn render_diagnostics(output: &mut String, messages: &[EditActivationDiagnosticO
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use fractal::sap::adt_version::AdtVersion;
 
     use super::*;
     use crate::cli::{Cli, Command, EditCommand};
     use fractal::sap::{
         activation_request::AdtActivationMessage,
         adt_message_severity::AdtMessageSeverity,
-        editable_source::{
-            AdtSourceSnapshot, AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceIdentity,
-        },
+        editable_source::{AdtSourceSnapshot, EditableAdtObjectType, EditableAdtSourceIdentity},
         source_activation::AdtSourceActivationResult,
         source_check::AdtSourceCheckResult,
     };
@@ -353,7 +355,7 @@ mod tests {
                         object_uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
                         source_uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
                     },
-                    requested_version: AdtSourceVersion::Inactive,
+                    requested_version: AdtVersion::Inactive,
                     check_executed: true,
                     inactive_version_exists: Some(true),
                     clean: true,

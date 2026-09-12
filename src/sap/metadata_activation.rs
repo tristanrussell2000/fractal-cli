@@ -33,12 +33,11 @@ use super::{
     },
     adt_message_severity::AdtMessageSeverity,
     adt_object_identity::AdtObjectIdentity,
-    adt_response::{AdtResponseParseError, parse_adt_document},
+    adt_response::AdtResponseParseError,
     client::{SapClient, SapClientError},
     edit_session::{AdtEditSessionError, attach_adt_object_to_transport},
     editable_source::{AdtEditTargetValidationError, canonicalize_transport_request},
-    find_non_empty_attribute,
-    metadata_document::strip_navigation_links,
+    metadata_document::{document_version, strip_navigation_links},
     metadata_object::{MetadataAdtObjectType, metadata_object_identity},
     package_authorization::{PackageAuthorizationError, authorize_object_package},
     source_check::{AdtInactiveSourceProbeError, probe_inactive_adt_source},
@@ -238,55 +237,25 @@ pub async fn activate_metadata_object(
     request: &MetadataObjectActivationRequest,
     journal: Option<&Journal>,
 ) -> Result<MetadataObjectActivationResult, MetadataObjectActivationError> {
-    let identity = metadata_object_identity(request.object_type, &request.name, policy)?;
-    let transport = canonicalize_transport_request(request.transport.as_deref())
-        .map_err(AdtEditTargetValidationError::from)?;
-
-    // Before anything is published, and before the CSRF session: a refusal
-    // should cost nothing.
-    authorize_object_package(sap, policy, &identity.name, &identity.object_uri).await?;
-
-    let inactive_exists = probe_inactive_adt_source(sap, &identity.object_uri)
-        .await
-        .map_err(
-            |source| MetadataObjectActivationError::InactiveVersionProbe {
-                name: identity.name.clone(),
-                source,
-            },
-        )?;
-    if !inactive_exists {
-        return Err(MetadataObjectActivationError::NoInactiveVersion {
-            object_type: request.object_type.as_str(),
-            name: identity.name.clone(),
-        });
-    }
-
-    sap.establish_csrf_session().await.map_err(|source| {
-        MetadataObjectActivationError::ActivationRequest {
-            name: identity.name.clone(),
-            source,
-        }
-    })?;
-
-    if let Some(transport) = &transport {
-        attach_adt_object_to_transport(sap, &identity.object_uri, transport)
-            .await
-            .map_err(MetadataObjectActivationError::TransportAttachment)?;
-    }
+    let (identity, transport) = prepare_activation(sap, policy, request).await?;
 
     let entry = match journal {
-        Some(journal) => Some(
-            journal
-                .begin(
-                    journal_object(request.object_type, &identity),
-                    JournalOperation::activate(),
-                    transport.clone(),
-                    // Only read these when they will be recorded.
-                    read_active_document_if_any(sap, &identity).await,
-                    read_document(sap, &identity, "inactive").await,
-                )
-                .map_err(MetadataObjectActivationError::Journal)?,
-        ),
+        Some(journal) => {
+            // Only read these when they will be recorded.
+            let active_before = read_active_document_if_any(sap, &identity).await;
+            let inactive_before = read_document(sap, &identity, "inactive").await;
+            Some(
+                journal
+                    .begin(
+                        journal_object(request.object_type, &identity),
+                        JournalOperation::activate(),
+                        transport.clone(),
+                        active_before.as_deref(),
+                        inactive_before.as_deref(),
+                    )
+                    .map_err(MetadataObjectActivationError::Journal)?,
+            )
+        }
         None => None,
     };
 
@@ -384,6 +353,52 @@ fn journal_object(object_type: MetadataAdtObjectType, identity: &AdtObjectIdenti
     }
 }
 
+/// Everything that must hold before anything is published.
+///
+/// Ordered so a refusal costs as little as possible: validation, then the
+/// package guard, then the probe, and only then the CSRF session and the
+/// transport attachment.
+async fn prepare_activation(
+    sap: &mut SapClient,
+    policy: &EditPolicy,
+    request: &MetadataObjectActivationRequest,
+) -> Result<(AdtObjectIdentity, Option<String>), MetadataObjectActivationError> {
+    let identity = metadata_object_identity(request.object_type, &request.name, policy)?;
+    let transport = canonicalize_transport_request(request.transport.as_deref())
+        .map_err(AdtEditTargetValidationError::from)?;
+
+    authorize_object_package(sap, policy, &identity.name, &identity.object_uri).await?;
+
+    let inactive_exists = probe_inactive_adt_source(sap, &identity.object_uri)
+        .await
+        .map_err(
+            |source| MetadataObjectActivationError::InactiveVersionProbe {
+                name: identity.name.clone(),
+                source,
+            },
+        )?;
+    if !inactive_exists {
+        return Err(MetadataObjectActivationError::NoInactiveVersion {
+            object_type: request.object_type.as_str(),
+            name: identity.name.clone(),
+        });
+    }
+
+    sap.establish_csrf_session().await.map_err(|source| {
+        MetadataObjectActivationError::ActivationRequest {
+            name: identity.name.clone(),
+            source,
+        }
+    })?;
+
+    if let Some(transport) = &transport {
+        attach_adt_object_to_transport(sap, &identity.object_uri, transport)
+            .await
+            .map_err(MetadataObjectActivationError::TransportAttachment)?;
+    }
+    Ok((identity, transport))
+}
+
 /// The active document, or `None` when the object has never been activated.
 ///
 /// `?version=active` serves the pending document when there is no active
@@ -432,45 +447,9 @@ async fn read_active_metadata_object(
         })
 }
 
-/// The layer a document says it belongs to: `new`, `inactive` or `active`.
-pub(super) fn document_version(xml: &str) -> Result<Option<String>, AdtResponseParseError> {
-    let document = parse_adt_document(xml)?;
-    Ok(find_non_empty_attribute(document.root_element(), "version"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn document(version: &str) -> String {
-        format!(
-            r#"<?xml version="1.0" encoding="utf-8"?>
-<blue:wbobj xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core"
-    adtcore:name="ZSAMPLE_DE" adtcore:type="DTEL/DE" adtcore:version="{version}"/>"#
-        )
-    }
-
-    #[test]
-    fn reads_the_layer_a_document_declares() {
-        for version in ["active", "inactive", "new"] {
-            assert_eq!(
-                document_version(&document(version)).unwrap().as_deref(),
-                Some(version)
-            );
-        }
-    }
-
-    #[test]
-    fn a_document_without_a_version_is_not_treated_as_active() {
-        let xml =
-            r#"<blue:wbobj xmlns:blue="urn:b" xmlns:adtcore="urn:a" adtcore:name="ZSAMPLE_DE"/>"#;
-        assert_eq!(document_version(xml).unwrap(), None);
-    }
-
-    #[test]
-    fn malformed_metadata_is_a_parse_error() {
-        assert!(document_version("<not-closed").is_err());
-    }
 
     #[test]
     fn a_refusal_summarizes_only_the_errors() {

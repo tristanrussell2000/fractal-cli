@@ -66,7 +66,7 @@ impl Journal {
     /// A journal over roots the caller placed, for tests and for any caller
     /// that does not read its location from a profile.
     #[must_use]
-    pub fn with_roots(blob_root: PathBuf, entry_root: PathBuf, system: EntrySystem) -> Self {
+    pub const fn with_roots(blob_root: PathBuf, entry_root: PathBuf, system: EntrySystem) -> Self {
         Self {
             blobs: BlobStore::new(blob_root),
             entries: EntryStore::new(entry_root),
@@ -103,11 +103,11 @@ impl Journal {
         object: EntryObject,
         operation: JournalOperation,
         transport: Option<String>,
-        active_before: Option<String>,
-        inactive_before: Option<String>,
+        active_before: Option<&str>,
+        inactive_before: Option<&str>,
     ) -> Result<JournalEntry, JournalError> {
-        let stored_active = self.store(active_before.as_deref())?;
-        let stored_inactive = match inactive_before.as_deref() {
+        let stored_active = self.store(active_before)?;
+        let stored_inactive = match inactive_before {
             Some(content) => Some(self.store(Some(content))?),
             None => None,
         };
@@ -126,7 +126,7 @@ impl Journal {
             etag_after: None,
         })?;
 
-        self.confirm([active_before.as_deref(), inactive_before.as_deref()])?;
+        self.confirm([active_before, inactive_before])?;
         Ok(entry)
     }
 
@@ -238,6 +238,7 @@ pub enum Resolution<'a> {
 /// every call site — `--no-journal` gives no journal, and an operation that
 /// failed before recording anything has no entry — and pushing that back to the
 /// callers is what put three copies of this in the tree.
+#[must_use]
 pub fn resolve(
     journal: Option<&Journal>,
     entry: Option<JournalEntry>,
@@ -297,8 +298,8 @@ mod tests {
                 object(),
                 JournalOperation::activate(),
                 None,
-                Some(BEFORE.to_owned()),
-                Some(PENDING.to_owned()),
+                Some(BEFORE),
+                Some(PENDING),
             )
             .unwrap();
 
@@ -321,7 +322,7 @@ mod tests {
                 object(),
                 JournalOperation::activate(),
                 None,
-                Some(BEFORE.to_owned()),
+                Some(BEFORE),
                 None,
             )
             .unwrap();
@@ -338,7 +339,7 @@ mod tests {
                 JournalOperation::activate(),
                 None,
                 None,
-                Some(PENDING.to_owned()),
+                Some(PENDING),
             )
             .unwrap();
 
@@ -355,8 +356,8 @@ mod tests {
                 object(),
                 JournalOperation::activate(),
                 None,
-                Some(BEFORE.to_owned()),
-                Some(PENDING.to_owned()),
+                Some(BEFORE),
+                Some(PENDING),
             )
             .unwrap();
         let resolved = journal
@@ -383,8 +384,8 @@ mod tests {
                 object(),
                 JournalOperation::activate(),
                 None,
-                Some(BEFORE.to_owned()),
-                Some(PENDING.to_owned()),
+                Some(BEFORE),
+                Some(PENDING),
             )
             .unwrap();
         let before = entry.active_before.clone();
@@ -403,7 +404,7 @@ mod tests {
                 object(),
                 JournalOperation::delete(None, None),
                 None,
-                Some(BEFORE.to_owned()),
+                Some(BEFORE),
                 None,
             )
             .unwrap();
@@ -428,8 +429,8 @@ mod tests {
                 object(),
                 JournalOperation::activate(),
                 None,
-                Some(BEFORE.to_owned()),
-                Some(PENDING.to_owned()),
+                Some(BEFORE),
+                Some(PENDING),
             )
             .unwrap();
         let began_at = entry_written_at(&journal, &entry);
@@ -472,7 +473,7 @@ mod tests {
                 object(),
                 JournalOperation::activate(),
                 None,
-                Some(BEFORE.to_owned()),
+                Some(BEFORE),
                 None,
             )
             .unwrap();
@@ -497,7 +498,7 @@ mod tests {
                 object(),
                 JournalOperation::activate(),
                 None,
-                Some(BEFORE.to_owned()),
+                Some(BEFORE),
                 None,
             )
             .unwrap();
@@ -520,8 +521,8 @@ mod tests {
                 object(),
                 JournalOperation::activate(),
                 None,
-                Some(BEFORE.to_owned()),
-                Some(PENDING.to_owned()),
+                Some(BEFORE),
+                Some(PENDING),
             )
             .unwrap();
         let hash = entry.active_before.sha256().unwrap().to_owned();

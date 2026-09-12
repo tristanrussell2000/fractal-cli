@@ -2,8 +2,8 @@ use std::fmt::Write as _;
 
 use serde::Serialize;
 
-use crate::cli::{SearchArgs, SourceArgs, UriArgs, UsagesArgs, XmlArgs};
-use crate::commands::{connect, tabular};
+use crate::cli::{SearchArgs, SourceArgs, UriArgs, UsagesArgs, VersionArg, XmlArgs};
+use crate::commands::{connect, render_version, tabular};
 use crate::output::{OutputFormat, print_json};
 use crate::reported::Reported;
 use fractal::sap::{
@@ -51,6 +51,9 @@ pub struct ObjectSourceResultOutput {
     total_bytes: usize,
     truncated: bool,
     next_offset: Option<usize>,
+    /// The version asked for. ABAP source declares no version of its own, so
+    /// unlike `object xml` there is nothing to report beside it.
+    requested_version: &'static str,
     source: String,
 }
 
@@ -59,8 +62,18 @@ pub struct ObjectXmlResultOutput {
     ok: bool,
     profile: String,
     uri: String,
+    /// The version asked for.
+    requested_version: &'static str,
+    /// The version the document declared itself to be. Not always the one
+    /// requested: SAP serves the other layer rather than refusing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
     /// SHA-256 of the document as read, so a later `edit set-xml` can pass it
     /// as `--expected-sha256` and refuse to overwrite a changed document.
+    ///
+    /// That check re-reads inactive if available, so this hash pairs with it
+    /// when the read asked for `inactive`, or when the object has no pending
+    /// work and both requests return the same document.
     sha256: String,
     xml: String,
 }
@@ -185,6 +198,13 @@ fn map_object_search_result(
     }
 }
 
+const fn version_name(version: VersionArg) -> &'static str {
+    match version {
+        VersionArg::Active => "active",
+        VersionArg::Inactive => "inactive",
+    }
+}
+
 pub async fn object_source(
     explicit_profile: Option<&str>,
     args: &SourceArgs,
@@ -193,6 +213,7 @@ pub async fn object_source(
     let result = fractal::sap::object_source::get_source(
         &client,
         &args.uri,
+        args.version.into(),
         ByteRangeOptions {
             offset: args.offset,
             limit: args.limit,
@@ -209,6 +230,7 @@ pub async fn object_source(
         total_bytes: result.total_bytes,
         truncated: result.truncated,
         next_offset: result.next_offset,
+        requested_version: version_name(args.version),
         source: result.content,
     })
 }
@@ -221,6 +243,7 @@ pub async fn object_xml(
     let result = fractal::sap::object_source::get_xml(
         &mut client,
         &args.uri,
+        args.version.into(),
         ByteRangeOptions {
             offset: args.offset,
             limit: args.limit,
@@ -232,8 +255,10 @@ pub async fn object_xml(
         ok: true,
         profile: profile_name,
         uri: args.uri.clone(),
-        sha256: source_sha256(&result.content),
-        xml: result.content,
+        requested_version: version_name(args.version),
+        version: result.declared_version,
+        sha256: source_sha256(&result.page.content),
+        xml: result.page.content,
     })
 }
 
@@ -470,6 +495,7 @@ fn render_object_source_readable(result: &ObjectSourceResultOutput) -> String {
     let mut output = String::new();
     let _ = writeln!(output, "profile: {}", result.profile);
     let _ = writeln!(output, "uri: {}", result.uri);
+    let _ = writeln!(output, "requested version: {}", result.requested_version);
     let _ = writeln!(
         output,
         "bytes: {}-{} of {}",
@@ -502,6 +528,11 @@ fn render_object_xml_readable(result: &ObjectXmlResultOutput) -> String {
     let mut output = String::new();
     let _ = writeln!(output, "profile: {}", result.profile);
     let _ = writeln!(output, "uri: {}", result.uri);
+    let _ = writeln!(
+        output,
+        "version: {}",
+        render_version(result.requested_version, result.version.as_deref())
+    );
     let _ = writeln!(output, "sha256: {}", result.sha256);
     output.push_str("\nxml:\n");
     output.push_str(&result.xml);
@@ -583,6 +614,42 @@ mod tests {
         assert_eq!(args.uri, "/sap/bc/adt/oo/classes/zcl_test");
         assert_eq!(args.offset, 100);
         assert_eq!(args.limit, Some(500));
+        assert_eq!(args.version, VersionArg::Active);
+    }
+
+    #[test]
+    fn both_reads_default_to_active_and_take_a_version() {
+        let xml = Cli::try_parse_from([
+            "fractal",
+            "object",
+            "xml",
+            "/sap/bc/adt/oo/classes/zcl_test",
+            "--version",
+            "inactive",
+        ])
+        .unwrap();
+        let Command::Object {
+            command: ObjectCommand::Xml(args),
+        } = xml.command
+        else {
+            panic!("expected object xml command");
+        };
+        assert_eq!(args.version, VersionArg::Inactive);
+
+        let source = Cli::try_parse_from([
+            "fractal",
+            "object",
+            "source",
+            "/sap/bc/adt/oo/classes/zcl_test",
+        ])
+        .unwrap();
+        let Command::Object {
+            command: ObjectCommand::Source(args),
+        } = source.command
+        else {
+            panic!("expected object source command");
+        };
+        assert_eq!(args.version, VersionArg::Active);
     }
 
     #[test]
@@ -868,6 +935,7 @@ mod tests {
             total_bytes: 96,
             truncated: true,
             next_offset: Some(24),
+            requested_version: "active",
             source: "CLASS zcl_sample DEFINITION.".to_owned(),
         };
 
@@ -890,6 +958,7 @@ mod tests {
             total_bytes: 6,
             truncated: false,
             next_offset: None,
+            requested_version: "active",
             source: "REPORT".to_owned(),
         };
 
@@ -902,12 +971,15 @@ mod tests {
             ok: true,
             profile: "de2".to_owned(),
             uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
+            requested_version: "active",
+            version: Some("inactive".to_owned()),
             sha256: "abc123".to_owned(),
             xml: "<class:abapClass/>".to_owned(),
         };
 
         let rendered = render_object_xml_readable(&result);
 
+        assert!(rendered.contains("version: inactive (asked for active; this object has none)"));
         assert!(rendered.contains("sha256: abc123"));
         assert!(rendered.ends_with("<class:abapClass/>"));
     }

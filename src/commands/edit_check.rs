@@ -2,9 +2,7 @@ use std::fmt::Write as _;
 
 use serde::Serialize;
 
-use super::{
-    connect, edit_object_identity::EditObjectIdentityOutput, edit_read::map_source_version,
-};
+use super::{connect, edit_object_identity::EditObjectIdentityOutput};
 use crate::{
     cli::EditSourceCheckArgs,
     output::{OutputFormat, print_json},
@@ -44,7 +42,7 @@ pub async fn edit_source_check(
     args: &EditSourceCheckArgs,
 ) -> Result<EditSourceCheckOutput, Reported> {
     let object_type = EditableAdtObjectType::parse(&args.object_type)?;
-    let version = map_source_version(args.version);
+    let version = args.version.into();
     let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
     let result = check_adt_stored_source(&mut client, object_type, &args.name, version).await?;
     Ok(map_source_check_result(profile_name, result))
@@ -119,12 +117,13 @@ fn render_source_check_readable(result: &EditSourceCheckOutput) -> String {
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use fractal::sap::adt_version::AdtVersion;
 
     use super::*;
-    use crate::cli::{Cli, Command, EditCommand, EditSourceVersionArg};
+    use crate::cli::{Cli, Command, EditCommand, VersionArg};
     use fractal::sap::{
         adt_message_severity::AdtMessageSeverity,
-        editable_source::{AdtSourceVersion, EditableAdtObjectType, EditableAdtSourceIdentity},
+        editable_source::{EditableAdtObjectType, EditableAdtSourceIdentity},
         source_check::{AdtSourceCheckMessage, AdtSourceCheckResult},
     };
 
@@ -153,7 +152,7 @@ mod tests {
             .unwrap(),
         );
 
-        assert_eq!(args.version, EditSourceVersionArg::Inactive);
+        assert_eq!(args.version, VersionArg::Inactive);
     }
 
     #[test]
@@ -173,7 +172,7 @@ mod tests {
             .unwrap(),
         );
 
-        assert_eq!(args.version, EditSourceVersionArg::Active);
+        assert_eq!(args.version, VersionArg::Active);
     }
 
     #[test]
@@ -187,7 +186,7 @@ mod tests {
                     object_uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
                     source_uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
                 },
-                requested_version: AdtSourceVersion::Inactive,
+                requested_version: AdtVersion::Inactive,
                 check_executed: true,
                 inactive_version_exists: Some(true),
                 clean: false,

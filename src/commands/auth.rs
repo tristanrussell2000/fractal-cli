@@ -267,7 +267,7 @@ fn apply_edit_policy_args(profile: &mut config::Profile, args: &AuthSetArgs) {
         profile.edit_packages = Some(args.package.clone());
     }
     if !args.namespace.is_empty() {
-        profile.customer_namespaces = args.namespace.clone();
+        profile.customer_namespaces.clone_from(&args.namespace);
     }
     if let Some(allow) = args.allow_temporary_package {
         profile.allow_temporary_package = allow;
