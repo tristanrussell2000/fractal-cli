@@ -26,7 +26,8 @@ use commands::journal::{
 };
 use commands::object::{
     object_info, object_kinds, object_search, object_source, object_usages, object_xml,
-    print_object_kinds, print_object_source, print_object_xml,
+    print_object_kinds, print_object_search, print_object_source, print_object_usages,
+    print_object_xml,
 };
 use commands::object_delete::{object_delete, print_object_delete};
 use commands::package::{package_items, package_tree};
@@ -84,7 +85,14 @@ async fn main() {
         }
         Command::Object {
             command: ObjectCommand::Search(args),
-        } => run_and_print_async(|| object_search(cli.profile.as_deref(), args), output).await,
+        } => {
+            run_and_print_with_async(
+                || object_search(cli.profile.as_deref(), args),
+                print_object_search,
+                output,
+            )
+            .await
+        }
         Command::Object {
             command: ObjectCommand::Source(args),
         } => {
@@ -110,7 +118,14 @@ async fn main() {
         } => run_and_print_async(|| object_info(cli.profile.as_deref(), args), output).await,
         Command::Object {
             command: ObjectCommand::Usages(args),
-        } => run_and_print_async(|| object_usages(cli.profile.as_deref(), args), output).await,
+        } => {
+            run_and_print_with_async(
+                || object_usages(cli.profile.as_deref(), args),
+                print_object_usages,
+                output,
+            )
+            .await
+        }
         Command::Object {
             command: ObjectCommand::Kinds,
         } => run_and_print_with(object_kinds, print_object_kinds, output),
