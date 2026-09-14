@@ -5,13 +5,16 @@ use serde::Serialize;
 use super::{
     connect, edit_lock_warning::still_locked_warning,
     edit_object_identity::EditObjectIdentityOutput, edit_set::resolve_replacement_source,
+    staged_edit_policy,
 };
 use crate::{
     cli::EditXmlSetArgs,
     output::{OutputFormat, print_json},
     reported::Reported,
 };
-use fractal::sap::metadata_object::{MetadataAdtObjectType, write_metadata_object};
+use fractal::sap::metadata_object::{
+    MetadataAdtObjectType, MetadataObjectWriteRequest, write_metadata_object,
+};
 use fractal::source_change::source_sha256;
 
 #[derive(Debug, Serialize)]
@@ -56,11 +59,14 @@ pub async fn edit_xml_set(
     let result = write_metadata_object(
         &mut client,
         &profile.edit_policy(),
-        object_type,
-        &args.name,
-        &xml,
-        args.transport.as_deref(),
-        args.expected_sha256.as_deref(),
+        &MetadataObjectWriteRequest {
+            object_type,
+            name: &args.name,
+            xml: &xml,
+            transport: args.transport.as_deref(),
+            expected_sha256: args.expected_sha256.as_deref(),
+            staged_edits: &staged_edit_policy(args.force, &profile.username),
+        },
     )
     .await?;
 

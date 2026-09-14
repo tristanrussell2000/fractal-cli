@@ -12,6 +12,7 @@ use fractal::{
             AdtSourceReplacementError, AdtSourceReplacementRequest, preview_adt_source_replacement,
             replace_adt_source_atomically,
         },
+        staged_work::StagedEditPolicy,
     },
     source_change::{SourceChangePlanError, source_sha256},
 };
@@ -45,11 +46,15 @@ fn replacement_request() -> AdtSourceReplacementRequest {
         replacement_source: REPLACEMENT_SOURCE.to_owned(),
         expected_sha256: None,
         transport: None,
+        staged_edits: StagedEditPolicy::Protect("developer".to_owned()),
     }
 }
 
 async fn mount_csrf_session(server: &MockServer) {
     SESSION.mount_csrf_session(server).await;
+    // Every replacement asks who has work staged here; nobody, unless a test
+    // mounts its own answer first.
+    SESSION.mount_no_staged_work(server).await;
 }
 
 async fn mount_lock(server: &MockServer, transport: Option<&str>) {
@@ -542,4 +547,95 @@ fn request_position(requests: &[Request], request_path: &str, key: &str, value: 
                     })
         })
         .unwrap()
+}
+
+#[tokio::test]
+async fn a_replacement_over_another_users_staged_edit_is_refused_before_the_lock() {
+    let server = MockServer::start().await;
+    // No CSRF session, no lock and no write are mounted: the refusal lands
+    // before any of them, which is what makes it cheap and leaves nothing to
+    // clean up.
+    SESSION.mount_staged_work(&server, "COLLEAGUE").await;
+    SESSION
+        .lock_request(None)
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    SESSION
+        .source_write(None)
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let profile = profile(server.uri());
+    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let error =
+        replace_adt_source_atomically(&mut client, &profile.edit_policy(), &replacement_request())
+            .await
+            .unwrap_err();
+
+    assert_eq!(error.code(), "edit_staged_by_another_user");
+    assert!(error.message().contains("COLLEAGUE"), "{}", error.message());
+    // The remedy is read-only and names the version that holds their work.
+    assert!(
+        error
+            .suggested_command()
+            .unwrap()
+            .contains("--version inactive"),
+        "{:?}",
+        error.suggested_command()
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn asserting_a_hash_skips_the_staged_check_entirely() {
+    let server = MockServer::start().await;
+    // The session mock only; the local wrapper would also mount a permissive
+    // staged-work answer and absorb the request this test forbids.
+    SESSION.mount_csrf_session(&server).await;
+    // Deliberately answered as somebody else's staged edit, and deliberately
+    // never requested: a caller who passes --expected-sha256 has said they know
+    // what is there, so the check is skipped rather than satisfied.
+    Mock::given(method("GET"))
+        .and(path(SESSION.object_path))
+        .and(query_param("version", "inactive"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"<?xml version="1.0"?><o:d xmlns:o="urn:o" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:version="inactive" adtcore:changedBy="COLLEAGUE"/>"#,
+        ))
+        .expect(0)
+        .mount(&server)
+        .await;
+    SESSION.mount_lock(&server, None).await;
+    SESSION
+        .mount_unlock(&server, ResponseTemplate::new(200))
+        .await;
+    SESSION
+        .source_read("inactive")
+        .respond_with(ResponseTemplate::new(200).set_body_string(ORIGINAL_SOURCE))
+        .mount(&server)
+        .await;
+    SESSION
+        .source_write(None)
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    SESSION
+        .source_read("inactive")
+        .respond_with(ResponseTemplate::new(200).set_body_string(REPLACEMENT_SOURCE))
+        .mount(&server)
+        .await;
+
+    let mut request = replacement_request();
+    request.expected_sha256 = Some(source_sha256(ORIGINAL_SOURCE));
+    let profile = profile(server.uri());
+    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let result = replace_adt_source_atomically(&mut client, &profile.edit_policy(), &request).await;
+
+    assert!(result.is_ok(), "{:?}", result.err());
+    // Enforces the expect(0) above: the staged check is skipped, not answered.
+    server.verify().await;
 }

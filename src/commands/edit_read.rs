@@ -106,7 +106,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_edit_read_with_active_as_the_default_version() {
+    fn parses_edit_read_with_inactive_as_the_default_version() {
         let args = read_args(
             Cli::try_parse_from([
                 "fractal",
@@ -122,7 +122,7 @@ mod tests {
 
         assert_eq!(args.object_type, "clas");
         assert_eq!(args.name, "ZCL_EXAMPLE");
-        assert_eq!(args.version, VersionArg::Active);
+        assert_eq!(args.version, VersionArg::Inactive);
     }
 
     #[test]

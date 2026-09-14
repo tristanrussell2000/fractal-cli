@@ -27,6 +27,7 @@ pub mod source_check;
 pub mod source_discard;
 pub mod source_patch;
 pub mod source_replace;
+pub mod staged_work;
 pub mod table;
 pub mod transport;
 pub mod undo;

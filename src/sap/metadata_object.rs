@@ -14,6 +14,7 @@
 use super::package_authorization::{
     PackageAuthorizationError, authorize_known_package, package_of_object_xml,
 };
+use super::staged_work::{StagedEditPolicy, StagedWorkError, refuse_when_staged_by_another};
 use crate::config::EditPolicy;
 use crate::journal::recorder::Journal;
 use crate::source_change::{SourceChangePlanError, verify_expected_sha256};
@@ -202,6 +203,8 @@ pub enum MetadataObjectWriteError {
     Validation(#[from] AdtEditTargetValidationError),
     #[error(transparent)]
     PackageNotAllowed(#[from] PackageAuthorizationError),
+    #[error(transparent)]
+    StagedByAnother(#[from] StagedWorkError),
     /// The document changed between the caller reading it and this write.
     #[error(transparent)]
     Stale(#[from] SourceChangePlanError),
@@ -236,6 +239,7 @@ impl ReportableError for MetadataObjectWriteError {
             Self::AbandonedLock(primary) => primary.code(),
             Self::Validation(error) => error.code(),
             Self::PackageNotAllowed(error) => error.code(),
+            Self::StagedByAnother(error) => error.code(),
             Self::Stale(error) => error.code(),
             Self::BlankDocument => "blank_xml_document",
             Self::Session(_) => "edit_xml_lock_failed",
@@ -258,6 +262,7 @@ impl ReportableError for MetadataObjectWriteError {
     fn hint(&self) -> Option<String> {
         Some(match self {
             Self::PackageNotAllowed(error) => return error.hint(),
+            Self::StagedByAnother(error) => return error.hint(),
             Self::Stale(error) => return error.hint(),
             Self::AbandonedLock(primary) => format!(
                 "{} Releasing its lock also failed, so the object is still locked: clear the lock before retrying, or the next attempt will fail on the lock rather than the original cause.",
@@ -287,6 +292,7 @@ impl ReportableError for MetadataObjectWriteError {
     fn suggested_command(&self) -> Option<String> {
         match self {
             Self::AbandonedLock(primary) => primary.suggested_command(),
+            Self::StagedByAnother(error) => error.suggested_command(),
             Self::Read { .. } => Some(suggested_command::object_xml("<the object uri>")),
             _ => None,
         }
@@ -546,6 +552,18 @@ pub struct MetadataObjectWriteResult {
     pub changed: bool,
 }
 
+/// One whole-document write.
+#[derive(Debug, Clone, Copy)]
+pub struct MetadataObjectWriteRequest<'a> {
+    pub object_type: MetadataAdtObjectType,
+    pub name: &'a str,
+    pub xml: &'a str,
+    pub transport: Option<&'a str>,
+    pub expected_sha256: Option<&'a str>,
+    /// What to do about an edit somebody else has staged here.
+    pub staged_edits: &'a StagedEditPolicy,
+}
+
 /// Writes a metadata object's XML document, under a lock, and reads it back.
 ///
 /// The whole document is replaced: for this family the XML *is* the object, so
@@ -560,12 +578,16 @@ pub struct MetadataObjectWriteResult {
 pub async fn write_metadata_object(
     sap: &mut SapClient,
     policy: &EditPolicy,
-    object_type: MetadataAdtObjectType,
-    name: &str,
-    xml: &str,
-    transport: Option<&str>,
-    expected_sha256: Option<&str>,
+    request: &MetadataObjectWriteRequest<'_>,
 ) -> Result<MetadataObjectWriteResult, MetadataObjectWriteError> {
+    let &MetadataObjectWriteRequest {
+        object_type,
+        name,
+        xml,
+        transport,
+        expected_sha256,
+        staged_edits,
+    } = request;
     let identity = metadata_object_identity(object_type, name, policy)
         .map_err(MetadataObjectWriteError::Validation)?;
     let transport =
@@ -591,6 +613,18 @@ pub async fn write_metadata_object(
             })?;
         authorize_known_package(policy, &identity.name, &package)?;
     }
+
+    // Before the lock
+    refuse_when_staged_by_another(
+        sap,
+        &identity.object_uri,
+        staged_edits,
+        object_type.as_str(),
+        &identity.name,
+        expected_sha256.is_some(),
+    )
+    .await?;
+
     let lock = acquire_adt_object_lock(sap, &identity.object_uri, transport.as_deref())
         .await
         .map_err(MetadataObjectWriteError::Session)?;

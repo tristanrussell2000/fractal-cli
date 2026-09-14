@@ -7,6 +7,7 @@ use fractal::reportable_error::ReportableError;
 
 use super::{
     edit_lock_warning::still_locked_warning, edit_object_identity::EditObjectIdentityOutput,
+    staged_edit_policy,
 };
 use crate::{
     cli::EditSourceSetArgs,
@@ -63,14 +64,15 @@ pub async fn edit_source_set(
         let mut stdin = stdin.lock();
         resolve_replacement_source(&args.source_file, &mut stdin)?
     };
+    let (profile_name, profile, mut client) = connect(explicit_profile).await?;
     let request = AdtSourceReplacementRequest {
         object_type,
         name: args.name.clone(),
         replacement_source,
         expected_sha256: args.expected_sha256.clone(),
         transport: args.transport.clone(),
+        staged_edits: staged_edit_policy(args.force, &profile.username),
     };
-    let (profile_name, profile, mut client) = connect(explicit_profile).await?;
 
     if args.dry_run {
         let preview =

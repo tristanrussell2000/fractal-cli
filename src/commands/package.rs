@@ -208,13 +208,15 @@ fn write_package_children(
         .map(|package| package.name.as_str())
         .collect();
     for package in &result.packages {
-        let hangs_here = match parent {
-            Some(parent) => package.parent.as_deref() == Some(parent),
-            None => package
-                .parent
-                .as_deref()
-                .is_none_or(|parent| !walked.contains(parent)),
-        };
+        let hangs_here = parent.map_or_else(
+            || {
+                package
+                    .parent
+                    .as_deref()
+                    .is_none_or(|parent| !walked.contains(parent))
+            },
+            |parent| package.parent.as_deref() == Some(parent),
+        );
         if !hangs_here || !written.insert(package.name.clone()) {
             continue;
         }

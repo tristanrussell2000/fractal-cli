@@ -21,7 +21,10 @@ use fractal::{
     reportable_error::ReportableError,
     sap::{
         client::SapClient,
-        metadata_object::{MetadataAdtObjectType, write_metadata_object},
+        metadata_object::{
+            MetadataAdtObjectType, MetadataObjectWriteRequest, write_metadata_object,
+        },
+        staged_work::StagedEditPolicy,
     },
 };
 use wiremock::{
@@ -51,10 +54,29 @@ fn profile(base_url: String) -> Profile {
 fn document(label: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
-<blue:wbobj xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements" adtcore:name="ZSAMPLE_DE" adtcore:description="Sample">
+<blue:wbobj xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="ZSAMPLE_DE" adtcore:description="Sample">
   <dtel:dataElement><dtel:shortFieldLabel>{label}</dtel:shortFieldLabel></dtel:dataElement>
 </blue:wbobj>"#
     )
+}
+
+/// The staged-work check the write makes before taking the lock.
+///
+/// Answers with an **active** document, which is what SAP serves when no
+/// inactive version exists, so the guard finds nobody's work staged. Mount it
+/// before [`mount_reads`]: all these reads share one URL, so only their order
+/// tells them apart. Writes that pass `--expected-sha256` never make this read
+/// and must not mount it.
+async fn mount_staged_check(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path(OBJECT_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"<?xml version="1.0" encoding="utf-8"?><blue:wbobj xmlns:blue="urn:b" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="ZSAMPLE_DE" adtcore:version="active"/>"#,
+        ))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(server)
+        .await;
 }
 
 /// Answers the two reads in order: before the write, then after it.
@@ -81,11 +103,14 @@ async fn write_error(
     write_metadata_object(
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
-        MetadataAdtObjectType::DataElement,
-        "zsample_de",
-        xml,
-        None,
-        None,
+        &MetadataObjectWriteRequest {
+            object_type: MetadataAdtObjectType::DataElement,
+            name: "zsample_de",
+            xml: xml,
+            transport: None,
+            expected_sha256: None,
+            staged_edits: &StagedEditPolicy::Protect("developer".to_owned()),
+        },
     )
     .await
     .expect_err("expected the write to fail")
@@ -96,11 +121,14 @@ async fn write(server: &MockServer, xml: &str) -> Result<String, String> {
     write_metadata_object(
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
-        MetadataAdtObjectType::DataElement,
-        "zsample_de",
-        xml,
-        None,
-        None,
+        &MetadataObjectWriteRequest {
+            object_type: MetadataAdtObjectType::DataElement,
+            name: "zsample_de",
+            xml: xml,
+            transport: None,
+            expected_sha256: None,
+            staged_edits: &StagedEditPolicy::Protect("developer".to_owned()),
+        },
     )
     .await
     .map(|result| format!("{}:{}", result.changed, result.stored_xml.len()))
@@ -130,6 +158,7 @@ async fn writes_the_document_under_a_lock_and_reads_back_what_sap_stored() {
         .expect(1)
         .mount(&server)
         .await;
+    mount_staged_check(&server).await;
     mount_reads(&server, &document("old"), &document("new")).await;
 
     let outcome = write(&server, &document("new")).await.unwrap();
@@ -169,14 +198,19 @@ async fn a_table_type_is_written_with_its_own_media_type() {
         .await;
     Mock::given(method("GET"))
         .and(path(object_path))
-        .respond_with(ResponseTemplate::new(200).set_body_string("<ttyp:tableType/>"))
-        .up_to_n_times(1)
-        .expect(1)
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(r#"<ttyp:tableType xmlns:ttyp="urn:t"/>"#),
+        )
+        .up_to_n_times(2)
+        .expect(2)
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path(object_path))
-        .respond_with(ResponseTemplate::new(200).set_body_string("<ttyp:tableType edited=\"1\"/>"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("<ttyp:tableType xmlns:ttyp=\"urn:t\" edited=\"1\"/>"),
+        )
         .mount(&server)
         .await;
 
@@ -184,11 +218,14 @@ async fn a_table_type_is_written_with_its_own_media_type() {
     let result = write_metadata_object(
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
-        MetadataAdtObjectType::TableType,
-        "zsample_tt",
-        "<ttyp:tableType edited=\"1\"/>",
-        None,
-        None,
+        &MetadataObjectWriteRequest {
+            object_type: MetadataAdtObjectType::TableType,
+            name: "zsample_tt",
+            xml: "<ttyp:tableType edited=\"1\"/>",
+            transport: None,
+            expected_sha256: None,
+            staged_edits: &StagedEditPolicy::Protect("developer".to_owned()),
+        },
     )
     .await
     .unwrap();
@@ -216,6 +253,7 @@ async fn a_write_that_changed_nothing_is_reported_rather_than_hidden() {
         .respond_with(ResponseTemplate::new(200))
         .mount(&server)
         .await;
+    mount_staged_check(&server).await;
     mount_reads(&server, &document("same"), &document("same")).await;
 
     let outcome = write(&server, &document("same")).await.unwrap();
@@ -245,17 +283,21 @@ async fn a_stuck_lock_after_a_successful_write_is_reported_without_failing_the_w
         .expect(1)
         .mount(&server)
         .await;
+    mount_staged_check(&server).await;
     mount_reads(&server, &document("old"), &document("new")).await;
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let result = write_metadata_object(
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
-        MetadataAdtObjectType::DataElement,
-        "zsample_de",
-        &document("new"),
-        None,
-        None,
+        &MetadataObjectWriteRequest {
+            object_type: MetadataAdtObjectType::DataElement,
+            name: "zsample_de",
+            xml: &document("new"),
+            transport: None,
+            expected_sha256: None,
+            staged_edits: &StagedEditPolicy::Protect("developer".to_owned()),
+        },
     )
     .await
     .expect("the write landed, so this is not a failure");
@@ -295,7 +337,7 @@ async fn a_refusal_for_a_missing_description_is_classified() {
     Mock::given(method("GET"))
         .and(path(OBJECT_PATH))
         .respond_with(ResponseTemplate::new(200).set_body_string(document("old")))
-        .expect(1)
+        .expect(2)
         .mount(&server)
         .await;
 
@@ -331,7 +373,7 @@ async fn a_failed_write_whose_lock_also_stuck_says_the_object_is_still_locked() 
     Mock::given(method("GET"))
         .and(path(OBJECT_PATH))
         .respond_with(ResponseTemplate::new(200).set_body_string(document("old")))
-        .expect(1)
+        .expect(2)
         .mount(&server)
         .await;
 
@@ -368,11 +410,14 @@ async fn a_name_outside_the_customer_namespaces_never_reaches_sap() {
     let error = write_metadata_object(
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
-        MetadataAdtObjectType::DataElement,
-        "SFLIGHT_DE",
-        &document("new"),
-        None,
-        None,
+        &MetadataObjectWriteRequest {
+            object_type: MetadataAdtObjectType::DataElement,
+            name: "SFLIGHT_DE",
+            xml: &document("new"),
+            transport: None,
+            expected_sha256: None,
+            staged_edits: &StagedEditPolicy::Protect("developer".to_owned()),
+        },
     )
     .await
     .unwrap_err();
@@ -400,17 +445,22 @@ async fn a_matching_expected_hash_lets_the_write_through() {
         .expect(1)
         .mount(&server)
         .await;
+    // No staged check: asserting a hash is the caller saying they have seen
+    // what is there, so the guard does not read.
     mount_reads(&server, &document("old"), &document("new")).await;
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let result = write_metadata_object(
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
-        MetadataAdtObjectType::DataElement,
-        "zsample_de",
-        &document("new"),
-        None,
-        Some(&source_sha256(&document("old"))),
+        &MetadataObjectWriteRequest {
+            object_type: MetadataAdtObjectType::DataElement,
+            name: "zsample_de",
+            xml: &document("new"),
+            transport: None,
+            expected_sha256: Some(&source_sha256(&document("old"))),
+            staged_edits: &StagedEditPolicy::Protect("developer".to_owned()),
+        },
     )
     .await
     .unwrap();
@@ -446,12 +496,15 @@ async fn a_stale_expected_hash_refuses_the_write_and_still_releases_the_lock() {
     let error = write_metadata_object(
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
-        MetadataAdtObjectType::DataElement,
-        "zsample_de",
-        &document("new"),
-        None,
-        // The hash of a document somebody else already replaced.
-        Some(&source_sha256(&document("what the caller last read"))),
+        &MetadataObjectWriteRequest {
+            object_type: MetadataAdtObjectType::DataElement,
+            name: "zsample_de",
+            xml: &document("new"),
+            transport: None,
+            // The hash of a document somebody else already replaced.
+            expected_sha256: Some(&source_sha256(&document("what the caller last read"))),
+            staged_edits: &StagedEditPolicy::Protect("developer".to_owned()),
+        },
     )
     .await
     .unwrap_err();
@@ -468,7 +521,7 @@ async fn a_stale_expected_hash_refuses_the_write_and_still_releases_the_lock() {
 async fn the_document_is_read_under_the_lock_not_before_it() {
     // A hash checked against an unlocked read proves nothing: the document
     // could change between that read and the lock. Exactly one GET happens on
-    // an unrestricted profile, and it comes after the lock.
+    // an unrestricted profile that asserts a hash, and it comes after the lock.
     let server = MockServer::start().await;
     let session = session();
     session.mount_csrf_session(&server).await;
@@ -490,11 +543,14 @@ async fn the_document_is_read_under_the_lock_not_before_it() {
     let error = write_metadata_object(
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
-        MetadataAdtObjectType::DataElement,
-        "zsample_de",
-        &document("new"),
-        None,
-        Some("not-a-hash"),
+        &MetadataObjectWriteRequest {
+            object_type: MetadataAdtObjectType::DataElement,
+            name: "zsample_de",
+            xml: &document("new"),
+            transport: None,
+            expected_sha256: Some("not-a-hash"),
+            staged_edits: &StagedEditPolicy::Protect("developer".to_owned()),
+        },
     )
     .await
     .unwrap_err();
@@ -537,17 +593,21 @@ async fn a_document_with_its_links_stripped_is_sent_verbatim() {
         "<dtel:dataElement>",
         &format!("{NAVIGATION_LINK}<dtel:dataElement>"),
     );
+    mount_staged_check(&server).await;
     mount_reads(&server, &document("old"), &stored).await;
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
     let result = write_metadata_object(
         &mut client,
         &EditPolicy::namespaces_only(&["Z*"]),
-        MetadataAdtObjectType::DataElement,
-        "zsample_de",
-        &document("new"),
-        None,
-        None,
+        &MetadataObjectWriteRequest {
+            object_type: MetadataAdtObjectType::DataElement,
+            name: "zsample_de",
+            xml: &document("new"),
+            transport: None,
+            expected_sha256: None,
+            staged_edits: &StagedEditPolicy::Protect("developer".to_owned()),
+        },
     )
     .await
     .unwrap();
@@ -626,11 +686,116 @@ async fn the_package_guard_reads_the_active_document_not_a_pending_edit() {
             edit_packages: Some(vec!["ZGRANTED".to_owned()]),
             allow_temporary_package: true,
         },
-        MetadataAdtObjectType::DataElement,
-        "zsample_de",
-        &packaged_document("new", "ZGRANTED"),
-        None,
-        None,
+        &MetadataObjectWriteRequest {
+            object_type: MetadataAdtObjectType::DataElement,
+            name: "zsample_de",
+            xml: &packaged_document("new", "ZGRANTED"),
+            transport: None,
+            expected_sha256: None,
+            staged_edits: &StagedEditPolicy::Protect("developer".to_owned()),
+        },
+    )
+    .await;
+
+    assert!(result.is_ok(), "{:?}", result.err());
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn a_write_over_another_users_staged_edit_is_refused_before_the_lock() {
+    let server = MockServer::start().await;
+    let session = session();
+    // No CSRF session is mounted either: the refusal lands before anything
+    // needs one, which is the cheapest place it can happen.
+    // Neither of these may be requested: the refusal is decided before the
+    // lock, so it never has one to give back, and nothing is written.
+    session
+        .lock_request(None)
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(OBJECT_PATH))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(OBJECT_PATH))
+        .and(query_param("version", "inactive"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"<?xml version="1.0" encoding="utf-8"?><blue:wbobj xmlns:blue="urn:b" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="ZSAMPLE_DE" adtcore:version="inactive" adtcore:changedBy="COLLEAGUE"/>"#,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let error = write_metadata_object(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &MetadataObjectWriteRequest {
+            object_type: MetadataAdtObjectType::DataElement,
+            name: "zsample_de",
+            xml: &document("new"),
+            transport: None,
+            expected_sha256: None,
+            staged_edits: &StagedEditPolicy::Protect("developer".to_owned()),
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), "edit_staged_by_another_user");
+    assert!(error.message().contains("COLLEAGUE"), "{}", error.message());
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn the_callers_own_staged_edit_is_not_in_the_way() {
+    let server = MockServer::start().await;
+    let session = session();
+    session.mount_csrf_session(&server).await;
+    session.mount_lock(&server, None).await;
+    session
+        .unlock_request()
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(OBJECT_PATH))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // Staged by the caller. Overwriting your own pending edit is ordinary
+    // iteration, not a collision.
+    Mock::given(method("GET"))
+        .and(path(OBJECT_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"<?xml version="1.0" encoding="utf-8"?><blue:wbobj xmlns:blue="urn:b" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="ZSAMPLE_DE" adtcore:version="inactive" adtcore:changedBy="DEVELOPER"/>"#,
+        ))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    mount_reads(&server, &document("old"), &document("new")).await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let result = write_metadata_object(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &MetadataObjectWriteRequest {
+            object_type: MetadataAdtObjectType::DataElement,
+            name: "zsample_de",
+            xml: &document("new"),
+            transport: None,
+            expected_sha256: None,
+            // SAP reports user ids uppercased; the profile need not match its case.
+            staged_edits: &StagedEditPolicy::Protect("developer".to_owned()),
+        },
     )
     .await;
 

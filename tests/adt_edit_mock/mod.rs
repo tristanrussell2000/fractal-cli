@@ -146,6 +146,35 @@ impl AdtEditSession {
             .and(query_param("sap-client", self.sap_client))
     }
 
+    /// The object-document read that answers "has anybody staged an edit here".
+    ///
+    /// Mounts an **active** document, which is what SAP serves when there is no
+    /// inactive version, so the guard sees nothing staged and the write
+    /// proceeds. Suites that want the guard to fire mount their own.
+    pub async fn mount_no_staged_work(&self, server: &MockServer) {
+        Mock::given(method("GET"))
+            .and(path(self.object_path))
+            .and(query_param("version", "inactive"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                r#"<?xml version="1.0" encoding="utf-8"?><abapsource:objectData xmlns:abapsource="urn:s" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="ZSAMPLE" adtcore:version="active" adtcore:changedBy="{}"/>"#,
+                "SOMEONE"
+            )))
+            .mount(server)
+            .await;
+    }
+
+    /// The same read, answering that `author` has an unactivated edit staged.
+    pub async fn mount_staged_work(&self, server: &MockServer, author: &str) {
+        Mock::given(method("GET"))
+            .and(path(self.object_path))
+            .and(query_param("version", "inactive"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                r#"<?xml version="1.0" encoding="utf-8"?><abapsource:objectData xmlns:abapsource="urn:s" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="ZSAMPLE" adtcore:version="inactive" adtcore:changedBy="{author}"/>"#
+            )))
+            .mount(server)
+            .await;
+    }
+
     pub fn lock_result_body(&self) -> String {
         format!(
             "<lockResult><LOCK_HANDLE>{}</LOCK_HANDLE></lockResult>",

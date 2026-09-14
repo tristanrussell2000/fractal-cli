@@ -457,6 +457,11 @@ pub enum EditCommand {
     /// Create an empty object shell. Fill it with `edit set`; does not activate.
     Create(EditObjectCreateArgs),
     /// Read complete source and revision metadata for a future edit.
+    ///
+    /// Defaults to the **inactive** version, which is the one a later write
+    /// replaces and so the one to build an edit on. When nobody has staged
+    /// anything, that is the active source, because SAP falls back. Pass
+    /// `--version active` to read what is running instead.
     Read(EditSourceReadArgs),
     /// Replace one exact fragment and save inactive source. Does not activate.
     Patch(EditSourcePatchArgs),
@@ -532,8 +537,9 @@ pub struct EditSourceReadArgs {
     /// ABAP repository object name.
     #[arg(long)]
     pub(crate) name: String,
-    /// Stored source version to request. If inactive does not exist, SAP returns active source.
-    #[arg(long, value_enum, default_value = "active")]
+    /// Stored source version to request. Defaults to the version a write would
+    /// replace: the inactive one, or the active one when nothing is staged.
+    #[arg(long, value_enum, default_value = "inactive")]
     pub(crate) version: VersionArg,
 }
 
@@ -647,6 +653,13 @@ pub struct EditSourceSetArgs {
     /// Validate and preview the complete replacement without locking or writing.
     #[arg(long)]
     pub(crate) dry_run: bool,
+    /// Replace another user's unactivated edit anyway.
+    ///
+    /// A whole-source write replaces the inactive version outright, so it
+    /// destroys work somebody else has staged there. Without this, such a write
+    /// is refused and names who staged it.
+    #[arg(long)]
+    pub(crate) force: bool,
 }
 
 #[derive(Debug, Args)]
@@ -670,6 +683,13 @@ pub struct EditXmlSetArgs {
     /// so an overwrite based on a stale read is unrecoverable.
     #[arg(long)]
     pub(crate) expected_sha256: Option<String>,
+    /// Replace another user's unactivated edit anyway.
+    ///
+    /// A whole-document write replaces the inactive version outright, so it
+    /// destroys work somebody else has staged there. Without this, such a write
+    /// is refused and names who staged it.
+    #[arg(long)]
+    pub(crate) force: bool,
 }
 
 #[derive(Debug, Args)]

@@ -29,6 +29,7 @@ use fractal::{
         source_discard::AdtInactiveSourceDiscardError,
         source_patch::AdtSourcePatchError,
         source_replace::AdtSourceReplacementError,
+        staged_work::StagedWorkError,
     },
     source_change::SourceChangePlanError,
 };
@@ -63,6 +64,21 @@ struct Expectation {
 
 fn contract() -> Vec<Expectation> {
     vec![
+        Expectation {
+            error: Box::new(StagedWorkError::StagedByAnother {
+                object_type: "PROG",
+                name: "ZSAMPLE".to_owned(),
+                author: "COLLEAGUE".to_owned(),
+            }),
+            code: "edit_staged_by_another_user",
+            status: None,
+            message_contains: "COLLEAGUE",
+            has_hint: true,
+            // Reading the layer that holds their work, which is read-only.
+            suggested_command: Some(
+                "fractal edit read --type PROG --name ZSAMPLE --version inactive",
+            ),
+        },
         Expectation {
             error: Box::new(ConfigError::NoProfileSelected),
             code: "no_default_profile",

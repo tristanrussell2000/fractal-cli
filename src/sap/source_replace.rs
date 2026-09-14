@@ -1,4 +1,5 @@
 use super::package_authorization::{PackageAuthorizationError, authorize_object_package};
+use super::staged_work::{StagedEditPolicy, StagedWorkError, refuse_when_staged_by_another};
 use crate::config::EditPolicy;
 use thiserror::Error;
 
@@ -27,6 +28,8 @@ pub struct AdtSourceReplacementRequest {
     pub replacement_source: String,
     pub expected_sha256: Option<String>,
     pub transport: Option<String>,
+    /// What to do about an edit somebody else has staged here.
+    pub staged_edits: StagedEditPolicy,
 }
 
 /// A non-mutating complete-source replacement plan based on source read from SAP.
@@ -63,6 +66,8 @@ pub enum AdtSourceReplacementError {
     Validation(#[from] AdtEditTargetValidationError),
     #[error(transparent)]
     PackageNotAllowed(#[from] PackageAuthorizationError),
+    #[error(transparent)]
+    StagedByAnother(#[from] StagedWorkError),
     #[error("ADT edit session failed during complete-source replacement: {0}")]
     Session(#[source] AdtEditSessionError),
     #[error("could not read current source while the replacement lock was held: {0}")]
@@ -94,6 +99,7 @@ impl AdtSourceReplacementError {
     pub fn sap_error(&self) -> Option<&SapClientError> {
         match self {
             Self::PackageNotAllowed(error) => error.sap_error(),
+            Self::StagedByAnother(error) => error.sap_error(),
             Self::AbandonedLock(primary) => primary.sap_error(),
             Self::LockedSourceRead(error)
             | Self::PreviewSourceRead(error)
@@ -110,6 +116,7 @@ impl ReportableError for AdtSourceReplacementError {
             Self::AbandonedLock(primary) => primary.code(),
             Self::Validation(error) => error.code(),
             Self::PackageNotAllowed(error) => error.code(),
+            Self::StagedByAnother(error) => error.code(),
             Self::Replacement { source, .. } => source.code(),
             Self::Session(
                 AdtEditSessionError::LockFailed { .. }
@@ -136,6 +143,7 @@ impl ReportableError for AdtSourceReplacementError {
 
     fn hint(&self) -> Option<String> {
         Some(match self {
+            Self::StagedByAnother(error) => error.hint()?,
             // The cause keeps its own advice; the stuck lock is appended,
             // because clearing it has to happen before any retry.
             Self::AbandonedLock(primary) => format!(
@@ -180,6 +188,7 @@ impl ReportableError for AdtSourceReplacementError {
     fn suggested_command(&self) -> Option<String> {
         match self {
             Self::PackageNotAllowed(error) => error.suggested_command(),
+            Self::StagedByAnother(error) => error.suggested_command(),
             Self::AbandonedLock(primary) => primary.suggested_command(),
             Self::Replacement {
                 identity,
@@ -269,6 +278,16 @@ pub async fn replace_adt_source_atomically(
         policy,
         &target.identity.name,
         &target.identity.object_uri,
+    )
+    .await?;
+    // Before the lock, a refusal must not leave a lock behind
+    refuse_when_staged_by_another(
+        sap,
+        &target.identity.object_uri,
+        &request.staged_edits,
+        request.object_type.as_str(),
+        &target.identity.name,
+        request.expected_sha256.is_some(),
     )
     .await?;
     let saved = save_inactive_source_atomically(sap, &target, |original| {

@@ -25,13 +25,22 @@ pub mod undo;
 mod tabular;
 
 use crate::reported::Reported;
-use fractal::{config, credentials, sap::client::SapClient};
+use fractal::{config, credentials, sap::client::SapClient, sap::staged_work::StagedEditPolicy};
+
+/// What a write should do about an edit somebody else has staged.
+pub fn staged_edit_policy(force: bool, username: &str) -> StagedEditPolicy {
+    if force {
+        StagedEditPolicy::Overwrite
+    } else {
+        StagedEditPolicy::Protect(username.to_owned())
+    }
+}
 
 /// Which layer the caller is actually looking at.
 ///
 /// Asking for a layer is not getting it: SAP serves the other one rather than
 /// refusing, and an object that has never been activated declares itself `new`.
-pub(super) fn render_version(requested: &'static str, declared: Option<&str>) -> String {
+pub fn render_version(requested: &'static str, declared: Option<&str>) -> String {
     match declared {
         None => "unknown (the document does not say)".to_owned(),
         Some("new") => "new (never activated)".to_owned(),

@@ -34,8 +34,8 @@ use super::{
     },
     metadata_document::{document_version, strip_navigation_links},
     metadata_object::{
-        MetadataAdtObjectType, MetadataObjectWriteError, metadata_object_identity,
-        write_metadata_object,
+        MetadataAdtObjectType, MetadataObjectWriteError, MetadataObjectWriteRequest,
+        metadata_object_identity, write_metadata_object,
     },
     object_family::AdtObjectFamily,
     package_authorization::{PackageAuthorizationError, authorize_object_package},
@@ -46,6 +46,7 @@ use super::{
     source_replace::{
         AdtSourceReplacementError, AdtSourceReplacementRequest, replace_adt_source_atomically,
     },
+    staged_work::StagedEditPolicy,
 };
 use crate::config::EditPolicy;
 use crate::journal::JournalError;
@@ -748,13 +749,15 @@ async fn write_inactive_document(
     let written = write_metadata_object(
         sap,
         policy,
-        object_type,
-        &identity.name,
-        xml,
-        transport,
-        // The gate is on the active version and has already been checked; the
-        // inactive layer is what this deliberately overwrites.
-        None,
+        &MetadataObjectWriteRequest {
+            object_type,
+            name: &identity.name,
+            xml,
+            transport,
+            expected_sha256: None,
+            // Undo runs its own, sharper guard: `pending_work_at_risk`.
+            staged_edits: &StagedEditPolicy::Overwrite,
+        },
     )
     .await
     .map_err(|error| UndoError::MetadataWrite(Box::new(error)))?;
@@ -779,6 +782,9 @@ async fn write_inactive_source(
     source: &str,
     transport: Option<&str>,
 ) -> Result<InactiveWrite, UndoError> {
+    // `force` because undo runs its own, sharper guard: `pending_work_at_risk`
+    // asks whether the staged content is one of the two versions this undo
+    // leaves behind, which a bare author check cannot tell.
     let request = AdtSourceReplacementRequest {
         object_type,
         name: identity.name.clone(),
@@ -787,6 +793,8 @@ async fn write_inactive_source(
         // inactive layer is what this deliberately overwrites.
         expected_sha256: None,
         transport: transport.map(str::to_owned),
+        // Undo runs its own, sharper guard: `pending_work_at_risk`.
+        staged_edits: StagedEditPolicy::Overwrite,
     };
     match replace_adt_source_atomically(sap, policy, &request).await {
         Ok(result) => Ok(InactiveWrite {
