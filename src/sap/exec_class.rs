@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use super::{
     class_run::{ClassRunError, run_class},
-    client::SapClient,
+    client::{SapClient, SapClientError},
     editable_source::EditableAdtObjectType,
     object_creation::{AdtObjectCreationError, AdtObjectCreationRequest, create_adt_object},
     source_activation::{
@@ -14,7 +14,7 @@ use super::{
     staged_work::StagedEditPolicy,
 };
 use crate::config::{EditPolicy, TEMPORARY_PACKAGE};
-use crate::reportable_error::ReportableError;
+use crate::reportable_error::{ReportableError, sap_http_status};
 
 const NAME_PREFIX: &str = "ZCL_FRACTAL_EXEC_";
 const MAX_CLASS_NAME: usize = 30;
@@ -32,6 +32,8 @@ pub enum ExecClassError {
     Activate(#[from] AdtSourceActivationError),
     #[error("{0}")]
     Run(#[from] ClassRunError),
+    #[error("could not open a new ADT session: {0}")]
+    Session(#[source] SapClientError),
 }
 
 impl ReportableError for ExecClassError {
@@ -41,6 +43,7 @@ impl ReportableError for ExecClassError {
             Self::Write(error) => error.code(),
             Self::Activate(error) => error.code(),
             Self::Run(error) => error.code(),
+            Self::Session(_) => "exec_class_session_failed",
         }
     }
 
@@ -50,6 +53,7 @@ impl ReportableError for ExecClassError {
             Self::Write(error) => error.status(),
             Self::Activate(error) => error.status(),
             Self::Run(error) => error.status(),
+            Self::Session(error) => sap_http_status(Some(error)),
         }
     }
 
@@ -59,6 +63,7 @@ impl ReportableError for ExecClassError {
             Self::Write(error) => error.hint(),
             Self::Activate(error) => error.hint(),
             Self::Run(error) => error.hint(),
+            Self::Session(error) => error.hint(),
         }
     }
 }
@@ -156,6 +161,25 @@ pub async fn run_generated_source(
     .await?;
 
     Ok(run_class(sap, &name).await?.output)
+}
+
+/// Runs the executor again in a new session, without rewriting or reactivating.
+///
+/// A class created in a session is not runnable through the console endpoint
+/// **in that same session** — SAP answers 200 with "does not implement" — while
+/// a new session runs it at once. Measured: retrying in the same session never
+/// succeeds, and a fresh session succeeds immediately, so this is session
+/// state rather than something that settles with time.
+///
+/// Only the run is repeated. Nothing is written or activated twice.
+///
+/// # Errors
+///
+/// Returns [`ExecClassError`] when the session cannot be restarted or the run
+/// fails.
+pub async fn rerun_executor(sap: &mut SapClient, username: &str) -> Result<String, ExecClassError> {
+    sap.restart_session().await.map_err(ExecClassError::Session)?;
+    Ok(run_class(sap, &executor_class_name(username)).await?.output)
 }
 
 #[cfg(test)]

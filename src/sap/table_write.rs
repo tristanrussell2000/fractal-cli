@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use super::{
     client::SapClient,
-    exec_class::{ExecClassError, executor_class_name, run_generated_source},
+    exec_class::{ExecClassError, executor_class_name, rerun_executor, run_generated_source},
     table::{
         QueryOptions, TableError, TableMetadata, TableMetadataOptions, get_table_metadata,
         run_query,
@@ -600,7 +600,16 @@ pub async fn write_table_row(
     let class = executor_class_name(username);
     let abap = generate_abap(&class, &validated, mode);
     let output = run_generated_source(sap, username, abap.clone()).await?;
-    let envelope = parse_envelope(&output)?;
+    // No envelope on a 200 means the class did not execute at all — a dump
+    // would have been a 500 with an empty body. The one cause seen is an
+    // executor created moments ago that SAP has not registered as runnable, so
+    // the run alone is repeated. Nothing is written twice.
+    let envelope = if let Ok(envelope) = parse_envelope(&output) {
+        envelope
+    } else {
+        let retried = rerun_executor(sap, username).await?;
+        parse_envelope(&retried)?
+    };
 
     Ok(TableWriteOutcome {
         table: validated.table,

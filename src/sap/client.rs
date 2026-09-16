@@ -170,6 +170,17 @@ pub struct SapClient {
     username: String,
     password: String,
     csrf_token: Option<String>,
+    insecure_tls: bool,
+}
+
+/// A fresh HTTP client, and so a fresh cookie jar and a fresh SAP session.
+fn build_http(insecure_tls: bool) -> Result<Client, SapClientError> {
+    Client::builder()
+        .cookie_provider(Arc::new(Jar::default()))
+        .danger_accept_invalid_certs(insecure_tls)
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(SapClientError::Build)
 }
 
 impl SapClient {
@@ -186,22 +197,33 @@ impl SapClient {
                 source,
             }
         })?;
-        let cookie_jar = Arc::new(Jar::default());
-        let http = Client::builder()
-            .cookie_provider(cookie_jar)
-            .danger_accept_invalid_certs(profile.insecure_tls)
-            .timeout(REQUEST_TIMEOUT)
-            .build()
-            .map_err(SapClientError::Build)?;
-
         Ok(Self {
-            http,
+            http: build_http(profile.insecure_tls)?,
             base_url,
             client_id: profile.client.clone(),
             username: profile.username.clone(),
             password,
             csrf_token: None,
+            insecure_tls: profile.insecure_tls,
         })
+    }
+
+    /// Abandons the SAP session and opens a new one.
+    ///
+    /// Stronger than [`Self::refresh_csrf`], which keeps the session cookie and
+    /// so stays in the same SAP session. Some ADT state is per-session and
+    /// cannot be cleared any other way: a class created in one session is not
+    /// runnable through the console endpoint in that same session, while a new
+    /// one runs it immediately.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SapClientError`] when the client cannot be rebuilt or the new
+    /// session's handshake fails.
+    pub async fn restart_session(&mut self) -> Result<(), SapClientError> {
+        self.http = build_http(self.insecure_tls)?;
+        self.csrf_token = None;
+        self.ensure_csrf().await
     }
 
     /// Fetches a text response from a SAP path.
