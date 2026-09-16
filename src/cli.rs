@@ -56,6 +56,12 @@ pub enum Command {
     },
     /// Run a complete `OpenSQL` SELECT statement.
     Query(QueryArgs),
+    /// Probes used while building a feature. Not a supported surface.
+    #[command(hide = true)]
+    Internal {
+        #[command(subcommand)]
+        command: InternalCommand,
+    },
     /// Inspect and manage change requests in the transport system.
     Transport {
         #[command(subcommand)]
@@ -412,6 +418,36 @@ pub enum TableCommand {
     Data(TableDataArgs),
     /// Show fields, keys, declared types, and DDIC column metadata for one table.
     Metadata(TableMetadataArgs),
+    /// Change fields of one row, addressed by its complete key.
+    Set(TableSetArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct TableSetArgs {
+    /// DDIC table name, which must be inside a configured customer namespace.
+    pub(crate) name: String,
+    /// One key field, as FIELD=VALUE. Repeat until the key is complete; the
+    /// client field is the session's and is never given here.
+    #[arg(long = "key", value_name = "FIELD=VALUE")]
+    pub(crate) keys: Vec<String>,
+    /// One field to change, as FIELD=VALUE. Repeat for more.
+    #[arg(long = "set", value_name = "FIELD=VALUE")]
+    pub(crate) sets: Vec<String>,
+    /// Commit the change. Without this the statement runs and is rolled back.
+    #[arg(long)]
+    pub(crate) execute: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum InternalCommand {
+    /// Run an already-activated class through the ADT console endpoint.
+    ClassRun(ClassRunArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ClassRunArgs {
+    /// Name of an activated class implementing `if_oo_adt_classrun`.
+    pub(crate) class: String,
 }
 
 #[derive(Debug, Subcommand)]

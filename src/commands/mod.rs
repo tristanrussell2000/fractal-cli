@@ -11,6 +11,7 @@ pub mod edit_read;
 pub mod edit_set;
 pub mod edit_set_xml;
 pub mod guard;
+pub mod internal;
 pub mod guard_hook;
 pub mod journal;
 pub mod object;
@@ -19,6 +20,7 @@ pub mod package;
 pub mod query;
 pub mod system;
 pub mod table;
+pub mod table_write;
 pub mod transport;
 pub mod undo;
 

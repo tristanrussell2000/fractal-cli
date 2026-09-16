@@ -5,8 +5,8 @@ mod reported;
 
 use clap::Parser;
 use cli::{
-    AuthCommand, Cli, Command, DdicCommand, EditCommand, GuardCommand, JournalCommand,
-    ObjectCommand, PackageCommand, SystemCommand, TableCommand, TransportCommand,
+    AuthCommand, Cli, Command, DdicCommand, EditCommand, GuardCommand, InternalCommand,
+    JournalCommand, ObjectCommand, PackageCommand, SystemCommand, TableCommand, TransportCommand,
 };
 use commands::auth::{
     auth_list, auth_login, auth_remove, auth_set, print_auth_list, print_auth_login,
@@ -23,6 +23,7 @@ use commands::edit_set::{edit_source_set, print_edit_source_set};
 use commands::edit_set_xml::{edit_xml_set, print_edit_xml_set};
 use commands::guard::{guard_install, print_guard_install};
 use commands::guard_hook::guard_hook;
+use commands::internal::{class_run, print_class_run};
 use commands::journal::{
     journal_clear, journal_list, journal_show, print_journal_clear, print_journal_list,
     print_journal_show,
@@ -37,6 +38,7 @@ use commands::package::{package_items, package_tree, print_package_items, print_
 use commands::query::{print_query, query};
 use commands::system::{print_system_list, print_system_test, system_list, system_test};
 use commands::table::{print_table_data, print_table_metadata, table_data, table_metadata};
+use commands::table_write::{print_table_set, table_set};
 use commands::transport::{
     print_transport_create, print_transport_list, print_transport_show, transport_create,
     transport_list, transport_show,
@@ -184,6 +186,26 @@ async fn main() {
             run_and_print_with_async(
                 || table_metadata(cli.profile.as_deref(), args),
                 print_table_metadata,
+                output,
+            )
+            .await
+        }
+        Command::Internal {
+            command: InternalCommand::ClassRun(args),
+        } => {
+            run_and_print_with_async(
+                || class_run(cli.profile.as_deref(), args),
+                print_class_run,
+                output,
+            )
+            .await
+        }
+        Command::Table {
+            command: TableCommand::Set(args),
+        } => {
+            run_and_print_with_async(
+                || table_set(cli.profile.as_deref(), args),
+                print_table_set,
                 output,
             )
             .await
