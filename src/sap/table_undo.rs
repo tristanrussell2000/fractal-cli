@@ -4,7 +4,7 @@ use super::{
     client::SapClient,
     table_write::{
         FieldDivergence, FieldValue, TableWriteRequest, TableWriteRunError, WriteMode,
-        diagnose_divergence, write_table_row,
+        diagnose_divergence, row_changed, write_table_row,
     },
 };
 use crate::config::EditPolicy;
@@ -248,6 +248,9 @@ pub async fn undo_table_write(
         // The guard is what the original write left behind, not what the row
         // holds now. Guarding on the current value would revert a colleague's
         // change instead of refusing to.
+        // An undo of a customizing change records into the same request the
+        // write used; the journal kept it.
+        transport: entry.transport.clone(),
         expected_before: Some(
             row.restore
                 .iter()
@@ -261,7 +264,7 @@ pub async fn undo_table_write(
     // transition already expresses.
     let outcome = write_table_row(sap, policy, username, &request, WriteMode::Execute, None).await?;
 
-    if outcome.envelope.status == "applied" {
+    if row_changed(&outcome.envelope.status) {
         let mut entry = entry.clone();
         entry.undone();
         journal.entries().update(&entry)?;

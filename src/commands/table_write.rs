@@ -76,6 +76,7 @@ pub async fn table_set(
         keys,
         sets,
         expected_before: None,
+        transport: args.transport.clone(),
     };
     // Opened even for a dry run so a journal that cannot be written fails the
     // command rather than silently leaving a change unrecorded.

@@ -436,6 +436,10 @@ pub struct TableSetArgs {
     /// Commit the change. Without this the statement runs and is rolled back.
     #[arg(long)]
     pub(crate) execute: bool,
+    /// Change request or task to record a customizing change in. Required for a
+    /// delivery-class C or G table, ignored for an application table.
+    #[arg(long)]
+    pub(crate) transport: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]

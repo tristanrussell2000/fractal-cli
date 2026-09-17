@@ -8,6 +8,7 @@ use super::{
     editable_source::EditableAdtObjectType,
     exec_class::{ExecClassError, executor_class_name, rerun_executor, run_generated_source},
     object_family::AdtObjectFamily,
+    transport::{TransportShowError, show_transport_request},
     table::{
         QueryOptions, TableError, TableFieldMetadata, TableMetadata, TableMetadataOptions,
         get_table_metadata, run_query,
@@ -47,6 +48,11 @@ pub struct TableWriteRequest {
     /// changed it and reversing would discard their work. Keyed by upper-case
     /// field name.
     pub expected_before: Option<BTreeMap<String, String>>,
+    /// The change request or task a customizing change is recorded in.
+    ///
+    /// Required for delivery class `C` or `G`, ignored otherwise: an
+    /// application table's data is not transported.
+    pub transport: Option<String>,
 }
 
 /// A request checked against the table's real fields, with the row it will change.
@@ -86,11 +92,13 @@ pub struct RunEnvelope {
 pub enum TableWriteError {
     #[error("{table} is not a customer table")]
     NotCustomerTable { table: String },
-    #[error("{table} has delivery class {delivery_class}, not A")]
-    DeliveryClassRefused {
+    #[error("{table} is a customizing table (delivery class {delivery_class}) and needs a transport")]
+    TransportRequired {
         table: String,
         delivery_class: String,
     },
+    #[error("{transport} has no modifiable task belonging to {user}")]
+    NoTaskForUser { transport: String, user: String },
     #[error("{table} has no field {field}")]
     UnknownField { table: String, field: String },
     #[error("{field} is a key field of {table} and cannot be changed")]
@@ -113,7 +121,8 @@ impl ReportableError for TableWriteError {
     fn code(&self) -> &'static str {
         match self {
             Self::NotCustomerTable { .. } => "table_write_not_customer_table",
-            Self::DeliveryClassRefused { .. } => "table_write_delivery_class_refused",
+            Self::TransportRequired { .. } => "table_write_transport_required",
+            Self::NoTaskForUser { .. } => "table_write_no_task",
             Self::UnknownField { .. } => "table_write_unknown_field",
             Self::KeyFieldNotSettable { .. } => "table_write_key_not_settable",
             Self::IncompleteKey { .. } => "table_write_key_incomplete",
@@ -130,9 +139,14 @@ impl ReportableError for TableWriteError {
             Self::NotCustomerTable { .. } => {
                 "Only tables in a configured customer namespace can be written.".to_owned()
             }
-            Self::DeliveryClassRefused { .. } => {
-                "Only application tables (delivery class A) are writable. A customizing table needs \
-                 a transport entry, which is not built yet."
+            Self::TransportRequired { .. } => {
+                "Pass --transport. A customizing change with no transport entry stays in this \
+                 client and never reaches QA or production."
+                    .to_owned()
+            }
+            Self::NoTaskForUser { .. } => {
+                "The entry goes in a task, not the request itself. Create one, or name a request \
+                 you own a modifiable task in."
                     .to_owned()
             }
             Self::UnknownField { table, .. } | Self::RowNotFound { table, .. } => {
@@ -330,17 +344,42 @@ fn abap_literal(value: &str) -> String {
 /// somebody else changed in the meantime, and re-running it after it succeeded
 /// changes nothing.
 #[must_use]
-pub fn generate_abap(class_name: &str, write: &ValidatedTableWrite, mode: WriteMode) -> String {
-    let mut abap = declarations(class_name, write);
+pub fn generate_abap(
+    class_name: &str,
+    write: &ValidatedTableWrite,
+    mode: WriteMode,
+    transport_entry: Option<&TransportEntry>,
+) -> String {
+    let mut abap = declarations(class_name, write, transport_entry.is_some());
     abap.push_str(&literals(write));
-    abap.push_str(&statement(write));
+    if let Some(entry) = transport_entry {
+        abap.push_str(&transport_block(write, entry));
+        // The write only runs if the entry will be accepted.
+        abap.push_str("\n        IF lv_status IS INITIAL.\n");
+        abap.push_str(&statement(write));
+        abap.push_str("        ENDIF.\n");
+    } else {
+        abap.push_str(&statement(write));
+    }
+    abap.push_str(TRY_END);
     abap.push('\n');
     abap.push_str(settle_clause(mode));
+    if let (Some(entry), WriteMode::Execute) = (transport_entry, mode) {
+        abap.push_str(&transport_commit_block(entry));
+    }
     abap.push_str(&envelope_clause());
     abap
 }
 
-fn declarations(class_name: &str, write: &ValidatedTableWrite) -> String {
+/// Closes the `TRY` the literals opened. Shared, because the write may or may
+/// not be wrapped in a transport check.
+const TRY_END: &str = "      CATCH cx_root INTO DATA(lx_error).
+        lv_status = 'exception'.
+        lv_detail = lx_error->get_text( ).
+    ENDTRY.
+";
+
+fn declarations(class_name: &str, write: &ValidatedTableWrite, transport_entry: bool) -> String {
     let class = class_name.to_ascii_lowercase();
     let table = write.table.to_ascii_lowercase();
     let mut abap = format!(
@@ -359,6 +398,19 @@ CLASS {class} IMPLEMENTATION.
 "
     );
 
+    if transport_entry {
+        abap.push_str(
+            "    DATA lt_e071 TYPE STANDARD TABLE OF e071.
+    DATA lt_e071k TYPE STANDARD TABLE OF e071k.
+    DATA ls_e071 TYPE e071.
+    DATA ls_e071k TYPE e071k.
+    DATA lv_tabkey TYPE e071k-tabkey.
+    DATA lv_off TYPE i VALUE 0.
+    DATA lv_len TYPE i.
+    DATA lv_key_too_long TYPE abap_bool VALUE abap_false.
+",
+        );
+    }
     for (index, key) in write.keys.iter().enumerate() {
         let field = key.field.to_ascii_lowercase();
         let _ = writeln!(abap, "    DATA lv_k{index} LIKE ls_row-{field}.");
@@ -448,12 +500,131 @@ fn statement(write: &ValidatedTableWrite) -> String {
             lv_status = 'conflict'.
           ENDIF.
         ENDIF.
-      CATCH cx_root INTO DATA(lx_error).
-        lv_status = 'exception'.
-        lv_detail = lx_error->get_text( ).
-    ENDTRY.
 ",
         key_only = key_conditions(write, "\n              AND "),
+    )
+}
+
+/// The `TABU` entry a customizing change needs, and the task it goes in.
+///
+/// "Entry" throughout, never "recording": Fractal *records* in its journal, and
+/// CTS takes an *entry*. A change to a delivery-class `C` or `G` table with no
+/// entry exists in one client and never reaches QA or production. Silently.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportEntry {
+    /// The **task**, not the parent request. `TR_APPEND_TO_COMM_OBJS_KEYS`
+    /// refuses a request with `TK 127`, "changes to objects are only allowed in
+    /// correction/repair".
+    pub task: String,
+    /// Whether the table has a client column, which leads the `TABU` key.
+    pub client_dependent: bool,
+}
+
+/// The ABAP that puts one row's key into the task as a `TABU` entry.
+///
+/// Built the way SE16N builds it: `E071` naming the table, one `E071K` whose
+/// `TABKEY` is the key fields concatenated at fixed character offsets, client
+/// first. Lengths come from `DESCRIBE FIELD ... IN CHARACTER MODE` rather than
+/// from the metadata, so a key type this code has not seen still lands at the
+/// right offset.
+///
+/// `TABKEY` caps at 120 characters; SE16N writes `*` at the overflow and
+/// refuses, and so does this.
+fn transport_block(write: &ValidatedTableWrite, entry: &TransportEntry) -> String {
+    let mut fill = String::new();
+
+    if entry.client_dependent {
+        fill.push_str(
+            "        lv_len = 3.
+        lv_tabkey+lv_off(lv_len) = sy-mandt.
+        ADD lv_len TO lv_off.
+",
+        );
+    }
+    for index in 0..write.keys.len() {
+        let _ = write!(
+            fill,
+            "        DESCRIBE FIELD lv_k{index} LENGTH lv_len IN CHARACTER MODE.
+        IF lv_off + lv_len > 120.
+          lv_key_too_long = abap_true.
+        ELSE.
+          lv_tabkey+lv_off(lv_len) = lv_k{index}.
+          ADD lv_len TO lv_off.
+        ENDIF.
+"
+        );
+    }
+
+    format!(
+        "
+        ls_e071-pgmid    = 'R3TR'.
+        ls_e071-object   = 'TABU'.
+        ls_e071-obj_name = '{table_upper}'.
+        ls_e071-objfunc  = 'K'.
+        APPEND ls_e071 TO lt_e071.
+
+{fill}
+        IF lv_key_too_long = abap_true.
+          lv_status = 'transport_key_too_long'.
+        ELSE.
+          ls_e071k-pgmid      = 'R3TR'.
+          ls_e071k-object     = 'TABU'.
+          ls_e071k-mastertype = 'TABU'.
+          ls_e071k-mastername = '{table_upper}'.
+          ls_e071k-objname    = '{table_upper}'.
+          ls_e071k-tabkey     = lv_tabkey.
+          APPEND ls_e071k TO lt_e071k.
+
+*         Checked before the row is touched: a task that will not take the
+*         entry must refuse the whole operation, not leave the data changed
+*         and unrecorded.
+          CALL FUNCTION 'TR_APPEND_TO_COMM_OBJS_KEYS'
+            EXPORTING
+              wi_simulation         = 'X'
+              wi_suppress_key_check = ' '
+              wi_trkorr             = '{task}'
+            TABLES
+              wt_e071               = lt_e071
+              wt_e071k              = lt_e071k
+            EXCEPTIONS
+              OTHERS                = 68.
+          IF sy-subrc <> 0.
+            lv_status = 'transport_refused'.
+            lv_detail = |TK{{ sy-msgno }} {{ sy-msgv1 }}|.
+          ENDIF.
+        ENDIF.
+",
+        table_upper = write.table.to_ascii_uppercase(),
+        task = entry.task,
+    )
+}
+
+/// The real append, after the row is committed.
+fn transport_commit_block(entry: &TransportEntry) -> String {
+    format!(
+        "
+      IF lv_status = 'applied'.
+        CALL FUNCTION 'TR_APPEND_TO_COMM_OBJS_KEYS'
+          EXPORTING
+            wi_simulation         = ' '
+            wi_suppress_key_check = ' '
+            wi_trkorr             = '{task}'
+          TABLES
+            wt_e071               = lt_e071
+            wt_e071k              = lt_e071k
+          EXCEPTIONS
+            OTHERS                = 68.
+        IF sy-subrc <> 0.
+*         The row is already committed. Saying so is the whole point: the
+*         change is live in this client and will not travel.
+          lv_status = 'applied_without_transport_entry'.
+          lv_detail = |TK{{ sy-msgno }} {{ sy-msgv1 }}|.
+        ELSE.
+          lv_status = 'applied_with_transport_entry'.
+        ENDIF.
+      ENDIF.
+",
+        task = entry.task,
     )
 }
 
@@ -560,6 +731,12 @@ pub enum TableWriteRunError {
         #[source]
         source: TableError,
     },
+    #[error("could not read {transport}: {source}")]
+    Transport {
+        transport: String,
+        #[source]
+        source: Box<TransportShowError>,
+    },
     #[error(transparent)]
     Exec(#[from] ExecClassError),
     #[error("could not record the change in the journal: {0}")]
@@ -571,6 +748,7 @@ impl ReportableError for TableWriteRunError {
         match self {
             Self::Rejected(error) => error.code(),
             Self::Read { .. } => "table_write_read_failed",
+            Self::Transport { source, .. } => source.code(),
             Self::Exec(error) => error.code(),
             Self::Journal(error) => error.code(),
         }
@@ -580,6 +758,7 @@ impl ReportableError for TableWriteRunError {
         match self {
             Self::Rejected(error) => error.status(),
             Self::Read { source, .. } => source.status(),
+            Self::Transport { source, .. } => source.status(),
             Self::Exec(error) => error.status(),
             Self::Journal(error) => error.status(),
         }
@@ -589,6 +768,7 @@ impl ReportableError for TableWriteRunError {
         match self {
             Self::Rejected(error) => error.hint(),
             Self::Read { source, .. } => source.hint(),
+            Self::Transport { source, .. } => source.hint(),
             Self::Exec(error) => error.hint(),
             Self::Journal(error) => error.hint(),
         }
@@ -624,13 +804,7 @@ pub async fn write_table_row(
     }
 
     let delivery_class = read_delivery_class(sap, &table).await?;
-    if !delivery_class.eq_ignore_ascii_case("A") {
-        return Err(TableWriteError::DeliveryClassRefused {
-            table,
-            delivery_class,
-        }
-        .into());
-    }
+    let customizing = matches!(delivery_class.to_ascii_uppercase().as_str(), "C" | "G");
 
     let metadata = get_table_metadata(sap, &table, &TableMetadataOptions::default())
         .await
@@ -639,12 +813,30 @@ pub async fn write_table_row(
             source,
         })?;
 
+    // A customizing change that records no `TABU` entry lives in one client and
+    // never travels, and nothing says so afterwards. Refusing is the only option.
+    let transport_entry = if customizing {
+        let Some(transport) = request.transport.as_deref() else {
+            return Err(TableWriteError::TransportRequired {
+                table,
+                delivery_class,
+            }
+            .into());
+        };
+        Some(TransportEntry {
+            task: resolve_task(sap, transport, username).await?,
+            client_dependent: metadata.fields.iter().any(is_client_field),
+        })
+    } else {
+        None
+    };
+
     validate_shape(&metadata, request)?;
     let row = read_row(sap, &table, &request.keys).await?;
     let validated = resolve_changes(&metadata, request, &row)?;
 
     let class = executor_class_name(username);
-    let abap = generate_abap(&class, &validated, mode);
+    let abap = generate_abap(&class, &validated, mode, transport_entry.as_ref());
 
     // Recorded before the run, not after: an operation whose before-image was
     // never written has no recovery at all. A dry run changes nothing and so
@@ -668,7 +860,7 @@ pub async fn write_table_row(
                     })
                     .collect(),
             }]),
-            None,
+            request.transport.clone(),
             Some(&row_json(&validated.before)),
             None,
         )?),
@@ -691,7 +883,7 @@ pub async fn write_table_row(
     // Constructing it would assert the write landed; reading it is what every
     // other Fractal mutation does, and it is what an undo is later gated on.
     if let (Some(journal), Some(entry)) = (journal, entry) {
-        if envelope.status == "applied" {
+        if row_changed(&envelope.status) {
             let after = read_row(sap, &validated.table, &validated.keys).await?;
             journal.succeeded(entry, Some(&row_json(&after)), None)?;
         } else {
@@ -709,6 +901,52 @@ pub async fn write_table_row(
         abap,
         envelope,
     })
+}
+
+
+/// The task a `TABU` entry goes in.
+///
+/// `TR_APPEND_TO_COMM_OBJS_KEYS` refuses a request with `TK 127`, "changes to
+/// objects are only allowed in correction/repair", so a request has to be
+/// resolved to the caller's own modifiable task within it. A task number given
+/// directly is used as it stands.
+async fn resolve_task(
+    sap: &SapClient,
+    transport: &str,
+    username: &str,
+) -> Result<String, TableWriteRunError> {
+    let detail = show_transport_request(sap, transport)
+        .await
+        .map_err(|source| TableWriteRunError::Transport {
+            transport: transport.to_owned(),
+            source: Box::new(source),
+        })?;
+
+    if detail.tasks.is_empty() {
+        // Already a task: a request always reports its own.
+        return Ok(detail.number);
+    }
+
+    detail
+        .tasks
+        .iter()
+        .find(|task| {
+            task.owner
+                .as_deref()
+                .is_some_and(|owner| owner.eq_ignore_ascii_case(username))
+                && task
+                    .status_text
+                    .as_deref()
+                    .is_some_and(|status| status.eq_ignore_ascii_case("Modifiable"))
+        })
+        .map(|task| task.number.clone())
+        .ok_or_else(|| {
+            TableWriteError::NoTaskForUser {
+                transport: transport.to_owned(),
+                user: username.to_owned(),
+            }
+            .into()
+        })
 }
 
 /// Reads `DD02L-CONTFLAG`, the table's delivery class.
@@ -792,6 +1030,18 @@ fn entry_object(table: &str) -> EntryObject {
         ),
         source_part: None,
     }
+}
+
+/// Whether the run actually changed the row.
+///
+/// Not an equality check against `applied`: a customizing write reports
+/// `applied_with_transport_entry`, or `applied_without_transport_entry` when
+/// the row was committed and the `TABU` entry was not accepted. The row changed
+/// in all three, and the journal has to hold it as a change or there is nothing
+/// to undo.
+#[must_use]
+pub fn row_changed(status: &str) -> bool {
+    status.starts_with("applied")
 }
 
 /// One row as canonical JSON: fields sorted, values as read.
@@ -921,6 +1171,7 @@ mod tests {
             keys: keys.iter().map(pair).collect(),
             sets: sets.iter().map(pair).collect(),
             expected_before: None,
+            transport: None,
         }
     }
 
@@ -1034,7 +1285,7 @@ mod tests {
             &row(),
         )
         .unwrap();
-        let abap = generate_abap("ZCL_X", &write, WriteMode::Execute);
+        let abap = generate_abap("ZCL_X", &write, WriteMode::Execute, None);
 
         assert!(abap.contains("UPDATE zsample_record SET status = @lv_new0"), "{abap}");
         assert!(abap.contains("note = @lv_new1"), "{abap}");
@@ -1059,8 +1310,57 @@ mod tests {
         // statement guards on. This is what stops an undo reverting a change
         // somebody else made after the write it reverses.
         assert_eq!(write.changes[0].before, "DONE");
-        let abap = generate_abap("ZCL_X", &write, WriteMode::Execute);
+        let abap = generate_abap("ZCL_X", &write, WriteMode::Execute, None);
         assert!(abap.contains("lv_old0 = 'DONE'"), "{abap}");
+    }
+
+    #[test]
+    fn a_customizing_write_records_a_tabu_entry_before_it_touches_the_row() {
+        let write = validate(
+            &metadata(),
+            &request(&[("id", "R1")], &[("status", "DONE")]),
+            &row(),
+        )
+        .unwrap();
+        let entry = TransportEntry {
+            task: "DE3K900671".to_owned(),
+            client_dependent: true,
+        };
+        let abap = generate_abap("ZCL_X", &write, WriteMode::Execute, Some(&entry));
+
+        // The simulated append comes first: a task that will not take the entry
+        // must refuse the whole operation rather than leave the row changed and
+        // unrecorded.
+        let simulated = abap.find("wi_simulation         = 'X'").unwrap();
+        let update = abap.find("UPDATE zsample_record").unwrap();
+        let real = abap.find("wi_simulation         = ' '").unwrap();
+        assert!(simulated < update, "the check must precede the write");
+        assert!(update < real, "the entry is recorded after the commit");
+
+        assert!(abap.contains("ls_e071-obj_name = 'ZSAMPLE_RECORD'"));
+        assert!(abap.contains("wi_trkorr             = 'DE3K900671'"));
+        // The client leads the key of a client-dependent table.
+        assert!(abap.contains("lv_tabkey+lv_off(lv_len) = sy-mandt"), "{abap}");
+        assert!(abap.contains("IF lv_off + lv_len > 120."), "the 120-char cap");
+    }
+
+    #[test]
+    fn a_dry_run_never_records_the_entry_for_real() {
+        let write = validate(
+            &metadata(),
+            &request(&[("id", "R1")], &[("status", "DONE")]),
+            &row(),
+        )
+        .unwrap();
+        let entry = TransportEntry {
+            task: "DE3K900671".to_owned(),
+            client_dependent: false,
+        };
+        let abap = generate_abap("ZCL_X", &write, WriteMode::DryRun, Some(&entry));
+
+        assert!(abap.contains("wi_simulation         = 'X'"));
+        assert!(!abap.contains("wi_simulation         = ' '"), "{abap}");
+        assert!(!abap.contains("lv_tabkey+lv_off(lv_len) = sy-mandt"));
     }
 
     #[test]
@@ -1071,7 +1371,7 @@ mod tests {
             &row(),
         )
         .unwrap();
-        let abap = generate_abap("ZCL_X", &write, WriteMode::DryRun);
+        let abap = generate_abap("ZCL_X", &write, WriteMode::DryRun, None);
 
         assert!(abap.contains("ROLLBACK WORK."));
         assert!(!abap.contains("COMMIT WORK."), "{abap}");
@@ -1091,9 +1391,22 @@ mod tests {
         .unwrap();
         std::fs::write(
             std::env::var("FRACTAL_DUMP_ABAP").unwrap(),
-            generate_abap("ZCL_FRACTAL_EXEC_TRUSSELL", &write, WriteMode::Execute),
+            generate_abap("ZCL_FRACTAL_EXEC_TRUSSELL", &write, WriteMode::Execute, None),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn every_applied_status_counts_as_a_change() {
+        // Phase 2 added two more. An equality check against "applied" recorded
+        // a successful customizing write as failed, which left it with no undo.
+        assert!(row_changed("applied"));
+        assert!(row_changed("applied_with_transport_entry"));
+        assert!(row_changed("applied_without_transport_entry"));
+        assert!(!row_changed("would_apply"));
+        assert!(!row_changed("conflict"));
+        assert!(!row_changed("row_not_found"));
+        assert!(!row_changed("transport_refused"));
     }
 
     #[test]
