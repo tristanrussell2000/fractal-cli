@@ -31,6 +31,7 @@ pub mod source_patch;
 pub mod source_replace;
 pub mod staged_work;
 pub mod table;
+pub mod table_undo;
 pub mod table_write;
 pub mod transport;
 pub mod undo;

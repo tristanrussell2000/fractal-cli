@@ -14,9 +14,10 @@ use crate::{
     output::{OutputFormat, print_json},
     reported::Reported,
 };
+use crate::commands::tabular::{plain_column, render_grid};
 use fractal::config;
 use fractal::journal::blobs::BlobStore;
-use fractal::journal::entry::{ContentKind, ContentRef, JournalEntry};
+use fractal::journal::entry::{ContentKind, ContentRef, JournalEntry, RowWrite};
 use fractal::journal::paths;
 use fractal::journal::retention::{PruneOutcome, RetentionPolicy, entry_stores, run_retention};
 use fractal::journal::store::EntryStore;
@@ -298,6 +299,10 @@ fn restore_recipe(entry: &JournalEntry, blobs: &BlobStore) -> Option<RestoreReci
     let (write, file) = match entry.content_kind() {
         ContentKind::Source => ("edit set", "--source-file"),
         ContentKind::Xml => ("edit set-xml", "--xml-file"),
+        // Unreachable: only a delete has a recipe, and a row is never deleted
+        // as an object. Answering rather than panicking, because a recipe is
+        // advice and there is none to give.
+        ContentKind::Row => return None,
     };
     // A match, not `map_or_else`: each arm carries a note that would have to
     // move out of line into a closure.
@@ -383,6 +388,41 @@ pub fn print_journal_list(result: &JournalListOutput, output: OutputFormat) {
     print!("{rendered}");
 }
 
+
+/// A table write as two grids: the row it addressed, and what changed.
+///
+/// The same renderer `table data` uses, so a row reads the same here as it does
+/// when it was queried — header of field names, one row of values.
+fn render_row_writes(rows: &[RowWrite]) -> String {
+    let mut rendered = String::new();
+    for row in rows {
+        let key_columns: Vec<_> = row.key.keys().map(|field| plain_column(field)).collect();
+        let key_values: Vec<String> = row.key.values().cloned().collect();
+        let _ = write!(rendered, "\nrow:\n");
+        rendered.push_str(&render_grid(&key_columns, &[key_values]));
+
+        let columns: Vec<_> = row
+            .changes
+            .iter()
+            .map(|change| plain_column(&change.field))
+            .collect();
+        let before: Vec<String> = row
+            .changes
+            .iter()
+            .map(|change| change.before.clone())
+            .collect();
+        let after: Vec<String> = row
+            .changes
+            .iter()
+            .map(|change| change.after.clone())
+            .collect();
+        let _ = write!(rendered, "\nchanged:\n");
+        rendered.push_str(&render_grid(&columns, &[before, after]));
+        let _ = writeln!(rendered, "(first row before, second after)");
+    }
+    rendered
+}
+
 pub fn print_journal_show(result: &JournalShowOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
         print_json(result);
@@ -418,6 +458,9 @@ pub fn print_journal_show(result: &JournalShowOutput, output: OutputFormat) {
             content.path,
             if content.available { "" } else { "  (gone)" }
         );
+    }
+    if let Some(rows) = entry.operation.table_write_rows() {
+        rendered.push_str(&render_row_writes(rows));
     }
     if let Some(restore) = &result.restore {
         let _ = writeln!(rendered, "\nto restore it, by hand:");

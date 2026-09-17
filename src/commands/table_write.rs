@@ -8,6 +8,7 @@ use crate::{
     output::{OutputFormat, print_json},
     reported::Reported,
 };
+use fractal::journal::recorder::Journal;
 use fractal::reportable_error::ReportableError;
 use fractal::sap::table_write::{FieldValue, TableWriteRequest, WriteMode, write_table_row};
 
@@ -74,13 +75,18 @@ pub async fn table_set(
         table: args.name.clone(),
         keys,
         sets,
+        expected_before: None,
     };
+    // Opened even for a dry run so a journal that cannot be written fails the
+    // command rather than silently leaving a change unrecorded.
+    let journal = Journal::open(&profile_name, &profile)?;
     let outcome = write_table_row(
         &mut client,
         &profile.edit_policy(),
         &profile.username,
         &request,
         mode,
+        Some(&journal),
     )
     .await?;
 

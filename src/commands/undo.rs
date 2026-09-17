@@ -21,13 +21,52 @@ use fractal::journal::paths;
 use fractal::journal::recorder::Journal;
 use fractal::journal::store::EntryStore;
 use fractal::reportable_error::ReportableError;
+use fractal::sap::client::SapClient;
+use fractal::sap::table_undo::{plan_table_undo, undo_table_write};
 use fractal::sap::undo::{UndoOutcome, UndoPlan, plan_activation_undo, undo_activation};
+
+/// What one `fractal undo` produced.
+///
+/// Two shapes, because the two operations have nothing in common to report: an
+/// activation undo is three steps over content blobs, a table undo is one
+/// guarded statement over fields.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum UndoOutput {
+    Activation(Box<ActivationUndoOutput>),
+    TableRow(Box<TableRowUndoOutput>),
+}
+
+/// A reversed table write.
+#[derive(Debug, Serialize)]
+pub struct TableRowUndoOutput {
+    ok: bool,
+    profile: String,
+    dry_run: bool,
+    entry_id: String,
+    operation: &'static str,
+    table: String,
+    status: String,
+    rows_affected: i64,
+    keys: std::collections::BTreeMap<String, String>,
+    /// Each field, the value the write left, and the value put back.
+    restores: Vec<FieldRestoreOutput>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FieldRestoreOutput {
+    field: String,
+    /// What the original write left in place.
+    wrote: String,
+    /// What the undo puts back.
+    restores: String,
+}
 
 // The flags are the JSON contract, as with the other edit outputs: each answers
 // a question a caller must be able to ask without parsing prose.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Serialize)]
-pub struct UndoOutput {
+pub struct ActivationUndoOutput {
     ok: bool,
     profile: String,
     dry_run: bool,
@@ -97,9 +136,30 @@ pub async fn object_undo(
     let entry = select_entry(journal.entries(), args)?;
     let policy = profile.edit_policy();
 
+    // A table write is reversed by its own path: one guarded statement, not
+    // three steps over content blobs.
+    if entry.operation.table_write_rows().is_some() {
+        return undo_table_row(
+            &mut client,
+            &policy,
+            &profile.username,
+            &entry,
+            &journal,
+            profile_name,
+            args,
+        )
+        .await;
+    }
+
     let plan = plan_activation_undo(&mut client, &policy, entry, &blobs, args.force).await?;
     if args.dry_run {
-        return Ok(report(profile_name, args, &plan, None, &blobs));
+        return Ok(UndoOutput::Activation(Box::new(report(
+            profile_name,
+            args,
+            &plan,
+            None,
+            &blobs,
+        ))));
     }
 
     let outcome = undo_activation(
@@ -110,7 +170,75 @@ pub async fn object_undo(
         &journal,
     )
     .await?;
-    Ok(report(profile_name, args, &plan, Some(&outcome), &blobs))
+    Ok(UndoOutput::Activation(Box::new(report(
+        profile_name,
+        args,
+        &plan,
+        Some(&outcome),
+        &blobs,
+    ))))
+}
+
+
+/// Reverses a recorded table write.
+///
+/// A dry run reports the plan without running anything; there is no statement
+/// to rehearse, because the reversal is gated on the row still holding what the
+/// write left and that gate is checked by the statement itself.
+async fn undo_table_row(
+    sap: &mut SapClient,
+    policy: &fractal::config::EditPolicy,
+    username: &str,
+    entry: &JournalEntry,
+    journal: &Journal,
+    profile_name: String,
+    args: &UndoArgs,
+) -> Result<UndoOutput, Reported> {
+    let plan = plan_table_undo(entry)?;
+    let row = &plan.row;
+    let keys = row
+        .key
+        .iter()
+        .map(|key| (key.field.clone(), key.value.clone()))
+        .collect();
+    let restores = row
+        .restore
+        .iter()
+        .map(|(field, wrote, restores)| FieldRestoreOutput {
+            field: field.clone(),
+            wrote: wrote.clone(),
+            restores: restores.clone(),
+        })
+        .collect();
+
+    if args.dry_run {
+        return Ok(UndoOutput::TableRow(Box::new(TableRowUndoOutput {
+            ok: true,
+            profile: profile_name,
+            dry_run: true,
+            entry_id: plan.entry_id,
+            operation: "table_write",
+            table: plan.table,
+            status: "would_restore".to_owned(),
+            rows_affected: 0,
+            keys,
+            restores,
+        })));
+    }
+
+    let outcome = undo_table_write(sap, policy, username, entry, journal).await?;
+    Ok(UndoOutput::TableRow(Box::new(TableRowUndoOutput {
+        ok: true,
+        profile: profile_name,
+        dry_run: false,
+        entry_id: outcome.plan.entry_id,
+        operation: "table_write",
+        table: outcome.plan.table,
+        status: outcome.status,
+        rows_affected: outcome.rows_affected,
+        keys,
+        restores,
+    })))
 }
 
 /// The entry to act on: the one named, or the object's most recent.
@@ -215,8 +343,8 @@ fn report(
     plan: &UndoPlan,
     outcome: Option<&UndoOutcome>,
     blobs: &BlobStore,
-) -> UndoOutput {
-    UndoOutput {
+) -> ActivationUndoOutput {
+    ActivationUndoOutput {
         ok: true,
         profile,
         dry_run: args.dry_run,
@@ -255,6 +383,9 @@ fn steps(plan: &UndoPlan) -> Vec<String> {
     let write = match plan.entry.content_kind() {
         fractal::journal::entry::ContentKind::Source => "source",
         fractal::journal::entry::ContentKind::Xml => "document",
+        // Unreachable: a table write is undone by its own path, which has one
+        // step rather than these three.
+        fractal::journal::entry::ContentKind::Row => "row",
     };
     vec![
         format!(
@@ -305,6 +436,39 @@ pub fn print_object_undo(result: &UndoOutput, output: OutputFormat) {
         print_json(result);
         return;
     }
+    match result {
+        UndoOutput::Activation(activation) => print_activation_undo(activation),
+        UndoOutput::TableRow(row) => print_table_row_undo(row),
+    }
+}
+
+fn print_table_row_undo(result: &TableRowUndoOutput) {
+    let keys = result
+        .keys
+        .iter()
+        .map(|(field, value)| format!("{field}={value}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    println!(
+        "{} entry {} on {} {keys}",
+        if result.dry_run {
+            "would undo"
+        } else {
+            "undid"
+        },
+        result.entry_id,
+        result.table
+    );
+    println!("status: {}  rows: {}", result.status, result.rows_affected);
+    for restore in &result.restores {
+        println!(
+            "  {}: {} -> {}",
+            restore.field, restore.wrote, restore.restores
+        );
+    }
+}
+
+fn print_activation_undo(result: &ActivationUndoOutput) {
     let mut rendered = String::new();
     let _ = writeln!(
         rendered,

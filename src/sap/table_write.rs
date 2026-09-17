@@ -5,13 +5,20 @@ use thiserror::Error;
 
 use super::{
     client::SapClient,
+    editable_source::EditableAdtObjectType,
     exec_class::{ExecClassError, executor_class_name, rerun_executor, run_generated_source},
+    object_family::AdtObjectFamily,
     table::{
-        QueryOptions, TableError, TableMetadata, TableMetadataOptions, get_table_metadata,
-        run_query,
+        QueryOptions, TableError, TableFieldMetadata, TableMetadata, TableMetadataOptions,
+        get_table_metadata, run_query,
     },
 };
 use crate::config::EditPolicy;
+use crate::journal::entry::{
+    EntryObject, FieldChange as JournalFieldChange, JournalOperation, RowWrite,
+};
+use crate::journal::recorder::Journal;
+use crate::journal::JournalError;
 use crate::pattern::glob_matches;
 use crate::reportable_error::ReportableError;
 
@@ -32,6 +39,14 @@ pub struct TableWriteRequest {
     pub table: String,
     pub keys: Vec<FieldValue>,
     pub sets: Vec<FieldValue>,
+    /// What the changed fields must hold **now**, when the caller knows.
+    ///
+    /// Without it the guard is built from the row as just read, which is right
+    /// for a write: change what is there. An undo needs the opposite — the row
+    /// must still hold what the original write left, or somebody else has
+    /// changed it and reversing would discard their work. Keyed by upper-case
+    /// field name.
+    pub expected_before: Option<BTreeMap<String, String>>,
 }
 
 /// A request checked against the table's real fields, with the row it will change.
@@ -191,7 +206,7 @@ pub fn validate_shape(
     let missing: Vec<_> = metadata
         .fields
         .iter()
-        .filter(|f| f.is_key && !is_client_field(f.col_type.as_deref()))
+        .filter(|f| f.is_key && !is_client_field(f))
         .filter(|f| {
             !request
                 .keys
@@ -228,13 +243,20 @@ pub fn resolve_changes(
     let changes = request
         .sets
         .iter()
-        .map(|set| FieldChange {
-            field: set.field.to_ascii_uppercase(),
-            before: row
-                .get(&set.field.to_ascii_uppercase())
+        .map(|set| {
+            let field = set.field.to_ascii_uppercase();
+            let before = request
+                .expected_before
+                .as_ref()
+                .and_then(|expected| expected.get(&field))
+                .or_else(|| row.get(&field))
                 .cloned()
-                .unwrap_or_default(),
-            after: set.value.clone(),
+                .unwrap_or_default();
+            FieldChange {
+                field,
+                before,
+                after: set.value.clone(),
+            }
         })
         .collect();
 
@@ -260,8 +282,26 @@ fn is_key(metadata: &TableMetadata, field: &str) -> bool {
         .any(|f| f.is_key && f.name.eq_ignore_ascii_case(field))
 }
 
-fn is_client_field(col_type: Option<&str>) -> bool {
-    col_type.is_some_and(|t| t.eq_ignore_ascii_case("CLNT"))
+/// Whether a field is the table's client column, which the caller never gives.
+///
+/// Decided from type information only, and from two spellings of it, because
+/// neither is present on every system: `col_type` comes from the DDIC preview
+/// metadata and is absent entirely on some releases, where the DDL's declared
+/// type is all there is.
+///
+/// Deliberately not a check on the name. A key field called `CLIENT` that is
+/// not the client would then go unconstrained in the statement, and the write
+/// would land on the wrong row. Failing to recognise a client column only
+/// refuses the write, which is the safe direction.
+fn is_client_field(field: &TableFieldMetadata) -> bool {
+    field
+        .col_type
+        .as_deref()
+        .is_some_and(|col_type| col_type.eq_ignore_ascii_case("CLNT"))
+        || matches!(
+            field.declared_type.trim().to_ascii_lowercase().as_str(),
+            "abap.clnt" | "mandt"
+        )
 }
 
 /// A value has to survive becoming a quoted ABAP literal.
@@ -522,6 +562,8 @@ pub enum TableWriteRunError {
     },
     #[error(transparent)]
     Exec(#[from] ExecClassError),
+    #[error("could not record the change in the journal: {0}")]
+    Journal(#[from] JournalError),
 }
 
 impl ReportableError for TableWriteRunError {
@@ -530,6 +572,7 @@ impl ReportableError for TableWriteRunError {
             Self::Rejected(error) => error.code(),
             Self::Read { .. } => "table_write_read_failed",
             Self::Exec(error) => error.code(),
+            Self::Journal(error) => error.code(),
         }
     }
 
@@ -538,6 +581,7 @@ impl ReportableError for TableWriteRunError {
             Self::Rejected(error) => error.status(),
             Self::Read { source, .. } => source.status(),
             Self::Exec(error) => error.status(),
+            Self::Journal(error) => error.status(),
         }
     }
 
@@ -546,6 +590,7 @@ impl ReportableError for TableWriteRunError {
             Self::Rejected(error) => error.hint(),
             Self::Read { source, .. } => source.hint(),
             Self::Exec(error) => error.hint(),
+            Self::Journal(error) => error.hint(),
         }
     }
 }
@@ -566,6 +611,7 @@ pub async fn write_table_row(
     username: &str,
     request: &TableWriteRequest,
     mode: WriteMode,
+    journal: Option<&Journal>,
 ) -> Result<TableWriteOutcome, TableWriteRunError> {
     let table = request.table.to_ascii_uppercase();
 
@@ -599,6 +645,36 @@ pub async fn write_table_row(
 
     let class = executor_class_name(username);
     let abap = generate_abap(&class, &validated, mode);
+
+    // Recorded before the run, not after: an operation whose before-image was
+    // never written has no recovery at all. A dry run changes nothing and so
+    // records nothing.
+    let entry = match (journal, mode) {
+        (Some(journal), WriteMode::Execute) => Some(journal.begin(
+            entry_object(&validated.table),
+            JournalOperation::table_write(vec![RowWrite {
+                key: validated
+                    .keys
+                    .iter()
+                    .map(|key| (key.field.clone(), key.value.clone()))
+                    .collect(),
+                changes: validated
+                    .changes
+                    .iter()
+                    .map(|change| JournalFieldChange {
+                        field: change.field.clone(),
+                        before: change.before.clone(),
+                        after: change.after.clone(),
+                    })
+                    .collect(),
+            }]),
+            None,
+            Some(&row_json(&validated.before)),
+            None,
+        )?),
+        _ => None,
+    };
+
     let output = run_generated_source(sap, username, abap.clone()).await?;
     // No envelope on a 200 means the class did not execute at all — a dump
     // would have been a 500 with an empty body. The one cause seen is an
@@ -610,6 +686,18 @@ pub async fn write_table_row(
         let retried = rerun_executor(sap, username).await?;
         parse_envelope(&retried)?
     };
+
+    // The after-image is read back rather than assembled from what was sent.
+    // Constructing it would assert the write landed; reading it is what every
+    // other Fractal mutation does, and it is what an undo is later gated on.
+    if let (Some(journal), Some(entry)) = (journal, entry) {
+        if envelope.status == "applied" {
+            let after = read_row(sap, &validated.table, &validated.keys).await?;
+            journal.succeeded(entry, Some(&row_json(&after)), None)?;
+        } else {
+            journal.failed(entry)?;
+        }
+    }
 
     Ok(TableWriteOutcome {
         table: validated.table,
@@ -688,6 +776,73 @@ async fn read_row(
         .collect())
 }
 
+
+/// The repository object a row write is recorded against.
+///
+/// A table is a real ADT object with a real URI, so the entry needs no new kind
+/// of target: what is new is the operation, and the row's key lives in it.
+fn entry_object(table: &str) -> EntryObject {
+    EntryObject {
+        object_type: AdtObjectFamily::Source(EditableAdtObjectType::Table),
+        name: table.to_owned(),
+        uri: format!(
+            "{}/{}",
+            EditableAdtObjectType::Table.collection_path(),
+            table.to_ascii_lowercase()
+        ),
+        source_part: None,
+    }
+}
+
+/// One row as canonical JSON: fields sorted, values as read.
+///
+/// This is what the journal stores as a row's before- and after-image. Sorted
+/// so the same row always hashes to the same blob.
+#[must_use]
+pub fn row_json(row: &BTreeMap<String, String>) -> String {
+    serde_json::to_string_pretty(row).unwrap_or_else(|_| "{}".to_owned())
+}
+
+/// Re-reads the row and says which of the recorded fields no longer match.
+///
+/// The generated class reports only that the guard failed. Naming the fields
+/// that moved is done here, where the values are real strings rather than
+/// something assembled inside an ABAP string template.
+///
+/// # Errors
+///
+/// Returns [`TableWriteRunError`] when the row cannot be read.
+pub async fn diagnose_divergence(
+    sap: &mut SapClient,
+    table: &str,
+    keys: &[FieldValue],
+    expected: &[(String, String)],
+) -> Result<Vec<FieldDivergence>, TableWriteRunError> {
+    let row = read_row(sap, table, keys).await?;
+    Ok(expected
+        .iter()
+        .map(|(field, want)| {
+            let found = row.get(&field.to_ascii_uppercase()).cloned();
+            FieldDivergence {
+                diverged: found.as_ref() != Some(want),
+                field: field.clone(),
+                expected: want.clone(),
+                found,
+            }
+        })
+        .collect())
+}
+
+/// One guarded field, and whether it still holds what was expected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldDivergence {
+    pub field: String,
+    pub expected: String,
+    /// `None` when the row itself is gone.
+    pub found: Option<String>,
+    pub diverged: bool,
+}
+
 /// Doubling the quote is the escape SQL and ABAP share; control characters are
 /// refused before they reach either.
 fn sql_literal(value: &str) -> String {
@@ -709,6 +864,17 @@ mod tests {
             length: Some(10),
             description: None,
         }
+    }
+
+    /// The same table as a system that serves no DDIC column metadata sees it:
+    /// `col_type` absent on every field, the declared type all there is.
+    fn metadata_without_col_types() -> TableMetadata {
+        let mut metadata = metadata();
+        for field in &mut metadata.fields {
+            field.col_type = None;
+        }
+        metadata.fields[0].declared_type = "mandt".to_owned();
+        metadata
     }
 
     fn metadata() -> TableMetadata {
@@ -754,6 +920,7 @@ mod tests {
             table: "ZSAMPLE_RECORD".to_owned(),
             keys: keys.iter().map(pair).collect(),
             sets: sets.iter().map(pair).collect(),
+            expected_before: None,
         }
     }
 
@@ -776,6 +943,21 @@ mod tests {
         assert!(
             validate(
                 &metadata(),
+                &request(&[("id", "R1")], &[("status", "DONE")]),
+                &row()
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn finds_the_client_field_without_ddic_column_metadata() {
+        // The client is never the caller's to give. On a system that serves no
+        // `col_type`, the declared type is the only thing that says which
+        // column it is.
+        assert!(
+            validate(
+                &metadata_without_col_types(),
                 &request(&[("id", "R1")], &[("status", "DONE")]),
                 &row()
             )
@@ -861,6 +1043,24 @@ mod tests {
         assert!(abap.contains("note = @lv_old1"), "{abap}");
         assert!(abap.contains("COMMIT WORK."));
         assert!(abap.contains("INTO @ls_row"), "strict-mode SQL needs an escaped host variable");
+    }
+
+    #[test]
+    fn an_asserted_before_value_becomes_the_guard() {
+        let mut request = request(&[("id", "R1")], &[("status", "OPEN")]);
+        request.expected_before = Some(BTreeMap::from([(
+            "STATUS".to_owned(),
+            "DONE".to_owned(),
+        )]));
+
+        let write = validate(&metadata(), &request, &row()).unwrap();
+
+        // The row holds OPEN, but the caller asserted DONE, so DONE is what the
+        // statement guards on. This is what stops an undo reverting a change
+        // somebody else made after the write it reverses.
+        assert_eq!(write.changes[0].before, "DONE");
+        let abap = generate_abap("ZCL_X", &write, WriteMode::Execute);
+        assert!(abap.contains("lv_old0 = 'DONE'"), "{abap}");
     }
 
     #[test]

@@ -1,6 +1,8 @@
 //! One journal entry: what an object looked like before an operation, and what
 //! became of it.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::sap::object_family::AdtObjectFamily;
@@ -71,6 +73,13 @@ pub enum JournalOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         undo_progress: Option<ActivationUndoStep>,
     },
+    /// One command's worth of row changes, against one table.
+    ///
+    /// `rows` is a list from the start although a write currently changes one
+    /// row. The unit of undo is the entry, so a command that ever changes
+    /// several rows has to record them together — an entry covering part of a
+    /// change would report a successful undo having reversed only some of it.
+    TableWrite { rows: Vec<RowWrite> },
     /// Restoring one is create, write and activate, and is not automated. See
     /// `journal show` for the recipe, which needs these two beyond the content.
     Delete {
@@ -91,6 +100,21 @@ impl JournalOperation {
         }
     }
 
+    /// Row changes against one table.
+    #[must_use]
+    pub const fn table_write(rows: Vec<RowWrite>) -> Self {
+        Self::TableWrite { rows }
+    }
+
+    /// The rows this operation changed, if it is a table write.
+    #[must_use]
+    pub fn table_write_rows(&self) -> Option<&[RowWrite]> {
+        match self {
+            Self::TableWrite { rows } => Some(rows),
+            Self::Activate { .. } | Self::Delete { .. } => None,
+        }
+    }
+
     /// A freshly recorded activation, before any undo of it.
     #[must_use]
     pub const fn activate() -> Self {
@@ -104,6 +128,7 @@ impl JournalOperation {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Activate { .. } => "activate",
+            Self::TableWrite { .. } => "table_write",
             Self::Delete { .. } => "delete",
         }
     }
@@ -121,7 +146,7 @@ impl JournalOperation {
                 package,
                 description,
             } => Some((package.as_ref(), description.as_ref())),
-            Self::Activate { .. } => None,
+            Self::Activate { .. } | Self::TableWrite { .. } => None,
         }
     }
 
@@ -131,19 +156,23 @@ impl JournalOperation {
     pub const fn activation_progress(&self) -> Option<ActivationUndoStep> {
         match self {
             Self::Activate { undo_progress } => *undo_progress,
-            Self::Delete { .. } => None,
+            Self::TableWrite { .. } | Self::Delete { .. } => None,
         }
     }
 }
 
 /// What the stored blobs hold, and so which code path an undo takes.
 ///
-/// Derived from the object's family rather than stored: a source object's blob
-/// is source and a metadata object's is XML, by definition of the families.
+/// A function of the operation first and the object's family second. For a
+/// repository object the family decides it — a source object's blob is source
+/// and a metadata object's is XML. A table write is the exception: its object
+/// is the table, a source object, but its blobs hold rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContentKind {
     Source,
     Xml,
+    /// One table row as canonical JSON: field name to value, sorted.
+    Row,
 }
 
 /// A reference to stored content, or the fact that there was none.
@@ -190,6 +219,24 @@ pub struct EntryObject {
     pub source_part: Option<String>,
 }
 
+/// One row a table write changed, and what it changed about it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RowWrite {
+    /// The complete primary key that addressed the row. The client is not here:
+    /// it is the session's, and `EntrySystem` already records it.
+    pub key: BTreeMap<String, String>,
+    /// Only the fields this write changed. 
+    pub changes: Vec<FieldChange>,
+}
+
+/// One field, before and after.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FieldChange {
+    pub field: String,
+    pub before: String,
+    pub after: String,
+}
+
 /// The three steps of undoing an activation, in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -227,9 +274,12 @@ impl JournalEntry {
     /// What this entry's blobs hold.
     #[must_use]
     pub const fn content_kind(&self) -> ContentKind {
-        match self.object.object_type {
-            AdtObjectFamily::Source(_) => ContentKind::Source,
-            AdtObjectFamily::Metadata(_) => ContentKind::Xml,
+        match self.operation {
+            JournalOperation::TableWrite { .. } => ContentKind::Row,
+            _ => match self.object.object_type {
+                AdtObjectFamily::Source(_) => ContentKind::Source,
+                AdtObjectFamily::Metadata(_) => ContentKind::Xml,
+            },
         }
     }
 
