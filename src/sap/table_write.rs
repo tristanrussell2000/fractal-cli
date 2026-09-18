@@ -179,10 +179,10 @@ pub enum TableWriteError {
     NothingToChange,
     #[error("the value for {field} contains a character that cannot go into ABAP source")]
     UnusableValue { field: String },
-    #[error("no row of {table} has that key")]
-    RowNotFound { table: String },
-    #[error("{table} already has a row with that key")]
-    RowExists { table: String },
+    #[error("no row of {table} has key {key}")]
+    RowNotFound { table: String, key: String },
+    #[error("{table} already has a row with key {key}")]
+    RowExists { table: String, key: String },
     #[error("the run produced no {ENVELOPE} envelope")]
     NoEnvelope { output: String },
 }
@@ -223,7 +223,7 @@ impl ReportableError for TableWriteError {
             Self::UnknownField { table, .. } | Self::RowNotFound { table, .. } => {
                 format!("`fractal table metadata {table}` lists the fields and keys.")
             }
-            Self::RowExists { table } => {
+            Self::RowExists { table, .. } => {
                 format!("Change it with `fractal table set {table}`, or delete it first.")
             }
             Self::KeyFieldNotSettable { .. } => {
@@ -335,10 +335,16 @@ pub fn resolve_changes(
     match request {
         // An insert must find nothing; an update and a delete must find a row.
         TableWriteRequest::Insert { .. } if !row.is_empty() => {
-            return Err(TableWriteError::RowExists { table });
+            return Err(TableWriteError::RowExists {
+                table,
+                key: describe_key(&key_fields(metadata, request)),
+            });
         }
         TableWriteRequest::Update { .. } | TableWriteRequest::Delete { .. } if row.is_empty() => {
-            return Err(TableWriteError::RowNotFound { table });
+            return Err(TableWriteError::RowNotFound {
+                table,
+                key: describe_key(&key_fields(metadata, request)),
+            });
         }
         _ => {}
     }
@@ -408,10 +414,61 @@ fn key_fields(metadata: &TableMetadata, request: &TableWriteRequest) -> Vec<Fiel
                 .any(|field| field.name.eq_ignore_ascii_case(&given.field) && is_client_field(field))
         })
         .map(|given| FieldValue {
+            value: pad_numeric(metadata, &given.field, &given.value),
             field: given.field.to_ascii_uppercase(),
-            value: given.value.clone(),
         })
         .collect()
+}
+
+/// The key as the caller would have typed it, for a message about it.
+///
+/// A refusal that says only "that key" leaves the reader to go and find out
+/// which key was tried — and a value that was padded on the way in is not the
+/// one they typed.
+fn describe_key(keys: &[FieldValue]) -> String {
+    keys.iter()
+        .map(|key| format!("{}={}", key.field.to_ascii_lowercase(), key.value))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A `NUMC` value at its declared width.
+///
+/// `3` and `00000003` are the same value in a `NUMC(8)` field, but not to the
+/// database: a query for the short form matches nothing and comes back as a row
+/// that is not there, with nothing pointing at the padding. ABAP pads on
+/// assignment, so only the SQL read needs this — but padding here keeps the key
+/// identical everywhere it is used, the journal and the transport key included.
+///
+/// Keyed on `sap_type`, **not** `col_type`: `col_type` is absent on some
+/// systems (roadmap item 24), and it is the one that would name `NUMC`.
+fn pad_numeric(metadata: &TableMetadata, field: &str, value: &str) -> String {
+    let Some(declared) = metadata
+        .fields
+        .iter()
+        .find(|candidate| candidate.name.eq_ignore_ascii_case(field))
+    else {
+        return value.to_owned();
+    };
+    let Some(width) = declared.length.map(|length| length as usize) else {
+        return value.to_owned();
+    };
+    let numeric = declared
+        .sap_type
+        .as_deref()
+        .is_some_and(|sap_type| sap_type.eq_ignore_ascii_case("N"));
+
+    // Only a short run of digits. Anything else is left alone to fail as
+    // itself rather than as a padded version of something the caller did not
+    // write.
+    if !numeric
+        || value.is_empty()
+        || value.len() >= width
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return value.to_owned();
+    }
+    format!("{value:0>width$}")
 }
 
 fn is_key(metadata: &TableMetadata, field: &str) -> bool {
@@ -1452,6 +1509,66 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn pads_a_short_numc_key_to_its_width() {
+        let mut metadata = metadata();
+        metadata.fields[1].sap_type = Some("N".to_owned());
+        metadata.fields[1].length = Some(8);
+
+        let write = validate(
+            &metadata,
+            &request(&[("id", "3")], &[("status", "DONE")]),
+            &row(),
+        )
+        .unwrap();
+
+        // 3 and 00000003 are the same value in a NUMC(8); the database does not
+        // agree, and an unpadded key comes back as a row that is not there.
+        assert_eq!(write.keys[0].value, "00000003");
+    }
+
+    #[test]
+    fn leaves_alone_what_is_not_a_short_run_of_digits() {
+        let mut metadata = metadata();
+        metadata.fields[1].sap_type = Some("N".to_owned());
+        metadata.fields[1].length = Some(8);
+
+        for value in ["R1", "", "00000003", "0000000000000"] {
+            let write = validate(
+                &metadata,
+                &request(&[("id", value)], &[("status", "DONE")]),
+                &row(),
+            );
+            if let Ok(write) = write {
+                assert_eq!(write.keys[0].value, value, "{value:?} was rewritten");
+            }
+        }
+    }
+
+    #[test]
+    fn a_char_key_is_never_padded() {
+        // Only NUMC. A CHAR(10) holding "R1" means "R1", not "00000000R1".
+        let write = validate(
+            &metadata(),
+            &request(&[("id", "R1")], &[("status", "DONE")]),
+            &row(),
+        )
+        .unwrap();
+        assert_eq!(write.keys[0].value, "R1");
+    }
+
+    #[test]
+    fn a_missing_row_names_the_key_it_looked_for() {
+        let error = validate(
+            &metadata(),
+            &request(&[("id", "NOPE")], &[("status", "DONE")]),
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "table_write_row_not_found");
+        assert!(error.to_string().contains("id=NOPE"), "{error}");
     }
 
     #[test]
