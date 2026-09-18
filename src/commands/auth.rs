@@ -199,6 +199,9 @@ pub fn auth_list() -> Result<AuthListResult, Reported> {
     })
 }
 
+// The flags are the JSON contract: each answers a question a caller must be
+// able to ask without parsing prose.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Serialize)]
 pub struct AuthSetResult {
     ok: bool,
@@ -210,6 +213,11 @@ pub struct AuthSetResult {
     edit_packages: Option<Vec<String>>,
     allow_temporary_package: bool,
     restricts_packages: bool,
+    /// The default profile as it stands after this command.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default_profile: Option<String>,
+    /// Whether this command is what made it the default.
+    is_new_default: bool,
 }
 
 /// Changes what a profile is allowed to edit, and nothing else.
@@ -237,6 +245,8 @@ pub fn auth_set(
 
     apply_edit_policy_args(profile, args);
     let policy = profile.edit_policy();
+
+    let is_new_default = apply_default_arg(&mut loaded.config.default_profile, &name, args.default);
     let config_path = config::save(&loaded.config).map_err(AuthCommandError::ConfigWrite)?;
 
     Ok(AuthSetResult {
@@ -247,7 +257,26 @@ pub fn auth_set(
         edit_packages: policy.edit_packages.clone(),
         allow_temporary_package: policy.allow_temporary_package,
         restricts_packages: policy.restricts_packages(),
+        default_profile: loaded.config.default_profile.clone(),
+        is_new_default,
     })
+}
+
+/// Points the default at this profile, if that was asked for.
+///
+/// Changing the default needs no password, which is the point: `auth login` is
+/// the only other way to set it, and it re-prompts for the URL, the client and
+/// the password to change one line of configuration.
+///
+/// Returns whether this call is what changed it, so that saying so is not a
+/// claim the command has to make about a default that was already set.
+fn apply_default_arg(current: &mut Option<String>, name: &str, requested: bool) -> bool {
+    if !requested {
+        return false;
+    }
+    let changed = current.as_deref() != Some(name);
+    *current = Some(name.to_owned());
+    changed
 }
 
 /// Applies only the flags that were actually given.
@@ -653,7 +682,16 @@ pub fn print_auth_set(result: &AuthSetResult, output: OutputFormat) {
 
 fn render_auth_set_readable(result: &AuthSetResult) -> String {
     let mut output = String::new();
-    let _ = writeln!(output, "profile: {}", result.profile);
+    let _ = writeln!(
+        output,
+        "profile: {}{}",
+        result.profile,
+        if result.is_new_default {
+            "  (now the default)"
+        } else {
+            ""
+        }
+    );
     let _ = writeln!(output, "config: {}", result.config_path);
     let _ = writeln!(
         output,
@@ -776,12 +814,31 @@ mod tests {
             edit_packages: Some(Vec::new()),
             allow_temporary_package: false,
             restricts_packages: true,
+            default_profile: Some("de2".to_owned()),
+            is_new_default: false,
         };
 
         let rendered = render_auth_set_readable(&result);
 
         assert!(rendered.contains("edit packages: none"));
         assert!(rendered.contains("temporary package: not allowed"));
+    }
+
+    #[test]
+    fn readable_set_output_says_when_the_default_moved() {
+        let result = AuthSetResult {
+            ok: true,
+            profile: "DE2".to_owned(),
+            config_path: "/home/u/.config/fractal/config.toml".to_owned(),
+            customer_namespaces: vec!["Z*".to_owned()],
+            edit_packages: None,
+            allow_temporary_package: true,
+            restricts_packages: false,
+            default_profile: Some("DE2".to_owned()),
+            is_new_default: true,
+        };
+
+        assert!(render_auth_set_readable(&result).contains("now the default"));
     }
 
     #[test]
@@ -811,7 +868,38 @@ mod tests {
             any_package: false,
             namespace: Vec::new(),
             allow_temporary_package: None,
+            default: false,
         }
+    }
+
+    #[test]
+    fn makes_a_profile_the_default() {
+        let mut current = Some("de3".to_owned());
+        assert!(apply_default_arg(&mut current, "DE2", true));
+        assert_eq!(current.as_deref(), Some("DE2"));
+    }
+
+    #[test]
+    fn setting_the_default_it_already_has_changes_nothing() {
+        // Reported honestly rather than announcing a change that did not
+        // happen.
+        let mut current = Some("DE2".to_owned());
+        assert!(!apply_default_arg(&mut current, "DE2", true));
+        assert_eq!(current.as_deref(), Some("DE2"));
+    }
+
+    #[test]
+    fn leaves_the_default_alone_when_not_asked() {
+        let mut current = Some("de3".to_owned());
+        assert!(!apply_default_arg(&mut current, "DE2", false));
+        assert_eq!(current.as_deref(), Some("de3"));
+    }
+
+    #[test]
+    fn sets_the_first_default_when_there_is_none() {
+        let mut current = None;
+        assert!(apply_default_arg(&mut current, "DE2", true));
+        assert_eq!(current.as_deref(), Some("DE2"));
     }
 
     fn configured_profile() -> config::Profile {

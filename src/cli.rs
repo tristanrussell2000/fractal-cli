@@ -122,7 +122,8 @@ pub enum AuthCommand {
     Login(LoginArgs),
     /// List saved profile names.
     List,
-    /// Change what a profile may edit, without touching its stored password.
+    /// Change what a profile may edit, or make it the default, without
+    /// touching its stored password.
     Set(AuthSetArgs),
     /// Remove a saved profile and its keychain credential.
     Remove(ProfileArgs),
@@ -206,6 +207,9 @@ pub struct AuthSetArgs {
     /// Whether the `$TMP` scratch package stays editable regardless of --package.
     #[arg(long)]
     pub(crate) allow_temporary_package: Option<bool>,
+    /// Make this the default profile, replacing the current default.
+    #[arg(long, default_value_t = false)]
+    pub(crate) default: bool,
 }
 
 #[derive(Debug, Subcommand)]
