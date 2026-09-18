@@ -7,9 +7,12 @@ use super::{
         diagnose_divergence, row_changed, write_table_row,
     },
 };
+use std::collections::BTreeMap;
+
 use crate::config::EditPolicy;
 use crate::journal::JournalError;
-use crate::journal::entry::{JournalEntry, RowWrite};
+use crate::journal::blobs::BlobStore;
+use crate::journal::entry::{JournalEntry, RowOperation, RowWrite};
 use crate::journal::recorder::Journal;
 use crate::reportable_error::ReportableError;
 
@@ -93,6 +96,10 @@ pub enum TableUndoError {
     NotATableWrite { id: String },
     #[error("journal entry {id} records {rows} rows, and undo reverses one")]
     NotOneRow { id: String, rows: usize },
+    #[error("journal entry {id} kept no before-image of the deleted row")]
+    NoBeforeImage { id: String },
+    #[error("the before-image of journal entry {id} is not a row")]
+    BeforeImageUnreadable { id: String },
     #[error("journal entry {id} is {status} and has no result to undo")]
     Unresolved { id: String, status: String },
     #[error("journal entry {id} has already been undone")]
@@ -110,6 +117,8 @@ impl ReportableError for TableUndoError {
         match self {
             Self::NotATableWrite { .. } => "undo_not_a_table_write",
             Self::NotOneRow { .. } => "undo_row_count_unsupported",
+            Self::NoBeforeImage { .. } => "undo_no_before_image",
+            Self::BeforeImageUnreadable { .. } => "undo_before_image_invalid",
             Self::Unresolved { .. } => "undo_entry_unresolved",
             Self::AlreadyUndone { .. } => "undo_already_undone",
             Self::Diverged(_) => "undo_row_diverged",
@@ -130,6 +139,11 @@ impl ReportableError for TableUndoError {
         Some(match self {
             Self::NotATableWrite { .. } => {
                 "`fractal undo` reverses a table write only for an entry that records one."
+                    .to_owned()
+            }
+            Self::NoBeforeImage { .. } | Self::BeforeImageUnreadable { .. } => {
+                "Restoring a deleted row needs the row. `fractal journal show` prints what the \
+                 entry still holds."
                     .to_owned()
             }
             Self::NotOneRow { .. } => {
@@ -189,6 +203,90 @@ pub fn plan_table_undo(entry: &JournalEntry) -> Result<TableUndoPlan, TableUndoE
     })
 }
 
+
+/// The write that reverses a recorded one.
+///
+/// Each operation inverts differently, and only the update is a mirror image:
+///
+/// - an **update** is the same statement with the two values swapped, guarded
+///   on what the write left rather than on what the row holds now;
+/// - an **insert** is undone by deleting the row it added, so there is nothing
+///   to set;
+/// - a **delete** is undone by inserting the row back, which needs the whole
+///   row — the field list the entry holds is empty for a delete, so the
+///   before-image blob is the only source.
+fn undo_request(
+    entry: &JournalEntry,
+    plan: &TableUndoPlan,
+    row: &TableUndoRow,
+    blobs: &BlobStore,
+) -> Result<TableWriteRequest, TableUndoError> {
+    let recorded = entry
+        .operation
+        .table_write_rows()
+        .and_then(<[RowWrite]>::first)
+        .map_or(RowOperation::Update, |row| row.operation);
+    let table = plan.table.clone();
+    // An undo of a customizing change takes an entry in the same request the
+    // write used; the journal kept it.
+    let transport = entry.transport.clone();
+
+    Ok(match recorded {
+        RowOperation::Update => TableWriteRequest::Update {
+            table,
+            keys: row.key.clone(),
+            sets: row
+                .restore
+                .iter()
+                .map(|(field, _left, restore)| FieldValue {
+                    field: field.clone(),
+                    value: restore.clone(),
+                })
+                .collect(),
+            expected_before: Some(
+                row.restore
+                    .iter()
+                    .map(|(field, left, _restore)| (field.to_ascii_uppercase(), left.clone()))
+                    .collect(),
+            ),
+            transport,
+        },
+        RowOperation::Insert => TableWriteRequest::Delete {
+            table,
+            keys: row.key.clone(),
+            transport,
+        },
+        RowOperation::Delete => TableWriteRequest::Insert {
+            table,
+            fields: row_from_blob(entry, blobs)?,
+            transport,
+        },
+    })
+}
+
+/// The deleted row, read back out of its before-image.
+fn row_from_blob(
+    entry: &JournalEntry,
+    blobs: &BlobStore,
+) -> Result<Vec<FieldValue>, TableUndoError> {
+    let sha256 = entry
+        .active_before
+        .sha256()
+        .ok_or_else(|| TableUndoError::NoBeforeImage {
+            id: entry.id.clone(),
+        })?;
+    let content = blobs.read(sha256)?;
+    let row: BTreeMap<String, String> =
+        serde_json::from_str(&content).map_err(|_| TableUndoError::BeforeImageUnreadable {
+            id: entry.id.clone(),
+        })?;
+
+    Ok(row
+        .into_iter()
+        .map(|(field, value)| FieldValue { field, value })
+        .collect())
+}
+
 /// One recorded row write, read backwards.
 fn reverse_row(row: &RowWrite) -> TableUndoRow {
     TableUndoRow {
@@ -230,34 +328,12 @@ pub async fn undo_table_write(
     username: &str,
     entry: &JournalEntry,
     journal: &Journal,
+    blobs: &BlobStore,
 ) -> Result<TableUndoOutcome, TableUndoError> {
     let plan = plan_table_undo(entry)?;
     let row = &plan.row;
 
-    let request = TableWriteRequest {
-        table: plan.table.clone(),
-        keys: row.key.clone(),
-        sets: row
-            .restore
-            .iter()
-            .map(|(field, _left, restore)| FieldValue {
-                field: field.clone(),
-                value: restore.clone(),
-            })
-            .collect(),
-        // The guard is what the original write left behind, not what the row
-        // holds now. Guarding on the current value would revert a colleague's
-        // change instead of refusing to.
-        // An undo of a customizing change records into the same request the
-        // write used; the journal kept it.
-        transport: entry.transport.clone(),
-        expected_before: Some(
-            row.restore
-                .iter()
-                .map(|(field, left, _restore)| (field.to_ascii_uppercase(), left.clone()))
-                .collect(),
-        ),
-    };
+    let request = undo_request(entry, &plan, row, blobs)?;
 
     // Not journaled: an undo is the reversal of an entry that already exists,
     // and recording it would offer an undo of the undo that the status
@@ -330,6 +406,7 @@ mod tests {
 
     fn write() -> JournalOperation {
         JournalOperation::table_write(vec![RowWrite {
+            operation: RowOperation::Update,
             key: BTreeMap::from([("ID".to_owned(), "R1".to_owned())]),
             changes: vec![
                 FieldChange {
@@ -365,6 +442,7 @@ mod tests {
     fn refuses_an_entry_holding_more_than_one_row() {
         let many = JournalOperation::table_write(vec![
             RowWrite {
+                operation: RowOperation::Update,
                 key: BTreeMap::from([("ID".to_owned(), "R1".to_owned())]),
                 changes: vec![FieldChange {
                     field: "STATUS".to_owned(),
@@ -373,6 +451,7 @@ mod tests {
                 }],
             },
             RowWrite {
+                operation: RowOperation::Update,
                 key: BTreeMap::from([("ID".to_owned(), "R2".to_owned())]),
                 changes: vec![FieldChange {
                     field: "STATUS".to_owned(),

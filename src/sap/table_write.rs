@@ -16,7 +16,7 @@ use super::{
 };
 use crate::config::EditPolicy;
 use crate::journal::entry::{
-    EntryObject, FieldChange as JournalFieldChange, JournalOperation, RowWrite,
+    EntryObject, FieldChange as JournalFieldChange, JournalOperation, RowOperation, RowWrite,
 };
 use crate::journal::recorder::Journal;
 use crate::journal::JournalError;
@@ -35,29 +35,97 @@ pub struct FieldValue {
     pub value: String,
 }
 
+/// One requested change to one row.
+///
+/// An enum rather than a struct with an operation tag, because the three
+/// operations do not share a shape: an insert has no key field of its own (the
+/// key is among the fields it sets) and no value to guard against, and a delete
+/// has nothing to set. As one struct those were fields that silently did
+/// nothing for two operations out of three.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TableWriteRequest {
-    pub table: String,
-    pub keys: Vec<FieldValue>,
-    pub sets: Vec<FieldValue>,
-    /// What the changed fields must hold **now**, when the caller knows.
+pub enum TableWriteRequest {
+    /// Change named fields of an existing row.
+    Update {
+        table: String,
+        keys: Vec<FieldValue>,
+        sets: Vec<FieldValue>,
+        /// What the changed fields must hold **now**, when the caller knows.
+        ///
+        /// Without it the guard is built from the row as just read, which is
+        /// right for a write: change what is there. An undo needs the opposite
+        /// — the row must still hold what the original write left, or somebody
+        /// else has changed it and reversing would discard their work. Keyed by
+        /// upper-case field name.
+        expected_before: Option<BTreeMap<String, String>>,
+        transport: Option<String>,
+    },
+    /// Add a row. `fields` carries the whole row, key fields included.
+    Insert {
+        table: String,
+        fields: Vec<FieldValue>,
+        transport: Option<String>,
+    },
+    /// Remove the row with this key.
+    Delete {
+        table: String,
+        keys: Vec<FieldValue>,
+        transport: Option<String>,
+    },
+}
+
+impl TableWriteRequest {
+    #[must_use]
+    pub fn table(&self) -> &str {
+        match self {
+            Self::Update { table, .. } | Self::Insert { table, .. } | Self::Delete { table, .. } => {
+                table
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn transport(&self) -> Option<&str> {
+        match self {
+            Self::Update { transport, .. }
+            | Self::Insert { transport, .. }
+            | Self::Delete { transport, .. } => transport.as_deref(),
+        }
+    }
+
+    #[must_use]
+    pub const fn operation(&self) -> RowOperation {
+        match self {
+            Self::Update { .. } => RowOperation::Update,
+            Self::Insert { .. } => RowOperation::Insert,
+            Self::Delete { .. } => RowOperation::Delete,
+        }
+    }
+
+    /// Where the key comes from.
     ///
-    /// Without it the guard is built from the row as just read, which is right
-    /// for a write: change what is there. An undo needs the opposite — the row
-    /// must still hold what the original write left, or somebody else has
-    /// changed it and reversing would discard their work. Keyed by upper-case
-    /// field name.
-    pub expected_before: Option<BTreeMap<String, String>>,
-    /// The change request or task a customizing change is recorded in.
-    ///
-    /// Required for delivery class `C` or `G`, ignored otherwise: an
-    /// application table's data is not transported.
-    pub transport: Option<String>,
+    /// An insert names it among the fields it sets; an update and a delete name
+    /// it separately.
+    fn key_source(&self) -> &[FieldValue] {
+        match self {
+            Self::Insert { fields, .. } => fields,
+            Self::Update { keys, .. } | Self::Delete { keys, .. } => keys,
+        }
+    }
+
+    /// Every field the caller named, for the checks that apply to all of them.
+    fn named(&self) -> impl Iterator<Item = &FieldValue> {
+        match self {
+            Self::Update { keys, sets, .. } => keys.iter().chain(sets.iter()),
+            Self::Insert { fields, .. } => fields.iter().chain([].iter()),
+            Self::Delete { keys, .. } => keys.iter().chain([].iter()),
+        }
+    }
 }
 
 /// A request checked against the table's real fields, with the row it will change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedTableWrite {
+    pub operation: RowOperation,
     pub table: String,
     pub keys: Vec<FieldValue>,
     /// Each changed field, with the value it holds now and the value to write.
@@ -113,6 +181,8 @@ pub enum TableWriteError {
     UnusableValue { field: String },
     #[error("no row of {table} has that key")]
     RowNotFound { table: String },
+    #[error("{table} already has a row with that key")]
+    RowExists { table: String },
     #[error("the run produced no {ENVELOPE} envelope")]
     NoEnvelope { output: String },
 }
@@ -130,6 +200,7 @@ impl ReportableError for TableWriteError {
             Self::NothingToChange => "table_write_nothing_to_change",
             Self::UnusableValue { .. } => "table_write_value_unusable",
             Self::RowNotFound { .. } => "table_write_row_not_found",
+            Self::RowExists { .. } => "table_write_row_exists",
             Self::NoEnvelope { .. } => "table_write_no_envelope",
         }
     }
@@ -151,6 +222,9 @@ impl ReportableError for TableWriteError {
             }
             Self::UnknownField { table, .. } | Self::RowNotFound { table, .. } => {
                 format!("`fractal table metadata {table}` lists the fields and keys.")
+            }
+            Self::RowExists { table } => {
+                format!("Change it with `fractal table set {table}`, or delete it first.")
             }
             Self::KeyFieldNotSettable { .. } => {
                 "Changing a key means deleting the row and inserting another.".to_owned()
@@ -186,21 +260,33 @@ pub fn validate_shape(
 ) -> Result<(), TableWriteError> {
     let table = metadata.entity.to_ascii_uppercase();
 
-    if request.sets.is_empty() {
-        return Err(TableWriteError::NothingToChange);
-    }
-
-    for set in &request.sets {
-        if is_key(metadata, &set.field) {
-            return Err(TableWriteError::KeyFieldNotSettable {
-                table,
-                field: set.field.to_ascii_uppercase(),
-            });
+    match request {
+        TableWriteRequest::Update { sets, .. } => {
+            if sets.is_empty() {
+                return Err(TableWriteError::NothingToChange);
+            }
+            // Moving a key means deleting the row and inserting another. An
+            // insert is free to name key fields, because that is how it gives
+            // them.
+            for set in sets {
+                if is_key(metadata, &set.field) {
+                    return Err(TableWriteError::KeyFieldNotSettable {
+                        table,
+                        field: set.field.to_ascii_uppercase(),
+                    });
+                }
+            }
         }
+        TableWriteRequest::Insert { fields, .. } => {
+            if fields.is_empty() {
+                return Err(TableWriteError::NothingToChange);
+            }
+        }
+        TableWriteRequest::Delete { .. } => {}
     }
 
     let mut seen = Vec::new();
-    for given in request.keys.iter().chain(&request.sets) {
+    for given in request.named() {
         let field = given.field.to_ascii_uppercase();
         if seen.contains(&field) {
             return Err(TableWriteError::DuplicateField { field });
@@ -217,16 +303,12 @@ pub fn validate_shape(
     }
 
     // The client field is the session's, never the caller's.
+    let given = request.key_source();
     let missing: Vec<_> = metadata
         .fields
         .iter()
         .filter(|f| f.is_key && !is_client_field(f))
-        .filter(|f| {
-            !request
-                .keys
-                .iter()
-                .any(|k| k.field.eq_ignore_ascii_case(&f.name))
-        })
+        .filter(|f| !given.iter().any(|k| k.field.eq_ignore_ascii_case(&f.name)))
         .map(|f| f.name.to_ascii_uppercase())
         .collect();
     if !missing.is_empty() {
@@ -250,43 +332,86 @@ pub fn resolve_changes(
     row: &BTreeMap<String, String>,
 ) -> Result<ValidatedTableWrite, TableWriteError> {
     let table = metadata.entity.to_ascii_uppercase();
-    if row.is_empty() {
-        return Err(TableWriteError::RowNotFound { table });
+    match request {
+        // An insert must find nothing; an update and a delete must find a row.
+        TableWriteRequest::Insert { .. } if !row.is_empty() => {
+            return Err(TableWriteError::RowExists { table });
+        }
+        TableWriteRequest::Update { .. } | TableWriteRequest::Delete { .. } if row.is_empty() => {
+            return Err(TableWriteError::RowNotFound { table });
+        }
+        _ => {}
     }
 
-    let changes = request
-        .sets
-        .iter()
-        .map(|set| {
-            let field = set.field.to_ascii_uppercase();
-            let before = request
-                .expected_before
-                .as_ref()
-                .and_then(|expected| expected.get(&field))
-                .or_else(|| row.get(&field))
-                .cloned()
-                .unwrap_or_default();
-            FieldChange {
-                field,
-                before,
-                after: set.value.clone(),
-            }
-        })
-        .collect();
-
-    Ok(ValidatedTableWrite {
-        table,
-        keys: request
-            .keys
+    let changes = match request {
+        TableWriteRequest::Update {
+            sets,
+            expected_before,
+            ..
+        } => sets
             .iter()
-            .map(|k| FieldValue {
-                field: k.field.to_ascii_uppercase(),
-                value: k.value.clone(),
+            .map(|set| {
+                let field = set.field.to_ascii_uppercase();
+                let before = expected_before
+                    .as_ref()
+                    .and_then(|expected| expected.get(&field))
+                    .or_else(|| row.get(&field))
+                    .cloned()
+                    .unwrap_or_default();
+                FieldChange {
+                    field,
+                    before,
+                    after: set.value.clone(),
+                }
             })
             .collect(),
+        // An insert has no before; a delete changes no fields.
+        TableWriteRequest::Insert { fields, .. } => fields
+            .iter()
+            .map(|field| FieldChange {
+                field: field.field.to_ascii_uppercase(),
+                before: String::new(),
+                after: field.value.clone(),
+            })
+            .collect(),
+        TableWriteRequest::Delete { .. } => Vec::new(),
+    };
+
+    Ok(ValidatedTableWrite {
+        operation: request.operation(),
+        table,
+        keys: key_fields(metadata, request),
         changes,
         before: row.clone(),
     })
+}
+
+/// The key that addresses the row, wherever the caller put it.
+///
+/// An insert supplies its key through `--set` along with every other field; an
+/// update and a delete name it with `--key`. Both the row read and the
+/// generated statement need the same answer.
+fn key_fields(metadata: &TableMetadata, request: &TableWriteRequest) -> Vec<FieldValue> {
+    let insert = matches!(request, TableWriteRequest::Insert { .. });
+    request
+        .key_source()
+        .iter()
+        // An insert names the whole row, so the key has to be picked out of it.
+        .filter(|given| !insert || is_key(metadata, &given.field))
+        // Never the client. SQL refuses it in a WHERE — "client handling is
+        // performed by the compiler" — and the transport key adds `sy-mandt`
+        // itself, so including it here would both break the read and double it.
+        .filter(|given| {
+            !metadata
+                .fields
+                .iter()
+                .any(|field| field.name.eq_ignore_ascii_case(&given.field) && is_client_field(field))
+        })
+        .map(|given| FieldValue {
+            field: given.field.to_ascii_uppercase(),
+            value: given.value.clone(),
+        })
+        .collect()
 }
 
 fn is_key(metadata: &TableMetadata, field: &str) -> bool {
@@ -350,23 +475,30 @@ pub fn generate_abap(
     mode: WriteMode,
     transport_entry: Option<&TransportEntry>,
 ) -> String {
-    let mut abap = declarations(class_name, write, transport_entry.is_some());
+    let client_dependent = transport_entry.is_some_and(|entry| entry.client_dependent);
+    let mut abap = declarations(class_name, write);
     abap.push_str(&literals(write));
+    abap.push_str(&lock_block(write, client_dependent));
+
+    abap.push_str("\n        IF lv_status IS INITIAL.\n");
     if let Some(entry) = transport_entry {
         abap.push_str(&transport_block(write, entry));
-        // The write only runs if the entry will be accepted.
+        // The row is only touched if the transport entry will be accepted.
         abap.push_str("\n        IF lv_status IS INITIAL.\n");
         abap.push_str(&statement(write));
         abap.push_str("        ENDIF.\n");
     } else {
         abap.push_str(&statement(write));
     }
+    abap.push_str("        ENDIF.\n");
+
     abap.push_str(TRY_END);
     abap.push('\n');
     abap.push_str(settle_clause(mode));
     if let (Some(entry), WriteMode::Execute) = (transport_entry, mode) {
         abap.push_str(&transport_commit_block(entry));
     }
+    abap.push_str(&unlock_block(write));
     abap.push_str(&envelope_clause());
     abap
 }
@@ -379,7 +511,7 @@ const TRY_END: &str = "      CATCH cx_root INTO DATA(lx_error).
     ENDTRY.
 ";
 
-fn declarations(class_name: &str, write: &ValidatedTableWrite, transport_entry: bool) -> String {
+fn declarations(class_name: &str, write: &ValidatedTableWrite) -> String {
     let class = class_name.to_ascii_lowercase();
     let table = write.table.to_ascii_lowercase();
     let mut abap = format!(
@@ -398,19 +530,18 @@ CLASS {class} IMPLEMENTATION.
 "
     );
 
-    if transport_entry {
-        abap.push_str(
-            "    DATA lt_e071 TYPE STANDARD TABLE OF e071.
+    abap.push_str(
+        "    DATA lt_e071 TYPE STANDARD TABLE OF e071.
     DATA lt_e071k TYPE STANDARD TABLE OF e071k.
     DATA ls_e071 TYPE e071.
     DATA ls_e071k TYPE e071k.
     DATA lv_tabkey TYPE e071k-tabkey.
+    DATA lv_varkey TYPE rstable-varkey.
     DATA lv_off TYPE i VALUE 0.
     DATA lv_len TYPE i.
     DATA lv_key_too_long TYPE abap_bool VALUE abap_false.
 ",
-        );
-    }
+    );
     for (index, key) in write.keys.iter().enumerate() {
         let field = key.field.to_ascii_lowercase();
         let _ = writeln!(abap, "    DATA lv_k{index} LIKE ls_row-{field}.");
@@ -465,6 +596,15 @@ fn key_conditions(write: &ValidatedTableWrite, separator: &str) -> String {
 /// somebody else changed meanwhile, and running it again after it succeeded
 /// matches nothing.
 fn statement(write: &ValidatedTableWrite) -> String {
+    match write.operation {
+        RowOperation::Insert => return insert_statement(write),
+        RowOperation::Delete => return delete_statement(write),
+        RowOperation::Update => {}
+    }
+    update_statement(write)
+}
+
+fn update_statement(write: &ValidatedTableWrite) -> String {
     let table = write.table.to_ascii_lowercase();
     let assignments = write
         .changes
@@ -531,29 +671,7 @@ pub struct TransportEntry {
 /// `TABKEY` caps at 120 characters; SE16N writes `*` at the overflow and
 /// refuses, and so does this.
 fn transport_block(write: &ValidatedTableWrite, entry: &TransportEntry) -> String {
-    let mut fill = String::new();
-
-    if entry.client_dependent {
-        fill.push_str(
-            "        lv_len = 3.
-        lv_tabkey+lv_off(lv_len) = sy-mandt.
-        ADD lv_len TO lv_off.
-",
-        );
-    }
-    for index in 0..write.keys.len() {
-        let _ = write!(
-            fill,
-            "        DESCRIBE FIELD lv_k{index} LENGTH lv_len IN CHARACTER MODE.
-        IF lv_off + lv_len > 120.
-          lv_key_too_long = abap_true.
-        ELSE.
-          lv_tabkey+lv_off(lv_len) = lv_k{index}.
-          ADD lv_len TO lv_off.
-        ENDIF.
-"
-        );
-    }
+    let fill = key_string(write, "lv_tabkey", entry.client_dependent);
 
     format!(
         "
@@ -625,6 +743,125 @@ fn transport_commit_block(entry: &TransportEntry) -> String {
       ENDIF.
 ",
         task = entry.task,
+    )
+}
+
+/// The key as a character string, client first.
+///
+/// Both the enqueue `VARKEY` and the transport entry's `TABKEY` are the same
+/// shape: key fields concatenated at running character offsets. Lengths come
+/// from `DESCRIBE FIELD ... IN CHARACTER MODE`, so a key type this code has not
+/// seen still lands at the right offset.
+fn key_string(write: &ValidatedTableWrite, target: &str, client_dependent: bool) -> String {
+    let mut fill = String::new();
+    fill.push_str("        CLEAR lv_off.\n");
+    if client_dependent {
+        let _ = write!(
+            fill,
+            "        lv_len = 3.
+        {target}+lv_off(lv_len) = sy-mandt.
+        ADD lv_len TO lv_off.\n"
+        );
+    }
+    for index in 0..write.keys.len() {
+        let _ = write!(
+            fill,
+            "        DESCRIBE FIELD lv_k{index} LENGTH lv_len IN CHARACTER MODE.
+        IF lv_off + lv_len > 120.
+          lv_key_too_long = abap_true.
+        ELSE.
+          {target}+lv_off(lv_len) = lv_k{index}.
+          ADD lv_len TO lv_off.
+        ENDIF.\n"
+        );
+    }
+    fill
+}
+
+/// Takes the same lock SE16N takes.
+///
+/// Not needed for the guarded `UPDATE`, which is already atomic, but an insert
+/// and a delete have no value guard to lean on — SE16N's own delete is by key
+/// alone — and SM30 and SE16N expect to find this lock held.
+fn lock_block(write: &ValidatedTableWrite, client_dependent: bool) -> String {
+    let fill = key_string(write, "lv_varkey", client_dependent);
+    format!(
+        "
+{fill}
+        CALL FUNCTION 'ENQUEUE_E_TABLEE'
+          EXPORTING
+            tabname      = '{table}'
+            varkey       = lv_varkey
+          EXCEPTIONS
+            foreign_lock = 1
+            system_failure = 2
+            OTHERS       = 3.
+        IF sy-subrc <> 0.
+          lv_status = 'locked_by_another'.
+          lv_detail = |{{ sy-msgv1 }}|.
+        ENDIF.
+",
+        table = write.table.to_ascii_uppercase(),
+    )
+}
+
+fn unlock_block(write: &ValidatedTableWrite) -> String {
+    format!(
+        "
+    CALL FUNCTION 'DEQUEUE_E_TABLEE'
+      EXPORTING
+        tabname = '{table}'
+        varkey  = lv_varkey.
+",
+        table = write.table.to_ascii_uppercase(),
+    )
+}
+
+/// `INSERT`, which fails on a duplicate key rather than overwriting.
+fn insert_statement(write: &ValidatedTableWrite) -> String {
+    let table = write.table.to_ascii_lowercase();
+    let mut fill = String::new();
+    for (index, change) in write.changes.iter().enumerate() {
+        let _ = writeln!(
+            fill,
+            "        ls_row-{} = lv_new{index}.",
+            change.field.to_ascii_lowercase()
+        );
+    }
+    format!(
+        "
+{fill}
+        INSERT {table} FROM @ls_row.
+        lv_subrc = sy-subrc.
+        lv_rows  = sy-dbcnt.
+        IF lv_subrc = 0.
+          lv_status = 'applied'.
+        ELSE.
+          lv_status = 'row_exists'.
+        ENDIF.
+"
+    )
+}
+
+/// `DELETE` by key, under the lock.
+///
+/// By key alone, as SE16N deletes: there is no value guard, because
+/// reconstructing a whole row as typed literals is not something every column
+/// type survives. The lock is the protection, and the journal holds the row.
+fn delete_statement(write: &ValidatedTableWrite) -> String {
+    format!(
+        "
+        DELETE FROM {table} WHERE {conditions}.
+        lv_subrc = sy-subrc.
+        lv_rows  = sy-dbcnt.
+        IF lv_subrc = 0.
+          lv_status = 'applied'.
+        ELSE.
+          lv_status = 'row_not_found'.
+        ENDIF.
+",
+        table = write.table.to_ascii_lowercase(),
+        conditions = key_conditions(write, "\n                 AND "),
     )
 }
 
@@ -793,7 +1030,7 @@ pub async fn write_table_row(
     mode: WriteMode,
     journal: Option<&Journal>,
 ) -> Result<TableWriteOutcome, TableWriteRunError> {
-    let table = request.table.to_ascii_uppercase();
+    let table = request.table().to_ascii_uppercase();
 
     if !policy
         .customer_namespaces
@@ -816,7 +1053,7 @@ pub async fn write_table_row(
     // A customizing change that records no `TABU` entry lives in one client and
     // never travels, and nothing says so afterwards. Refusing is the only option.
     let transport_entry = if customizing {
-        let Some(transport) = request.transport.as_deref() else {
+        let Some(transport) = request.transport() else {
             return Err(TableWriteError::TransportRequired {
                 table,
                 delivery_class,
@@ -832,7 +1069,7 @@ pub async fn write_table_row(
     };
 
     validate_shape(&metadata, request)?;
-    let row = read_row(sap, &table, &request.keys).await?;
+    let row = read_row(sap, &table, &key_fields(&metadata, request)).await?;
     let validated = resolve_changes(&metadata, request, &row)?;
 
     let class = executor_class_name(username);
@@ -845,6 +1082,7 @@ pub async fn write_table_row(
         (Some(journal), WriteMode::Execute) => Some(journal.begin(
             entry_object(&validated.table),
             JournalOperation::table_write(vec![RowWrite {
+                operation: validated.operation,
                 key: validated
                     .keys
                     .iter()
@@ -860,7 +1098,7 @@ pub async fn write_table_row(
                     })
                     .collect(),
             }]),
-            request.transport.clone(),
+            request.transport().map(str::to_owned),
             Some(&row_json(&validated.before)),
             None,
         )?),
@@ -1166,7 +1404,7 @@ mod tests {
             field: (*f).to_owned(),
             value: (*v).to_owned(),
         };
-        TableWriteRequest {
+        TableWriteRequest::Update {
             table: "ZSAMPLE_RECORD".to_owned(),
             keys: keys.iter().map(pair).collect(),
             sets: sets.iter().map(pair).collect(),
@@ -1298,11 +1536,22 @@ mod tests {
 
     #[test]
     fn an_asserted_before_value_becomes_the_guard() {
-        let mut request = request(&[("id", "R1")], &[("status", "OPEN")]);
-        request.expected_before = Some(BTreeMap::from([(
-            "STATUS".to_owned(),
-            "DONE".to_owned(),
-        )]));
+        let request = TableWriteRequest::Update {
+            table: "ZSAMPLE_RECORD".to_owned(),
+            keys: vec![FieldValue {
+                field: "id".to_owned(),
+                value: "R1".to_owned(),
+            }],
+            sets: vec![FieldValue {
+                field: "status".to_owned(),
+                value: "OPEN".to_owned(),
+            }],
+            expected_before: Some(BTreeMap::from([(
+                "STATUS".to_owned(),
+                "DONE".to_owned(),
+            )])),
+            transport: None,
+        };
 
         let write = validate(&metadata(), &request, &row()).unwrap();
 
@@ -1407,6 +1656,111 @@ mod tests {
         assert!(!row_changed("conflict"));
         assert!(!row_changed("row_not_found"));
         assert!(!row_changed("transport_refused"));
+    }
+
+    fn insert_request(fields: &[(&str, &str)]) -> TableWriteRequest {
+        TableWriteRequest::Insert {
+            table: "ZSAMPLE_RECORD".to_owned(),
+            fields: fields
+                .iter()
+                .map(|(field, value)| FieldValue {
+                    field: (*field).to_owned(),
+                    value: (*value).to_owned(),
+                })
+                .collect(),
+            transport: None,
+        }
+    }
+
+    fn delete_request(keys: &[(&str, &str)]) -> TableWriteRequest {
+        TableWriteRequest::Delete {
+            table: "ZSAMPLE_RECORD".to_owned(),
+            keys: keys
+                .iter()
+                .map(|(field, value)| FieldValue {
+                    field: (*field).to_owned(),
+                    value: (*value).to_owned(),
+                })
+                .collect(),
+            transport: None,
+        }
+    }
+
+    #[test]
+    fn an_insert_takes_its_key_from_the_fields_it_sets() {
+        let write = validate(
+            &metadata(),
+            &insert_request(&[("id", "R9"), ("status", "OPEN")]),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        assert_eq!(write.keys.len(), 1);
+        assert_eq!(write.keys[0].field, "ID");
+        let abap = generate_abap("ZCL_X", &write, WriteMode::Execute, None);
+        assert!(abap.contains("INSERT zsample_record FROM @ls_row"), "{abap}");
+        assert!(abap.contains("lv_status = 'row_exists'"));
+    }
+
+    #[test]
+    fn the_client_never_becomes_part_of_the_key() {
+        // Restoring a deleted row replays every recorded field, MANDT with
+        // them. SQL refuses the client field in a WHERE.
+        let write = validate(
+            &metadata(),
+            &insert_request(&[("mandt", "100"), ("id", "R9"), ("status", "OPEN")]),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert!(
+            write.keys.iter().all(|key| key.field != "MANDT"),
+            "{:?}",
+            write.keys
+        );
+    }
+
+    #[test]
+    fn an_insert_refuses_a_key_that_is_already_there() {
+        let error = validate(
+            &metadata(),
+            &insert_request(&[("id", "R1"), ("status", "OPEN")]),
+            &row(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "table_write_row_exists");
+    }
+
+    #[test]
+    fn a_delete_is_by_key_under_the_lock() {
+        let write = validate(&metadata(), &delete_request(&[("id", "R1")]), &row()).unwrap();
+        let abap = generate_abap("ZCL_X", &write, WriteMode::Execute, None);
+
+        assert!(abap.contains("DELETE FROM zsample_record WHERE id = @lv_k0"), "{abap}");
+        // SE16N deletes by key too, and the lock is what protects it.
+        let lock = abap.find("ENQUEUE_E_TABLEE").unwrap();
+        let delete = abap.find("DELETE FROM").unwrap();
+        let unlock = abap.find("DEQUEUE_E_TABLEE").unwrap();
+        assert!(lock < delete && delete < unlock, "{abap}");
+    }
+
+    #[test]
+    fn every_operation_takes_the_lock() {
+        for operation in [RowOperation::Update, RowOperation::Insert, RowOperation::Delete] {
+            let request = match operation {
+                RowOperation::Insert => insert_request(&[("id", "R9"), ("status", "OPEN")]),
+                RowOperation::Delete => delete_request(&[("id", "R1")]),
+                RowOperation::Update => request(&[("id", "R1")], &[("status", "DONE")]),
+            };
+            let existing = if operation == RowOperation::Insert {
+                BTreeMap::new()
+            } else {
+                row()
+            };
+            let write = validate(&metadata(), &request, &existing).unwrap();
+            let abap = generate_abap("ZCL_X", &write, WriteMode::Execute, None);
+            assert!(abap.contains("ENQUEUE_E_TABLEE"), "{operation:?}");
+            assert!(abap.contains("DEQUEUE_E_TABLEE"), "{operation:?}");
+        }
     }
 
     #[test]

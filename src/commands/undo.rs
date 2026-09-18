@@ -141,12 +141,15 @@ pub async fn object_undo(
     if entry.operation.table_write_rows().is_some() {
         return undo_table_row(
             &mut client,
-            &policy,
-            &profile.username,
-            &entry,
-            &journal,
-            profile_name,
-            args,
+            RowUndo {
+                policy: &policy,
+                username: &profile.username,
+                entry: &entry,
+                journal: &journal,
+                blobs: &blobs,
+                profile_name,
+                args,
+            },
         )
         .await;
     }
@@ -185,15 +188,26 @@ pub async fn object_undo(
 /// A dry run reports the plan without running anything; there is no statement
 /// to rehearse, because the reversal is gated on the row still holding what the
 /// write left and that gate is checked by the statement itself.
-async fn undo_table_row(
-    sap: &mut SapClient,
-    policy: &fractal::config::EditPolicy,
-    username: &str,
-    entry: &JournalEntry,
-    journal: &Journal,
+struct RowUndo<'a> {
+    policy: &'a fractal::config::EditPolicy,
+    username: &'a str,
+    entry: &'a JournalEntry,
+    journal: &'a Journal,
+    blobs: &'a BlobStore,
     profile_name: String,
-    args: &UndoArgs,
-) -> Result<UndoOutput, Reported> {
+    args: &'a UndoArgs,
+}
+
+async fn undo_table_row(sap: &mut SapClient, context: RowUndo<'_>) -> Result<UndoOutput, Reported> {
+    let RowUndo {
+        policy,
+        username,
+        entry,
+        journal,
+        blobs,
+        profile_name,
+        args,
+    } = context;
     let plan = plan_table_undo(entry)?;
     let row = &plan.row;
     let keys = row
@@ -226,7 +240,7 @@ async fn undo_table_row(
         })));
     }
 
-    let outcome = undo_table_write(sap, policy, username, entry, journal).await?;
+    let outcome = undo_table_write(sap, policy, username, entry, journal, blobs).await?;
     Ok(UndoOutput::TableRow(Box::new(TableRowUndoOutput {
         ok: true,
         profile: profile_name,

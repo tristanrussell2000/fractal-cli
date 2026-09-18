@@ -420,6 +420,10 @@ pub enum TableCommand {
     Metadata(TableMetadataArgs),
     /// Change fields of one row, addressed by its complete key.
     Set(TableSetArgs),
+    /// Add one row. Every key field is given with --set, like any other field.
+    Insert(TableSetArgs),
+    /// Delete one row, addressed by its complete key.
+    Remove(TableSetArgs),
 }
 
 #[derive(Debug, Args)]

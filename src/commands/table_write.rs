@@ -8,6 +8,7 @@ use crate::{
     output::{OutputFormat, print_json},
     reported::Reported,
 };
+use fractal::journal::entry::RowOperation;
 use fractal::journal::recorder::Journal;
 use fractal::reportable_error::ReportableError;
 use fractal::sap::table_write::{FieldValue, TableWriteRequest, WriteMode, write_table_row};
@@ -36,6 +37,7 @@ impl ReportableError for MalformedAssignment {
 pub struct TableSetOutput {
     ok: bool,
     profile: String,
+    operation: &'static str,
     table: String,
     delivery_class: String,
     dry_run: bool,
@@ -61,6 +63,7 @@ struct FieldChangeOutput {
 pub async fn table_set(
     explicit_profile: Option<&str>,
     args: &TableSetArgs,
+    operation: RowOperation,
 ) -> Result<TableSetOutput, Reported> {
     let keys = parse_all(&args.keys)?;
     let sets = parse_all(&args.sets)?;
@@ -71,13 +74,7 @@ pub async fn table_set(
     } else {
         WriteMode::DryRun
     };
-    let request = TableWriteRequest {
-        table: args.name.clone(),
-        keys,
-        sets,
-        expected_before: None,
-        transport: args.transport.clone(),
-    };
+    let request = build_request(operation, args.name.clone(), keys, sets, args.transport.clone())?;
     // Opened even for a dry run so a journal that cannot be written fails the
     // command rather than silently leaving a change unrecorded.
     let journal = Journal::open(&profile_name, &profile)?;
@@ -93,7 +90,12 @@ pub async fn table_set(
 
     let next_step = (!args.execute && outcome.envelope.status == "would_apply").then(|| {
         format!(
-            "fractal table set {} {} --execute",
+            "fractal table {} {} {} --execute",
+            match operation {
+                RowOperation::Update => "set",
+                RowOperation::Insert => "insert",
+                RowOperation::Delete => "remove",
+            },
             outcome.table,
             args.keys
                 .iter()
@@ -107,6 +109,11 @@ pub async fn table_set(
     Ok(TableSetOutput {
         ok: true,
         profile: profile_name,
+        operation: match operation {
+            RowOperation::Update => "update",
+            RowOperation::Insert => "insert",
+            RowOperation::Delete => "delete",
+        },
         table: outcome.table,
         delivery_class: outcome.delivery_class,
         dry_run: !args.execute,
@@ -155,6 +162,77 @@ fn parse_assignment(text: &str) -> Result<FieldValue, MalformedAssignment> {
     })
 }
 
+/// Maps what the caller typed onto the operation they asked for.
+///
+/// The three verbs share one set of arguments, so this is where a flag that
+/// does not belong to the verb is caught: an insert names its key among the
+/// fields it sets, and a delete sets nothing.
+fn build_request(
+    operation: RowOperation,
+    table: String,
+    keys: Vec<FieldValue>,
+    sets: Vec<FieldValue>,
+    transport: Option<String>,
+) -> Result<TableWriteRequest, ArgumentNotAllowed> {
+    match operation {
+        RowOperation::Update => Ok(TableWriteRequest::Update {
+            table,
+            keys,
+            sets,
+            expected_before: None,
+            transport,
+        }),
+        RowOperation::Insert => {
+            if !keys.is_empty() {
+                return Err(ArgumentNotAllowed {
+                    verb: "insert",
+                    flag: "--key",
+                    instead: "give every field, key fields included, with --set",
+                });
+            }
+            Ok(TableWriteRequest::Insert {
+                table,
+                fields: sets,
+                transport,
+            })
+        }
+        RowOperation::Delete => {
+            if !sets.is_empty() {
+                return Err(ArgumentNotAllowed {
+                    verb: "remove",
+                    flag: "--set",
+                    instead: "a delete changes no fields, so give only --key",
+                });
+            }
+            Ok(TableWriteRequest::Delete {
+                table,
+                keys,
+                transport,
+            })
+        }
+    }
+}
+
+/// A flag that belongs to a different verb.
+#[derive(Debug, thiserror::Error)]
+#[error("{flag} does not apply to `table {verb}`")]
+pub struct ArgumentNotAllowed {
+    verb: &'static str,
+    flag: &'static str,
+    instead: &'static str,
+}
+
+impl ReportableError for ArgumentNotAllowed {
+    fn code(&self) -> &'static str {
+        "table_write_argument_not_allowed"
+    }
+
+    fn hint(&self) -> Option<String> {
+        let Self { instead, .. } = self;
+        Some(format!("Instead, {instead}."))
+    }
+}
+
 fn parse_all(values: &[String]) -> Result<Vec<FieldValue>, Reported> {
     values
         .iter()
@@ -189,6 +267,40 @@ pub fn print_table_set(result: &TableSetOutput, output: OutputFormat) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_insert_will_not_take_a_key_flag() {
+        // The key of an inserted row arrives with the other fields, so --key
+        // would be a second, silent source of truth for it.
+        let error = build_request(
+            RowOperation::Insert,
+            "ZSAMPLE".to_owned(),
+            vec![FieldValue {
+                field: "id".to_owned(),
+                value: "R1".to_owned(),
+            }],
+            Vec::new(),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "table_write_argument_not_allowed");
+    }
+
+    #[test]
+    fn a_delete_will_not_take_a_set_flag() {
+        let error = build_request(
+            RowOperation::Delete,
+            "ZSAMPLE".to_owned(),
+            Vec::new(),
+            vec![FieldValue {
+                field: "status".to_owned(),
+                value: "X".to_owned(),
+            }],
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "table_write_argument_not_allowed");
+    }
 
     #[test]
     fn splits_a_field_assignment_keeping_equals_in_the_value() {

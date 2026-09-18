@@ -39,6 +39,7 @@ use commands::query::{print_query, query};
 use commands::system::{print_system_list, print_system_test, system_list, system_test};
 use commands::table::{print_table_data, print_table_metadata, table_data, table_metadata};
 use commands::table_write::{print_table_set, table_set};
+use fractal::journal::entry::RowOperation;
 use commands::transport::{
     print_transport_create, print_transport_list, print_transport_show, transport_create,
     transport_list, transport_show,
@@ -204,7 +205,27 @@ async fn main() {
             command: TableCommand::Set(args),
         } => {
             run_and_print_with_async(
-                || table_set(cli.profile.as_deref(), args),
+                || table_set(cli.profile.as_deref(), args, RowOperation::Update),
+                print_table_set,
+                output,
+            )
+            .await
+        }
+        Command::Table {
+            command: TableCommand::Insert(args),
+        } => {
+            run_and_print_with_async(
+                || table_set(cli.profile.as_deref(), args, RowOperation::Insert),
+                print_table_set,
+                output,
+            )
+            .await
+        }
+        Command::Table {
+            command: TableCommand::Remove(args),
+        } => {
+            run_and_print_with_async(
+                || table_set(cli.profile.as_deref(), args, RowOperation::Delete),
                 print_table_set,
                 output,
             )

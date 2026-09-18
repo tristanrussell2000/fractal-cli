@@ -222,11 +222,48 @@ pub struct EntryObject {
 /// One row a table write changed, and what it changed about it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RowWrite {
+    /// What was done to the row.
+    #[serde(default)]
+    pub operation: RowOperation,
     /// The complete primary key that addressed the row. The client is not here:
     /// it is the session's, and `EntrySystem` already records it.
     pub key: BTreeMap<String, String>,
     /// Only the fields this write changed. 
     pub changes: Vec<FieldChange>,
+}
+
+/// What a table write did to one row.
+///
+/// `#[serde(default)]` on the field that holds it, so entries written before
+/// insert and delete existed still read back — they are all updates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RowOperation {
+    #[default]
+    Update,
+    Insert,
+    Delete,
+}
+
+impl RowOperation {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Update => "update",
+            Self::Insert => "insert",
+            Self::Delete => "delete",
+        }
+    }
+
+    /// What undoing it does.
+    #[must_use]
+    pub const fn inverse(self) -> Self {
+        match self {
+            Self::Update => Self::Update,
+            Self::Insert => Self::Delete,
+            Self::Delete => Self::Insert,
+        }
+    }
 }
 
 /// One field, before and after.
