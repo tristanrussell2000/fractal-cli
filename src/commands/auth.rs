@@ -246,7 +246,8 @@ pub fn auth_set(
     apply_edit_policy_args(profile, args);
     let policy = profile.edit_policy();
 
-    let is_new_default = apply_default_arg(&mut loaded.config.default_profile, &name, args.default);
+    let is_new_default =
+        args.default && set_default_profile(&mut loaded.config.default_profile, &name);
     let config_path = config::save(&loaded.config).map_err(AuthCommandError::ConfigWrite)?;
 
     Ok(AuthSetResult {
@@ -262,18 +263,8 @@ pub fn auth_set(
     })
 }
 
-/// Points the default at this profile, if that was asked for.
-///
-/// Changing the default needs no password, which is the point: `auth login` is
-/// the only other way to set it, and it re-prompts for the URL, the client and
-/// the password to change one line of configuration.
-///
-/// Returns whether this call is what changed it, so that saying so is not a
-/// claim the command has to make about a default that was already set.
-fn apply_default_arg(current: &mut Option<String>, name: &str, requested: bool) -> bool {
-    if !requested {
-        return false;
-    }
+/// Points the default at this profile. Returns whether that changed anything.
+fn set_default_profile(current: &mut Option<String>, name: &str) -> bool {
     let changed = current.as_deref() != Some(name);
     *current = Some(name.to_owned());
     changed
@@ -875,30 +866,21 @@ mod tests {
     #[test]
     fn makes_a_profile_the_default() {
         let mut current = Some("de3".to_owned());
-        assert!(apply_default_arg(&mut current, "DE2", true));
+        assert!(set_default_profile(&mut current, "DE2"));
         assert_eq!(current.as_deref(), Some("DE2"));
     }
 
     #[test]
     fn setting_the_default_it_already_has_changes_nothing() {
-        // Reported honestly rather than announcing a change that did not
-        // happen.
         let mut current = Some("DE2".to_owned());
-        assert!(!apply_default_arg(&mut current, "DE2", true));
+        assert!(!set_default_profile(&mut current, "DE2"));
         assert_eq!(current.as_deref(), Some("DE2"));
-    }
-
-    #[test]
-    fn leaves_the_default_alone_when_not_asked() {
-        let mut current = Some("de3".to_owned());
-        assert!(!apply_default_arg(&mut current, "DE2", false));
-        assert_eq!(current.as_deref(), Some("de3"));
     }
 
     #[test]
     fn sets_the_first_default_when_there_is_none() {
         let mut current = None;
-        assert!(apply_default_arg(&mut current, "DE2", true));
+        assert!(set_default_profile(&mut current, "DE2"));
         assert_eq!(current.as_deref(), Some("DE2"));
     }
 
