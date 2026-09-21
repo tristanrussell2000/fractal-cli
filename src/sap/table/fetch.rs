@@ -100,13 +100,26 @@ pub async fn get_table_metadata(
     );
 
     let columns = columns?;
-    let mut metadata =
-        merge_table_metadata(entity.to_ascii_lowercase(), fields?, &columns);
+    let mut metadata = merge_table_metadata(entity.to_ascii_lowercase(), fields?, &columns);
     metadata.total_rows = total_rows?;
     Ok(metadata)
 }
 
 /// Reads the fields SAP records for one entity, appends and includes flattened.
+///
+/// # Errors
+///
+/// Returns [`TableError`] when validation, session setup, the SAP request, or
+/// response parsing fails.
+pub async fn get_table_fields(
+    sap: &mut SapClient,
+    entity: &str,
+) -> Result<Vec<TableFieldMetadata>, TableError> {
+    let entity = validate_entity_name(entity)?;
+    sap.establish_csrf_session().await?;
+    get_entity_fields(sap, &entity).await
+}
+
 async fn get_entity_fields(
     sap: &SapClient,
     entity: &str,

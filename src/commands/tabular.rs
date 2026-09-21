@@ -7,6 +7,12 @@ const MAX_READABLE_CELL_WIDTH: usize = 40;
 #[derive(Debug, Serialize)]
 pub(super) struct ColumnOutput {
     pub(super) name: String,
+    /// Only present when the caller asked for types; omitted entirely
+    /// otherwise, so the default shape is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) declared_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) is_key: Option<bool>,
     pub(super) sap_type: Option<String>,
     pub(super) col_type: Option<String>,
     pub(super) length: Option<u32>,
@@ -18,6 +24,8 @@ pub(super) fn map_columns(columns: Vec<TableColumn>) -> Vec<ColumnOutput> {
         .into_iter()
         .map(|column| ColumnOutput {
             name: column.name,
+            declared_type: None,
+            is_key: None,
             sap_type: column.sap_type,
             col_type: column.col_type,
             length: column.length,
@@ -31,6 +39,8 @@ pub(super) fn map_columns(columns: Vec<TableColumn>) -> Vec<ColumnOutput> {
 pub(super) fn plain_column(name: &str) -> ColumnOutput {
     ColumnOutput {
         name: name.to_owned(),
+        declared_type: None,
+        is_key: None,
         sap_type: None,
         col_type: None,
         length: None,
@@ -107,6 +117,8 @@ mod tests {
     fn renders_rows_and_normalizes_multiline_cells() {
         let columns = vec![ColumnOutput {
             name: "NOTE".to_owned(),
+            declared_type: None,
+            is_key: None,
             sap_type: None,
             col_type: None,
             length: None,

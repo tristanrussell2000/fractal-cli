@@ -8,9 +8,10 @@ use crate::{
     output::{OutputFormat, print_json},
     reported::Reported,
 };
+use fractal::reportable_error::ReportableError;
 use fractal::sap::table::{
     TableDataOptions, TableDataResult, TableFieldMetadata, TableMetadata, TableMetadataOptions,
-    get_table_data, get_table_metadata,
+    get_table_data, get_table_fields, get_table_metadata,
 };
 
 #[derive(Debug, Serialize)]
@@ -53,18 +54,64 @@ struct TableFieldMetadataOutput {
 pub async fn table_data(
     explicit_profile: Option<&str>,
     args: &TableDataArgs,
+    output: OutputFormat,
 ) -> Result<TableDataResultOutput, Reported> {
+    // The readable grid renders values only, so there would be nowhere to put
+    // what the extra read buys. Refusing beats paying for a discarded read.
+    if args.types && !matches!(output, OutputFormat::Json) {
+        return Err(TypesNeedJson.into());
+    }
+
     let options = table_options_from_args(args);
     let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
     let result = get_table_data(&mut client, &args.name, &options).await?;
+    let fields = if args.types {
+        Some(get_table_fields(&mut client, &args.name).await?)
+    } else {
+        None
+    };
 
-    Ok(map_table_data_result(
-        profile_name,
-        &args.name,
-        args.offset,
-        args.limit,
-        result,
-    ))
+    let mut output =
+        map_table_data_result(profile_name, &args.name, args.offset, args.limit, result);
+    if let Some(fields) = fields {
+        add_recorded_types(&mut output.columns, &fields);
+    }
+    Ok(output)
+}
+
+/// Adds what only the recorded field list knows to the columns a preview
+/// returned: the data element, the key flag, and a DDIC type that is present
+/// on every release.
+fn add_recorded_types(columns: &mut [tabular::ColumnOutput], fields: &[TableFieldMetadata]) {
+    for column in columns {
+        let Some(field) = fields
+            .iter()
+            .find(|field| field.name.eq_ignore_ascii_case(&column.name))
+        else {
+            continue;
+        };
+
+        column.declared_type = Some(field.declared_type.clone());
+        column.is_key = Some(field.is_key);
+        if field.col_type.is_some() {
+            column.col_type.clone_from(&field.col_type);
+        }
+    }
+}
+
+/// `--types` asked for fields the readable grid cannot show.
+#[derive(Debug, thiserror::Error)]
+#[error("--types applies to JSON output only")]
+pub struct TypesNeedJson;
+
+impl ReportableError for TypesNeedJson {
+    fn code(&self) -> &'static str {
+        "table_data_types_need_json"
+    }
+
+    fn hint(&self) -> Option<String> {
+        Some("Add --output json, or drop --types.".to_owned())
+    }
 }
 
 pub async fn table_metadata(
@@ -256,6 +303,95 @@ mod tests {
             panic!("expected table data command");
         };
         args
+    }
+
+    fn recorded(
+        name: &str,
+        declared_type: &str,
+        is_key: bool,
+        col_type: Option<&str>,
+    ) -> TableFieldMetadata {
+        TableFieldMetadata {
+            name: name.to_owned(),
+            declared_type: declared_type.to_owned(),
+            is_key,
+            sap_type: None,
+            col_type: col_type.map(str::to_owned),
+            length: None,
+            description: None,
+        }
+    }
+
+    #[test]
+    fn types_are_absent_from_the_default_json_shape() {
+        let columns = tabular::map_columns(vec![TableColumn {
+            name: "MANDT".to_owned(),
+            sap_type: Some("C".to_owned()),
+            col_type: None,
+            length: Some(3),
+            description: None,
+        }]);
+
+        let json = serde_json::to_string(&columns).unwrap();
+        assert!(!json.contains("declared_type"), "{json}");
+        assert!(!json.contains("is_key"), "{json}");
+    }
+
+    #[test]
+    fn recorded_types_fill_the_data_element_key_flag_and_ddic_type() {
+        let mut columns = tabular::map_columns(vec![TableColumn {
+            name: "mandt".to_owned(),
+            sap_type: Some("C".to_owned()),
+            // The release that serves no colType is the one this buys most.
+            col_type: None,
+            length: Some(3),
+            description: None,
+        }]);
+
+        add_recorded_types(
+            &mut columns,
+            &[recorded("MANDT", "mandt", true, Some("CLNT"))],
+        );
+
+        assert_eq!(columns[0].declared_type.as_deref(), Some("mandt"));
+        assert_eq!(columns[0].is_key, Some(true));
+        assert_eq!(columns[0].col_type.as_deref(), Some("CLNT"));
+    }
+
+    #[test]
+    fn a_column_the_field_list_does_not_mention_is_left_alone() {
+        let mut columns = tabular::map_columns(vec![TableColumn {
+            name: "ROW_COUNT".to_owned(),
+            sap_type: None,
+            col_type: None,
+            length: None,
+            description: None,
+        }]);
+
+        add_recorded_types(
+            &mut columns,
+            &[recorded("MANDT", "mandt", true, Some("CLNT"))],
+        );
+
+        assert_eq!(columns[0].declared_type, None);
+        assert_eq!(columns[0].is_key, None);
+    }
+
+    /// A preview that did serve a type keeps it rather than being blanked by a
+    /// field list that somehow has none.
+    #[test]
+    fn a_blank_recorded_type_does_not_erase_the_previews() {
+        let mut columns = tabular::map_columns(vec![TableColumn {
+            name: "MANDT".to_owned(),
+            sap_type: Some("C".to_owned()),
+            col_type: Some("CLNT".to_owned()),
+            length: Some(3),
+            description: None,
+        }]);
+
+        add_recorded_types(&mut columns, &[recorded("MANDT", "mandt", true, None)]);
+
+        assert_eq!(columns[0].col_type.as_deref(), Some("CLNT"));
     }
 
     fn metadata_args(cli: Cli) -> TableMetadataArgs {

@@ -6,8 +6,8 @@ mod parse;
 
 pub use error::{TableError, TableQueryError, TableQueryErrorKind};
 pub use fetch::{
-    QueryOptions, TableDataOptions, TableMetadataOptions, get_table_data, get_table_metadata,
-    run_query,
+    QueryOptions, TableDataOptions, TableMetadataOptions, get_table_data, get_table_fields,
+    get_table_metadata, run_query,
 };
 pub use metadata::{TableFieldMetadata, TableMetadata};
 pub use parse::parse_table_data;

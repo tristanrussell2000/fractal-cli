@@ -756,6 +756,10 @@ pub struct TableDataArgs {
     /// Maximum number of rows to return.
     #[arg(long, default_value_t = 100)]
     pub(crate) limit: usize,
+    /// Add each column's data element, DDIC type and key flag to the output.
+    /// Costs one extra read, and applies to JSON output only.
+    #[arg(long)]
+    pub(crate) types: bool,
 }
 
 #[derive(Debug, Args)]
