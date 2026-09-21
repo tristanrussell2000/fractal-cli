@@ -3,10 +3,10 @@ use thiserror::Error;
 use super::{
     adt_version::AdtVersion,
     class_run::{ClassRunError, run_class},
-    object_source::{ByteRangeOptions, ObjectSourceError, get_source},
     client::{SapClient, SapClientError},
     editable_source::EditableAdtObjectType,
     object_creation::{AdtObjectCreationError, AdtObjectCreationRequest, create_adt_object},
+    object_source::{ByteRangeOptions, ObjectSourceError, get_source},
     source_activation::{
         AdtSourceActivationError, AdtSourceActivationRequest, activate_adt_source,
     },
@@ -178,7 +178,8 @@ pub async fn run_generated_source(
         // inactive version, so there is nothing to activate. That is the normal
         // case for a repeated command, not a failure — the executor already
         // holds the statement we want to run.
-        if error.code() != NOTHING_TO_ACTIVATE || !active_source_matches(sap, &uri, &source).await? {
+        if error.code() != NOTHING_TO_ACTIVATE || !active_source_matches(sap, &uri, &source).await?
+        {
             return Err(error.into());
         }
     }
@@ -201,10 +202,11 @@ pub async fn run_generated_source(
 /// Returns [`ExecClassError`] when the session cannot be restarted or the run
 /// fails.
 pub async fn rerun_executor(sap: &mut SapClient, username: &str) -> Result<String, ExecClassError> {
-    sap.restart_session().await.map_err(ExecClassError::Session)?;
+    sap.restart_session()
+        .await
+        .map_err(ExecClassError::Session)?;
     Ok(run_class(sap, &executor_class_name(username)).await?.output)
 }
-
 
 /// Whether the executor's active source is already what was written.
 ///

@@ -182,7 +182,6 @@ pub async fn object_undo(
     ))))
 }
 
-
 /// Reverses a recorded table write.
 ///
 /// A dry run reports the plan without running anything; there is no statement

@@ -203,7 +203,6 @@ pub fn plan_table_undo(entry: &JournalEntry) -> Result<TableUndoPlan, TableUndoE
     })
 }
 
-
 /// The write that reverses a recorded one.
 ///
 /// Each operation inverts differently, and only the update is a mirror image:
@@ -338,7 +337,8 @@ pub async fn undo_table_write(
     // Not journaled: an undo is the reversal of an entry that already exists,
     // and recording it would offer an undo of the undo that the status
     // transition already expresses.
-    let outcome = write_table_row(sap, policy, username, &request, WriteMode::Execute, None).await?;
+    let outcome =
+        write_table_row(sap, policy, username, &request, WriteMode::Execute, None).await?;
 
     if row_changed(&outcome.envelope.status) {
         let mut entry = entry.clone();
@@ -473,8 +473,8 @@ mod tests {
 
     #[test]
     fn refuses_an_entry_that_is_not_a_table_write() {
-        let error =
-            plan_table_undo(&entry(EntryStatus::Succeeded, JournalOperation::activate())).unwrap_err();
+        let error = plan_table_undo(&entry(EntryStatus::Succeeded, JournalOperation::activate()))
+            .unwrap_err();
         assert_eq!(error.code(), "undo_not_a_table_write");
     }
 

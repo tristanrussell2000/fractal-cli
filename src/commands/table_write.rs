@@ -74,7 +74,13 @@ pub async fn table_set(
     } else {
         WriteMode::DryRun
     };
-    let request = build_request(operation, args.name.clone(), keys, sets, args.transport.clone())?;
+    let request = build_request(
+        operation,
+        args.name.clone(),
+        keys,
+        sets,
+        args.transport.clone(),
+    )?;
     // Opened even for a dry run so a journal that cannot be written fails the
     // command rather than silently leaving a change unrecorded.
     let journal = Journal::open(&profile_name, &profile)?;

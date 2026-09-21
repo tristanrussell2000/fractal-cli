@@ -228,7 +228,7 @@ pub struct RowWrite {
     /// The complete primary key that addressed the row. The client is not here:
     /// it is the session's, and `EntrySystem` already records it.
     pub key: BTreeMap<String, String>,
-    /// Only the fields this write changed. 
+    /// Only the fields this write changed.
     pub changes: Vec<FieldChange>,
 }
 

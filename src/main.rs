@@ -39,12 +39,12 @@ use commands::query::{print_query, query};
 use commands::system::{print_system_list, print_system_test, system_list, system_test};
 use commands::table::{print_table_data, print_table_metadata, table_data, table_metadata};
 use commands::table_write::{print_table_set, table_set};
-use fractal::journal::entry::RowOperation;
 use commands::transport::{
     print_transport_create, print_transport_list, print_transport_show, transport_create,
     transport_list, transport_show,
 };
 use commands::undo::{object_undo, print_object_undo};
+use fractal::journal::entry::RowOperation;
 use output::{default_output_format, run_and_print_with, run_and_print_with_async};
 use reported::Reported;
 
@@ -175,7 +175,7 @@ async fn main() {
             command: TableCommand::Data(args),
         } => {
             run_and_print_with_async(
-                || table_data(cli.profile.as_deref(), args),
+                || table_data(cli.profile.as_deref(), args, output),
                 print_table_data,
                 output,
             )

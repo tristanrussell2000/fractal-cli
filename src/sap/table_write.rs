@@ -8,18 +8,18 @@ use super::{
     editable_source::EditableAdtObjectType,
     exec_class::{ExecClassError, executor_class_name, rerun_executor, run_generated_source},
     object_family::AdtObjectFamily,
-    transport::{TransportShowError, show_transport_request},
     table::{
         QueryOptions, TableError, TableFieldMetadata, TableMetadata, TableMetadataOptions,
         get_table_metadata, run_query,
     },
+    transport::{TransportShowError, show_transport_request},
 };
 use crate::config::EditPolicy;
+use crate::journal::JournalError;
 use crate::journal::entry::{
     EntryObject, FieldChange as JournalFieldChange, JournalOperation, RowOperation, RowWrite,
 };
 use crate::journal::recorder::Journal;
-use crate::journal::JournalError;
 use crate::pattern::glob_matches;
 use crate::reportable_error::ReportableError;
 
@@ -77,9 +77,9 @@ impl TableWriteRequest {
     #[must_use]
     pub fn table(&self) -> &str {
         match self {
-            Self::Update { table, .. } | Self::Insert { table, .. } | Self::Delete { table, .. } => {
-                table
-            }
+            Self::Update { table, .. }
+            | Self::Insert { table, .. }
+            | Self::Delete { table, .. } => table,
         }
     }
 
@@ -160,7 +160,9 @@ pub struct RunEnvelope {
 pub enum TableWriteError {
     #[error("{table} is not a customer table")]
     NotCustomerTable { table: String },
-    #[error("{table} is a customizing table (delivery class {delivery_class}) and needs a transport")]
+    #[error(
+        "{table} is a customizing table (delivery class {delivery_class}) and needs a transport"
+    )]
     TransportRequired {
         table: String,
         delivery_class: String,
@@ -408,10 +410,9 @@ fn key_fields(metadata: &TableMetadata, request: &TableWriteRequest) -> Vec<Fiel
         // performed by the compiler" — and the transport key adds `sy-mandt`
         // itself, so including it here would both break the read and double it.
         .filter(|given| {
-            !metadata
-                .fields
-                .iter()
-                .any(|field| field.name.eq_ignore_ascii_case(&given.field) && is_client_field(field))
+            !metadata.fields.iter().any(|field| {
+                field.name.eq_ignore_ascii_case(&given.field) && is_client_field(field)
+            })
         })
         .map(|given| FieldValue {
             value: pad_numeric(metadata, &given.field, &given.value),
@@ -1203,7 +1204,6 @@ pub async fn write_table_row(
     })
 }
 
-
 /// The task a `TABU` entry goes in.
 ///
 /// `TR_APPEND_TO_COMM_OBJS_KEYS` refuses a request with `TK 127`, "changes to
@@ -1294,7 +1294,10 @@ async fn read_row(
         })
         .collect::<Vec<_>>()
         .join(" AND ");
-    let query = format!("SELECT * FROM {} WHERE {conditions}", table.to_ascii_lowercase());
+    let query = format!(
+        "SELECT * FROM {} WHERE {conditions}",
+        table.to_ascii_lowercase()
+    );
 
     let result = run_query(sap, &query, &QueryOptions::default())
         .await
@@ -1313,7 +1316,6 @@ async fn read_row(
         .map(|(column, value)| (column.name.to_ascii_uppercase(), value.clone()))
         .collect())
 }
-
 
 /// The repository object a row write is recorded against.
 ///
@@ -1577,7 +1579,8 @@ mod tests {
 
     #[test]
     fn refuses_a_partial_key() {
-        let error = validate(&metadata(), &request(&[], &[("status", "DONE")]), &row()).unwrap_err();
+        let error =
+            validate(&metadata(), &request(&[], &[("status", "DONE")]), &row()).unwrap_err();
         assert_eq!(error.code(), "table_write_key_incomplete");
     }
 
@@ -1646,13 +1649,19 @@ mod tests {
         .unwrap();
         let abap = generate_abap("ZCL_X", &write, WriteMode::Execute, None);
 
-        assert!(abap.contains("UPDATE zsample_record SET status = @lv_new0"), "{abap}");
+        assert!(
+            abap.contains("UPDATE zsample_record SET status = @lv_new0"),
+            "{abap}"
+        );
         assert!(abap.contains("note = @lv_new1"), "{abap}");
         assert!(abap.contains("id = @lv_k0"), "{abap}");
         assert!(abap.contains("status = @lv_old0"), "{abap}");
         assert!(abap.contains("note = @lv_old1"), "{abap}");
         assert!(abap.contains("COMMIT WORK."));
-        assert!(abap.contains("INTO @ls_row"), "strict-mode SQL needs an escaped host variable");
+        assert!(
+            abap.contains("INTO @ls_row"),
+            "strict-mode SQL needs an escaped host variable"
+        );
     }
 
     #[test]
@@ -1667,10 +1676,7 @@ mod tests {
                 field: "status".to_owned(),
                 value: "OPEN".to_owned(),
             }],
-            expected_before: Some(BTreeMap::from([(
-                "STATUS".to_owned(),
-                "DONE".to_owned(),
-            )])),
+            expected_before: Some(BTreeMap::from([("STATUS".to_owned(), "DONE".to_owned())])),
             transport: None,
         };
 
@@ -1710,8 +1716,14 @@ mod tests {
         assert!(abap.contains("ls_e071-obj_name = 'ZSAMPLE_RECORD'"));
         assert!(abap.contains("wi_trkorr             = 'DE3K900671'"));
         // The client leads the key of a client-dependent table.
-        assert!(abap.contains("lv_tabkey+lv_off(lv_len) = sy-mandt"), "{abap}");
-        assert!(abap.contains("IF lv_off + lv_len > 120."), "the 120-char cap");
+        assert!(
+            abap.contains("lv_tabkey+lv_off(lv_len) = sy-mandt"),
+            "{abap}"
+        );
+        assert!(
+            abap.contains("IF lv_off + lv_len > 120."),
+            "the 120-char cap"
+        );
     }
 
     #[test]
@@ -1761,7 +1773,12 @@ mod tests {
         .unwrap();
         std::fs::write(
             std::env::var("FRACTAL_DUMP_ABAP").unwrap(),
-            generate_abap("ZCL_FRACTAL_EXEC_TRUSSELL", &write, WriteMode::Execute, None),
+            generate_abap(
+                "ZCL_FRACTAL_EXEC_TRUSSELL",
+                &write,
+                WriteMode::Execute,
+                None,
+            ),
         )
         .unwrap();
     }
@@ -1819,7 +1836,10 @@ mod tests {
         assert_eq!(write.keys.len(), 1);
         assert_eq!(write.keys[0].field, "ID");
         let abap = generate_abap("ZCL_X", &write, WriteMode::Execute, None);
-        assert!(abap.contains("INSERT zsample_record FROM @ls_row"), "{abap}");
+        assert!(
+            abap.contains("INSERT zsample_record FROM @ls_row"),
+            "{abap}"
+        );
         assert!(abap.contains("lv_status = 'row_exists'"));
     }
 
@@ -1856,7 +1876,10 @@ mod tests {
         let write = validate(&metadata(), &delete_request(&[("id", "R1")]), &row()).unwrap();
         let abap = generate_abap("ZCL_X", &write, WriteMode::Execute, None);
 
-        assert!(abap.contains("DELETE FROM zsample_record WHERE id = @lv_k0"), "{abap}");
+        assert!(
+            abap.contains("DELETE FROM zsample_record WHERE id = @lv_k0"),
+            "{abap}"
+        );
         // SE16N deletes by key too, and the lock is what protects it.
         let lock = abap.find("ENQUEUE_E_TABLEE").unwrap();
         let delete = abap.find("DELETE FROM").unwrap();
@@ -1866,7 +1889,11 @@ mod tests {
 
     #[test]
     fn every_operation_takes_the_lock() {
-        for operation in [RowOperation::Update, RowOperation::Insert, RowOperation::Delete] {
+        for operation in [
+            RowOperation::Update,
+            RowOperation::Insert,
+            RowOperation::Delete,
+        ] {
             let request = match operation {
                 RowOperation::Insert => insert_request(&[("id", "R9"), ("status", "OPEN")]),
                 RowOperation::Delete => delete_request(&[("id", "R1")]),

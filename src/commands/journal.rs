@@ -9,12 +9,12 @@ use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 
+use crate::commands::tabular::{plain_column, render_grid};
 use crate::{
     cli::{JournalClearArgs, JournalListArgs, JournalShowArgs},
     output::{OutputFormat, print_json},
     reported::Reported,
 };
-use crate::commands::tabular::{plain_column, render_grid};
 use fractal::config;
 use fractal::journal::blobs::BlobStore;
 use fractal::journal::entry::{ContentKind, ContentRef, JournalEntry, RowWrite};
@@ -387,7 +387,6 @@ pub fn print_journal_list(result: &JournalListOutput, output: OutputFormat) {
     }
     print!("{rendered}");
 }
-
 
 /// A table write as two grids: the row it addressed, and what changed.
 ///

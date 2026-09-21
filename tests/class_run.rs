@@ -22,7 +22,11 @@ const SESSION: AdtEditSession = AdtEditSession {
 
 async fn client(server: &MockServer) -> SapClient {
     SESSION.mount_csrf_session(server).await;
-    SapClient::new(&SESSION.profile(server.uri(), &["Z*"]), "password".to_owned()).unwrap()
+    SapClient::new(
+        &SESSION.profile(server.uri(), &["Z*"]),
+        "password".to_owned(),
+    )
+    .unwrap()
 }
 
 #[tokio::test]
