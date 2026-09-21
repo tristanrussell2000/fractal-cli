@@ -1,14 +1,13 @@
-mod ddl;
 mod error;
 mod fetch;
+mod fields;
 mod metadata;
 mod parse;
 
-pub use ddl::{TableDdl, TableDdlField, TableDdlParseError, parse_table_ddl};
 pub use error::{TableError, TableQueryError, TableQueryErrorKind};
 pub use fetch::{
-    QueryOptions, TableDataOptions, TableMetadataOptions, get_table_data, get_table_ddl,
-    get_table_metadata, run_query,
+    QueryOptions, TableDataOptions, TableMetadataOptions, get_table_data, get_table_metadata,
+    run_query,
 };
 pub use metadata::{TableFieldMetadata, TableMetadata};
 pub use parse::parse_table_data;
@@ -21,8 +20,8 @@ pub use parse::parse_table_data;
 /// path, which only echoes bare column names unless enriched from elsewhere —
 /// `keyAttribute`/`isKeyFigure` are deliberately not modeled here: protocol
 /// captures showed `keyAttribute="false"` on an actual DDIC primary key, so it
-/// does not reflect SQL primary-key status (this codebase reads key fields from
-/// a table's DDL source instead — see `object source`).
+/// does not reflect SQL primary-key status (key fields are read from `DD03L`
+/// instead — see `fields`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableColumn {
     pub name: String,

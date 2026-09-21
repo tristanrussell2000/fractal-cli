@@ -3,10 +3,9 @@ use std::{fmt, sync::LazyLock};
 use regex::Regex;
 use thiserror::Error;
 
-use super::{TableColumn, TableDdlParseError};
+use super::TableColumn;
 use crate::reportable_error::{ReportableError, sap_http_status};
 use crate::sap::client::SapClientError;
-use crate::sap::object_source::ObjectSourceError;
 use crate::suggested_command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,10 +72,12 @@ impl fmt::Display for TableQueryError {
 pub enum TableError {
     #[error(transparent)]
     Sap(#[from] SapClientError),
-    #[error("could not fetch table DDL source: {0}")]
-    DdlSource(#[source] ObjectSourceError),
-    #[error("could not parse table DDL source: {0}")]
-    DdlParse(#[from] TableDdlParseError),
+    #[error("SAP records no active fields for {entity}")]
+    EntityFieldsMissing { entity: String },
+    #[error("{entity} has more fields than one read returns ({limit})")]
+    FieldListTruncated { entity: String, limit: usize },
+    #[error("SAP's field list for {entity} was missing a column it needs")]
+    FieldListUnreadable { entity: String },
     #[error("{query}")]
     Query {
         query: TableQueryError,
@@ -109,7 +110,7 @@ impl TableError {
     #[must_use]
     pub fn sap_error(&self) -> Option<&SapClientError> {
         match self {
-            Self::Sap(error) | Self::DdlSource(ObjectSourceError::Sap(error)) => Some(error),
+            Self::Sap(error) => Some(error),
             Self::Query { source, .. } => Some(source.as_ref()),
             _ => None,
         }
@@ -120,8 +121,9 @@ impl ReportableError for TableError {
     fn code(&self) -> &'static str {
         match self {
             Self::Sap(error) => error.code(),
-            Self::DdlSource(error) => error.code(),
-            Self::DdlParse(_) => "table_ddl_parse_error",
+            Self::EntityFieldsMissing { .. } => "table_fields_missing",
+            Self::FieldListTruncated { .. } => "table_field_list_truncated",
+            Self::FieldListUnreadable { .. } => "table_field_list_unreadable",
             Self::Query { query, .. } => query.kind.code(),
             Self::Parse(_) => "table_response_parse_error",
             Self::CountMissing => "table_count_response_error",
@@ -142,10 +144,16 @@ impl ReportableError for TableError {
     fn hint(&self) -> Option<String> {
         match self {
             Self::Sap(error) => error.hint(),
-            Self::DdlSource(error) => error.hint(),
-            Self::DdlParse(_) => Some(
-                "The SAP table source did not match the expected `define table` DDL format."
+            Self::EntityFieldsMissing { .. } => Some(
+                "Check the name exists and is active. Field definitions are read from DD03L."
                     .to_owned(),
+            ),
+            Self::FieldListTruncated { .. } => Some(
+                "This entity has an unusually large field list; Fractal cannot describe it safely."
+                    .to_owned(),
+            ),
+            Self::FieldListUnreadable { .. } => Some(
+                "The DD03L read did not return the expected columns.".to_owned(),
             ),
             Self::Query { query, .. } => Some(query_hint(query)),
             Self::Parse(_) => Some(

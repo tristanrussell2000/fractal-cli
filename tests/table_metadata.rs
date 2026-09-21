@@ -8,7 +8,7 @@ use fractal::{
 };
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
-    matchers::{basic_auth, body_string, header, method, path, query_param},
+    matchers::{basic_auth, body_string, body_string_contains, header, method, path, query_param},
 };
 
 fn profile(base_url: String) -> Profile {
@@ -38,22 +38,21 @@ async fn mount_discovery(server: &MockServer) {
         .await;
 }
 
-async fn mount_source(server: &MockServer) {
-    Mock::given(method("GET"))
-        .and(path("/sap/bc/adt/ddic/tables/zsample_record/source/main"))
+/// The recorded field list, which is what decides the fields, their order and
+/// which are key. Read from DD03L so includes and appends are already
+/// flattened.
+async fn mount_fields(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/datapreview/freestyle"))
+        .and(body_string_contains("FROM DD03L"))
+        .and(body_string_contains("TABNAME = 'ZSAMPLE_RECORD'"))
+        .and(body_string_contains("AS4LOCAL = 'A'"))
         .and(query_param("sap-client", "903"))
-        // The active definition, never whatever a plain GET happens to serve:
-        // these fields become the columns a query then runs against.
-        .and(query_param("version", "active"))
+        .and(header("x-csrf-token", "metadata-csrf"))
         .and(header("cookie", "SAP_SESSIONID=metadata-test"))
         .and(basic_auth("developer", "password"))
         .respond_with(ResponseTemplate::new(200).set_body_string(
-            r#"
-define table zsample_record {
-  key client : abap.clnt not null;
-  status     : zsample_status;
-}
-"#,
+            r#"<dataPreview:tableData xmlns:dataPreview="http://www.sap.com/adt/dataPreview"><dataPreview:columns><dataPreview:metadata dataPreview:name="POSITION"/><dataPreview:dataSet><dataPreview:data>0002</dataPreview:data><dataPreview:data>0001</dataPreview:data><dataPreview:data>0003</dataPreview:data></dataPreview:dataSet></dataPreview:columns><dataPreview:columns><dataPreview:metadata dataPreview:name="FIELDNAME"/><dataPreview:dataSet><dataPreview:data>STATUS</dataPreview:data><dataPreview:data>CLIENT</dataPreview:data><dataPreview:data>.INCLU--AP</dataPreview:data></dataPreview:dataSet></dataPreview:columns><dataPreview:columns><dataPreview:metadata dataPreview:name="KEYFLAG"/><dataPreview:dataSet><dataPreview:data/><dataPreview:data>X</dataPreview:data><dataPreview:data/></dataPreview:dataSet></dataPreview:columns><dataPreview:columns><dataPreview:metadata dataPreview:name="ROLLNAME"/><dataPreview:dataSet><dataPreview:data>ZSAMPLE_STATUS</dataPreview:data><dataPreview:data/><dataPreview:data/></dataPreview:dataSet></dataPreview:columns><dataPreview:columns><dataPreview:metadata dataPreview:name="DATATYPE"/><dataPreview:dataSet><dataPreview:data>CHAR</dataPreview:data><dataPreview:data>CLNT</dataPreview:data><dataPreview:data/></dataPreview:dataSet></dataPreview:columns><dataPreview:columns><dataPreview:metadata dataPreview:name="LENG"/><dataPreview:dataSet><dataPreview:data>000012</dataPreview:data><dataPreview:data>000003</dataPreview:data><dataPreview:data>000000</dataPreview:data></dataPreview:dataSet></dataPreview:columns></dataPreview:tableData>"#,
         ))
         .expect(1)
         .mount(server)
@@ -78,10 +77,10 @@ async fn mount_ddic_preview(server: &MockServer) {
 }
 
 #[tokio::test]
-async fn fetches_and_combines_ddl_with_ddic_preview_metadata() {
+async fn combines_the_recorded_field_list_with_ddic_preview_metadata() {
     let server = MockServer::start().await;
     mount_discovery(&server).await;
-    mount_source(&server).await;
+    mount_fields(&server).await;
     mount_ddic_preview(&server).await;
 
     let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
@@ -111,7 +110,7 @@ async fn fetches_and_combines_ddl_with_ddic_preview_metadata() {
 async fn includes_an_accurate_row_count_only_when_requested() {
     let server = MockServer::start().await;
     mount_discovery(&server).await;
-    mount_source(&server).await;
+    mount_fields(&server).await;
     mount_ddic_preview(&server).await;
 
     Mock::given(method("POST"))
@@ -150,7 +149,7 @@ async fn includes_an_accurate_row_count_only_when_requested() {
 async fn reports_a_requested_count_without_a_numeric_value() {
     let server = MockServer::start().await;
     mount_discovery(&server).await;
-    mount_source(&server).await;
+    mount_fields(&server).await;
     mount_ddic_preview(&server).await;
 
     Mock::given(method("POST"))
@@ -182,7 +181,7 @@ async fn reports_a_requested_count_without_a_numeric_value() {
 async fn reports_malformed_ddic_preview_metadata() {
     let server = MockServer::start().await;
     mount_discovery(&server).await;
-    mount_source(&server).await;
+    mount_fields(&server).await;
 
     Mock::given(method("POST"))
         .and(path("/sap/bc/adt/datapreview/ddic"))

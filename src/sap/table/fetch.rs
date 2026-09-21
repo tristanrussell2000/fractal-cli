@@ -1,19 +1,17 @@
 use reqwest::header::{HeaderMap, HeaderValue};
 
 use super::{
-    TableColumn, TableDataResult, TableDdl, TableError, TableMetadata, error::classify_query_error,
-    metadata::merge_table_metadata, parse_table_data, parse_table_ddl,
+    TableColumn, TableDataResult, TableError, TableFieldMetadata, TableMetadata,
+    error::classify_query_error,
+    fields::{field_query, parse_fields},
+    metadata::merge_table_metadata,
+    parse_table_data,
 };
-use crate::sap::{
-    adt_version::AdtVersion,
-    client::{SapClient, SapClientError},
-    object_source::{ByteRangeOptions, get_source},
-};
+use crate::sap::client::{SapClient, SapClientError};
 
 const DDIC_PREVIEW_PATH: &str = "/sap/bc/adt/datapreview/ddic";
 const FREESTYLE_PREVIEW_PATH: &str = "/sap/bc/adt/datapreview/freestyle";
 const MAX_PREVIEW_ROWS: usize = 5_000;
-const TABLE_ADT_PATH: &str = "/sap/bc/adt/ddic/tables";
 
 const SQL_BREAK_KEYWORDS: [&str; 13] = [
     "INNER JOIN",
@@ -74,35 +72,19 @@ pub struct TableMetadataOptions {
     pub include_row_count: bool,
 }
 
-/// Fetches and parses the complete DDL source for one DDIC table.
+/// Fetches a table's recorded field list and its DDIC preview metadata and
+/// combines them.
 ///
-/// # Errors
-///
-/// Returns [`TableError`] when the entity name is invalid, SAP cannot return
-/// the source, or the response is not a complete supported table definition.
-pub async fn get_table_ddl(sap: &SapClient, entity: &str) -> Result<TableDdl, TableError> {
-    let entity = validate_entity_name(entity)?;
-    let uri = table_adt_uri(&entity);
-    // Active, always: this DDL becomes the columns later queries run against,
-    // and a pending edit describes fields the database does not have.
-    let source = get_source(sap, &uri, AdtVersion::Active, ByteRangeOptions::default())
-        .await
-        .map_err(TableError::DdlSource)?;
-    parse_table_ddl(&source.content).map_err(TableError::from)
-}
-
-/// Fetches a table's DDL and DDIC preview metadata and combines their fields.
-///
-/// The independent source and preview requests run concurrently after the
+/// The independent field-list and preview requests run concurrently after the
 /// read-only POST session is established. When requested, the accurate count
-/// query joins those concurrent requests. DDL defines field order, declared
-/// types, and key membership; preview metadata adds effective type, length,
+/// query joins those concurrent requests. The field list defines field order,
+/// declared types, and key membership; preview metadata adds the runtime type
 /// and description where SAP returns a matching column.
 ///
 /// # Errors
 ///
 /// Returns [`TableError`] when validation, session setup, a required SAP
-/// request, DDL parsing, preview XML parsing, or requested count parsing fails.
+/// request, response parsing, or requested count parsing fails.
 pub async fn get_table_metadata(
     sap: &mut SapClient,
     entity: &str,
@@ -111,16 +93,44 @@ pub async fn get_table_metadata(
     let entity = validate_entity_name(entity)?;
     sap.establish_csrf_session().await?;
 
-    let (ddl, columns, total_rows) = tokio::join!(
-        get_table_ddl(sap, &entity),
+    let (fields, columns, total_rows) = tokio::join!(
+        get_entity_fields(sap, &entity),
         get_ddic_columns(sap, &entity),
         get_optional_row_count(sap, &entity, options.include_row_count),
     );
 
     let columns = columns?;
-    let mut metadata = merge_table_metadata(ddl?, &columns);
+    let mut metadata =
+        merge_table_metadata(entity.to_ascii_lowercase(), fields?, &columns);
     metadata.total_rows = total_rows?;
     Ok(metadata)
+}
+
+/// Reads the fields SAP records for one entity, appends and includes flattened.
+async fn get_entity_fields(
+    sap: &SapClient,
+    entity: &str,
+) -> Result<Vec<TableFieldMetadata>, TableError> {
+    let query = break_sql_lines(&field_query(entity));
+    let xml = post_freestyle_preview(sap, &query, MAX_PREVIEW_ROWS).await?;
+    let result = parse_table_data(&xml)?;
+
+    // A capped read that came back full may have dropped fields, and a field
+    // list silently missing entries is what this whole path exists to avoid.
+    if result.rows.len() >= MAX_PREVIEW_ROWS {
+        return Err(TableError::FieldListTruncated {
+            entity: entity.to_owned(),
+            limit: MAX_PREVIEW_ROWS,
+        });
+    }
+
+    let fields = parse_fields(entity, &result)?;
+    if fields.is_empty() {
+        return Err(TableError::EntityFieldsMissing {
+            entity: entity.to_owned(),
+        });
+    }
+    Ok(fields)
 }
 
 async fn get_ddic_columns(sap: &SapClient, entity: &str) -> Result<Vec<TableColumn>, TableError> {
@@ -145,11 +155,6 @@ async fn get_table_row_count(sap: &SapClient, entity: &str) -> Result<u64, Table
     let xml = post_freestyle_preview(sap, &query, 1).await?;
     let result = parse_table_data(&xml)?;
     extract_count(&result).ok_or(TableError::CountMissing)
-}
-
-fn table_adt_uri(entity: &str) -> String {
-    let path_name = entity.to_ascii_lowercase().replace('/', "%2f");
-    format!("{TABLE_ADT_PATH}/{path_name}")
 }
 
 /// Fetches table data through the appropriate SAP ADT preview endpoint.
@@ -617,18 +622,6 @@ mod tests {
     fn builds_a_star_query_with_no_fields_or_where() {
         let sql = build_simple_query("ztable", &[], None).unwrap();
         assert_eq!(sql, "SELECT * FROM ZTABLE");
-    }
-
-    #[test]
-    fn builds_table_adt_uris_for_plain_and_namespaced_names() {
-        assert_eq!(
-            table_adt_uri("ZSAMPLE_RECORD"),
-            "/sap/bc/adt/ddic/tables/zsample_record"
-        );
-        assert_eq!(
-            table_adt_uri("/SAMPLE/RECORD"),
-            "/sap/bc/adt/ddic/tables/%2fsample%2frecord"
-        );
     }
 
     #[test]
