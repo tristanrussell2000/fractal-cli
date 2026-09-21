@@ -440,8 +440,9 @@ fn describe_key(keys: &[FieldValue]) -> String {
 /// assignment, so only the SQL read needs this — but padding here keeps the key
 /// identical everywhere it is used, the journal and the transport key included.
 ///
-/// Keyed on `sap_type`, **not** `col_type`: `col_type` is absent on some
-/// systems (roadmap item 24), and it is the one that would name `NUMC`.
+/// Either spelling of the type is accepted. `col_type` is the surer of the
+/// two: it comes from the recorded field list, so every listed field has one,
+/// while `sap_type` is only there when the preview also returned that column.
 fn pad_numeric(metadata: &TableMetadata, field: &str, value: &str) -> String {
     let Some(declared) = metadata
         .fields
@@ -454,9 +455,13 @@ fn pad_numeric(metadata: &TableMetadata, field: &str, value: &str) -> String {
         return value.to_owned();
     };
     let numeric = declared
-        .sap_type
+        .col_type
         .as_deref()
-        .is_some_and(|sap_type| sap_type.eq_ignore_ascii_case("N"));
+        .is_some_and(|col_type| col_type.eq_ignore_ascii_case("NUMC"))
+        || declared
+            .sap_type
+            .as_deref()
+            .is_some_and(|sap_type| sap_type.eq_ignore_ascii_case("N"));
 
     // Only a short run of digits. Anything else is left alone to fail as
     // itself rather than as a padded version of something the caller did not
@@ -480,10 +485,10 @@ fn is_key(metadata: &TableMetadata, field: &str) -> bool {
 
 /// Whether a field is the table's client column, which the caller never gives.
 ///
-/// Decided from type information only, and from two spellings of it, because
-/// neither is present on every system: `col_type` comes from the DDIC preview
-/// metadata and is absent entirely on some releases, where the DDL's declared
-/// type is all there is.
+/// Decided from type information only, and from two spellings of it.
+/// `col_type` is the one that answers: it is the recorded DDIC type, present
+/// on every release. The declared type stays as a fallback for a field whose
+/// recorded type is blank.
 ///
 /// Deliberately not a check on the name. A key field called `CLIENT` that is
 /// not the client would then go unconstrained in the statement, and the write
@@ -1411,8 +1416,8 @@ mod tests {
         }
     }
 
-    /// The same table as a system that serves no DDIC column metadata sees it:
-    /// `col_type` absent on every field, the declared type all there is.
+    /// The same table with no recorded DDIC type on any field, leaving the
+    /// declared type as the only thing that identifies the client column.
     fn metadata_without_col_types() -> TableMetadata {
         let mut metadata = metadata();
         for field in &mut metadata.fields {
@@ -1497,10 +1502,9 @@ mod tests {
     }
 
     #[test]
-    fn finds_the_client_field_without_ddic_column_metadata() {
-        // The client is never the caller's to give. On a system that serves no
-        // `col_type`, the declared type is the only thing that says which
-        // column it is.
+    fn finds_the_client_field_without_a_recorded_ddic_type() {
+        // The client is never the caller's to give. With no `col_type`, the
+        // declared type is the only thing that says which column it is.
         assert!(
             validate(
                 &metadata_without_col_types(),
