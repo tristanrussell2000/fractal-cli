@@ -252,7 +252,7 @@ mod tests {
         for command in [
             "fractal edit read --type PROG --name ZSAMPLE",
             "fractal object search 'Z*'",
-            "fractal ddic show ZSAMPLE_STATUS",
+            "fractal object show ZSAMPLE_STATUS",
             "fractal table data ZSAMPLE",
             // Reading the journal is not changing it.
             "fractal journal list",

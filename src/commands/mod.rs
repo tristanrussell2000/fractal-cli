@@ -1,5 +1,4 @@
 pub mod auth;
-pub mod ddic;
 pub mod edit_activate;
 pub mod edit_check;
 pub mod edit_create;
@@ -16,6 +15,7 @@ pub mod internal;
 pub mod journal;
 pub mod object;
 pub mod object_delete;
+pub mod object_show;
 pub mod package;
 pub mod query;
 pub mod system;

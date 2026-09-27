@@ -12,7 +12,7 @@
 //! one form in and out, rather than a raw hash and a canonical hash that have to
 //! be kept in step.
 //!
-//! `object xml` and `ddic show` print what SAP sent.
+//! `object xml` and `object show` print what SAP sent.
 
 use super::{
     adt_response::{AdtResponseParseError, parse_adt_document},

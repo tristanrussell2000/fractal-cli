@@ -44,11 +44,6 @@ pub enum Command {
         #[command(subcommand)]
         command: ObjectCommand,
     },
-    /// Inspect DDIC data elements and domains.
-    Ddic {
-        #[command(subcommand)]
-        command: DdicCommand,
-    },
     /// Read data from SAP tables and views.
     Table {
         #[command(subcommand)]
@@ -374,31 +369,33 @@ pub enum ObjectCommand {
     Xml(XmlArgs),
     /// Read the authoritative short description for an ADT object URI.
     Info(UriArgs),
+    /// Show one data element, domain, structure or table by name.
+    ///
+    /// A data element resolves to its domain. A structure lists its fields,
+    /// with anything an include or append contributed already in place — and
+    /// so does a table, which SAP serves through the same collection and which
+    /// is labelled as a table rather than as a structure.
+    ///
+    /// Reads the active version by default, and reports which version it got.
+    /// Those are two separate answers: SAP serves the other layer rather than
+    /// refusing when the requested one does not exist, and an object that has
+    /// never been activated declares itself "new".
+    Show(ObjectShowArgs),
     /// Find objects that reference an ADT object URI (where-used).
     Usages(UsagesArgs),
     /// List known repository kinds with plain-text descriptions.
     Kinds,
 }
 
-#[derive(Debug, Subcommand)]
-pub enum DdicCommand {
-    /// Show one data element or domain, resolving a data element to its domain.
-    ///
-    /// Reads the active version by default, and reports which version it got.
-    /// Those are two separate answers: SAP serves the other layer rather than
-    /// refusing when the requested one does not exist, and an object that has
-    /// never been activated declares itself "new".
-    Show(DdicShowArgs),
-}
-
 #[derive(Debug, Args)]
-pub struct DdicShowArgs {
-    /// Data element or domain name.
+pub struct ObjectShowArgs {
+    /// Data element, domain, structure or table name.
     pub(crate) name: String,
     /// Skip detection and read this type directly.
     #[arg(long = "type", value_enum)]
-    pub(crate) object_type: Option<DdicTypeArg>,
-    /// Report the data element alone, without reading its domain.
+    pub(crate) object_type: Option<ObjectShowTypeArg>,
+    /// Report the data element alone, without reading its domain. Means
+    /// nothing for a domain or a structure.
     #[arg(long, default_value_t = false)]
     pub(crate) no_resolve: bool,
     /// Stored version to read. A resolved domain is read at the same version.
@@ -409,11 +406,13 @@ pub struct DdicShowArgs {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum DdicTypeArg {
+pub enum ObjectShowTypeArg {
     /// Data element.
     Dtel,
     /// Domain.
     Doma,
+    /// Structure.
+    Stru,
 }
 
 #[derive(Debug, Subcommand)]

@@ -3,56 +3,206 @@ use std::fmt::Write as _;
 use serde::Serialize;
 
 use crate::{
-    cli::{DdicShowArgs, DdicTypeArg},
+    cli::{ObjectShowArgs, ObjectShowTypeArg},
     commands::{connect, render_version, tabular},
     output::{OutputFormat, print_json},
     reported::Reported,
 };
+use fractal::reportable_error::ReportableError;
 use fractal::sap::{
-    ddic_type::{DataElementTypeSource, DdicTypeInfo, DdicTypeOptions, get_ddic_type},
+    ddic_structure::{DdicStructureError, DdicStructureInfo, get_ddic_structure},
+    ddic_type::{
+        DataElementTypeSource, DdicTypeError, DdicTypeInfo, DdicTypeOptions, get_ddic_type,
+    },
     metadata_object::MetadataAdtObjectType,
 };
 
 #[derive(Debug, Serialize)]
-pub struct DdicShowOutput {
+pub struct ObjectShowOutput {
     ok: bool,
     profile: String,
     #[serde(flatten)]
-    info: DdicTypeInfo,
+    info: ShowInfo,
 }
 
-pub async fn ddic_show(
-    explicit_profile: Option<&str>,
-    args: &DdicShowArgs,
-) -> Result<DdicShowOutput, Reported> {
-    let options = DdicTypeOptions {
-        object_type: args.object_type.map(|object_type| match object_type {
-            DdicTypeArg::Dtel => MetadataAdtObjectType::DataElement,
-            DdicTypeArg::Doma => MetadataAdtObjectType::Domain,
-        }),
-        resolve_domain: !args.no_resolve,
-        version: args.version.into(),
-    };
-    let (profile_name, _profile, client) = connect(explicit_profile).await?;
-    let info = get_ddic_type(&client, &args.name, &options).await?;
+/// Serialization only: the two shapes differ enough that one flattened struct
+/// would carry a block of nulls for whichever kind was not read.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum ShowInfo {
+    Type(Box<DdicTypeInfo>),
+    Structure(Box<DdicStructureInfo>),
+}
 
-    Ok(DdicShowOutput {
+/// A name that is none of the three kinds this command reads.
+#[derive(Debug, thiserror::Error)]
+#[error("'{name}' is not a data element, domain, structure or table")]
+pub struct UnknownDdicObject {
+    name: String,
+}
+
+impl ReportableError for UnknownDdicObject {
+    fn code(&self) -> &'static str {
+        "ddic_object_not_found"
+    }
+
+    fn hint(&self) -> Option<String> {
+        Some(
+            "Search for the name to see what it actually is, or pass --type to skip detection."
+                .to_owned(),
+        )
+    }
+}
+
+pub async fn object_show(
+    explicit_profile: Option<&str>,
+    args: &ObjectShowArgs,
+) -> Result<ObjectShowOutput, Reported> {
+    let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
+    let version = args.version.into();
+
+    let info = match args.object_type {
+        Some(ObjectShowTypeArg::Stru) => ShowInfo::Structure(Box::new(
+            get_ddic_structure(&mut client, &args.name, version).await?,
+        )),
+        Some(object_type) => {
+            let options = DdicTypeOptions {
+                object_type: Some(match object_type {
+                    ObjectShowTypeArg::Dtel => MetadataAdtObjectType::DataElement,
+                    ObjectShowTypeArg::Doma => MetadataAdtObjectType::Domain,
+                    ObjectShowTypeArg::Stru => unreachable!("handled above"),
+                }),
+                resolve_domain: !args.no_resolve,
+                version,
+            };
+            ShowInfo::Type(Box::new(
+                get_ddic_type(&client, &args.name, &options).await?,
+            ))
+        }
+        None => detect(&mut client, args, version).await?,
+    };
+
+    Ok(ObjectShowOutput {
         ok: true,
         profile: profile_name,
         info,
     })
 }
 
-pub fn print_ddic_show(result: &DdicShowOutput, output: OutputFormat) {
+/// Tries a data element, then a domain, then a field list.
+///
+/// The field-list read is last because it is the expensive one — a document
+/// read plus a query — and because the first two settle most names.
+/// Only a "none of those" answer falls through to it; any other failure is
+/// the caller's real problem and is reported as it stands.
+async fn detect(
+    client: &mut fractal::sap::client::SapClient,
+    args: &ObjectShowArgs,
+    version: fractal::sap::adt_version::AdtVersion,
+) -> Result<ShowInfo, Reported> {
+    let options = DdicTypeOptions {
+        object_type: None,
+        resolve_domain: !args.no_resolve,
+        version,
+    };
+    match get_ddic_type(client, &args.name, &options).await {
+        Ok(info) => return Ok(ShowInfo::Type(Box::new(info))),
+        Err(DdicTypeError::NotFound(_)) => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    match get_ddic_structure(client, &args.name, version).await {
+        Ok(info) => Ok(ShowInfo::Structure(Box::new(info))),
+        // The name was not any of the three. Say that, rather than reporting
+        // the last attempt's 404 as though a structure had been expected.
+        Err(DdicStructureError::NoFields { .. }) | Err(DdicStructureError::Sap(_)) => {
+            Err(UnknownDdicObject {
+                name: args.name.clone(),
+            }
+            .into())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub fn print_object_show(result: &ObjectShowOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
         print_json(result);
         return;
     }
 
-    print!("{}", render_ddic_show_readable(&result.info));
+    match &result.info {
+        ShowInfo::Type(info) => print!("{}", render_object_show_readable(info)),
+        ShowInfo::Structure(info) => print!("{}", render_structure_readable(info)),
+    }
 }
 
-fn render_ddic_show_readable(info: &DdicTypeInfo) -> String {
+fn render_structure_readable(info: &DdicStructureInfo) -> String {
+    let mut output = String::new();
+    let _ = writeln!(output, "{} ({})", info.name, info.kind);
+    if let Some(description) = &info.description {
+        let _ = writeln!(output, "description: {description}");
+    }
+    if let Some(package) = &info.package {
+        let _ = writeln!(output, "package: {package}");
+    }
+    let _ = writeln!(output, "uri: {}", info.uri);
+    let _ = writeln!(
+        output,
+        "version: {}",
+        render_version(info.requested_version, info.version.as_deref())
+    );
+    let _ = writeln!(
+        output,
+        "fields: {} (key fields: {})",
+        info.field_count, info.key_field_count
+    );
+
+    let columns = [
+        tabular::plain_column("KEY"),
+        tabular::plain_column("FIELD"),
+        tabular::plain_column("DATA ELEMENT"),
+        tabular::plain_column("DOMAIN"),
+        tabular::plain_column("COLUMN TYPE"),
+        tabular::plain_column("SAP TYPE"),
+        tabular::plain_column("LENGTH"),
+        tabular::plain_column("CHECK TABLE"),
+        tabular::plain_column("DESCRIPTION"),
+    ];
+    let rows: Vec<_> = info
+        .fields
+        .iter()
+        .map(|field| {
+            vec![
+                if field.is_key { "yes" } else { "" }.to_owned(),
+                field.name.clone(),
+                field.data_element.clone().unwrap_or_default(),
+                field.domain.clone().unwrap_or_default(),
+                field.col_type.clone().unwrap_or_default(),
+                field.sap_type.clone().unwrap_or_default(),
+                render_length(field),
+                field.check_table.clone().unwrap_or_default(),
+                field.description.clone().unwrap_or_default(),
+            ]
+        })
+        .collect();
+    output.push_str(&tabular::render_grid(&columns, &rows));
+    output
+}
+
+/// Decimals only matter when there are any, and a zero length means the type
+/// has no fixed one.
+fn render_length(field: &fractal::sap::ddic_structure::DdicStructureField) -> String {
+    let Some(length) = field.length.filter(|value| *value > 0) else {
+        return String::new();
+    };
+    match field.decimals.filter(|value| *value > 0) {
+        Some(decimals) => format!("{length},{decimals}"),
+        None => length.to_string(),
+    }
+}
+
+fn render_object_show_readable(info: &DdicTypeInfo) -> String {
     let mut output = String::new();
     let _ = writeln!(output, "{} ({})", info.name, info.kind);
     if let Some(description) = &info.description {
@@ -193,17 +343,17 @@ mod tests {
     use clap::Parser;
 
     use super::*;
-    use crate::cli::{Cli, Command, DdicCommand, VersionArg};
+    use crate::cli::{Cli, Command, ObjectCommand, VersionArg};
     use fractal::sap::ddic_type::{
         DataElementInfo, DdicObjectRef, DomainFixedValue, DomainInfo, EffectiveType,
     };
 
-    fn show_args(cli: Cli) -> DdicShowArgs {
-        let Command::Ddic {
-            command: DdicCommand::Show(args),
+    fn show_args(cli: Cli) -> ObjectShowArgs {
+        let Command::Object {
+            command: ObjectCommand::Show(args),
         } = cli.command
         else {
-            panic!("expected ddic show command");
+            panic!("expected object show command");
         };
         args
     }
@@ -266,7 +416,7 @@ mod tests {
 
     #[test]
     fn resolves_the_domain_unless_told_not_to() {
-        let args = show_args(Cli::try_parse_from(["fractal", "ddic", "show", "ZFIELD"]).unwrap());
+        let args = show_args(Cli::try_parse_from(["fractal", "object", "show", "ZFIELD"]).unwrap());
         assert_eq!(args.name, "ZFIELD");
         assert_eq!(args.object_type, None);
         assert!(!args.no_resolve);
@@ -274,7 +424,7 @@ mod tests {
         let args = show_args(
             Cli::try_parse_from([
                 "fractal",
-                "ddic",
+                "object",
                 "show",
                 "ZFIELD",
                 "--type",
@@ -283,18 +433,25 @@ mod tests {
             ])
             .unwrap(),
         );
-        assert_eq!(args.object_type, Some(DdicTypeArg::Doma));
+        assert_eq!(args.object_type, Some(ObjectShowTypeArg::Doma));
         assert!(args.no_resolve);
     }
 
     #[test]
     fn reads_the_active_version_unless_told_otherwise() {
-        let args = show_args(Cli::try_parse_from(["fractal", "ddic", "show", "ZFIELD"]).unwrap());
+        let args = show_args(Cli::try_parse_from(["fractal", "object", "show", "ZFIELD"]).unwrap());
         assert_eq!(args.version, VersionArg::Active);
 
         let args = show_args(
-            Cli::try_parse_from(["fractal", "ddic", "show", "ZFIELD", "--version", "inactive"])
-                .unwrap(),
+            Cli::try_parse_from([
+                "fractal",
+                "object",
+                "show",
+                "ZFIELD",
+                "--version",
+                "inactive",
+            ])
+            .unwrap(),
         );
         assert_eq!(args.version, VersionArg::Inactive);
     }
@@ -328,7 +485,7 @@ mod tests {
         // The domain had no pending edit, so the same request fell back.
         domain.version = Some("active".to_owned());
         info.domain = Some(domain);
-        let rendered = render_ddic_show_readable(&info);
+        let rendered = render_object_show_readable(&info);
 
         assert!(rendered.contains("version: inactive\n"), "{rendered}");
         assert!(
@@ -341,7 +498,7 @@ mod tests {
     fn readable_output_names_the_domain_a_data_element_delegates_to() {
         let mut info = data_element_info();
         info.domain = Some(domain_info());
-        let rendered = render_ddic_show_readable(&info);
+        let rendered = render_object_show_readable(&info);
 
         assert!(rendered.contains("ZSAMPLE_STATUS (DTEL)"), "{rendered}");
         assert!(
@@ -364,7 +521,7 @@ mod tests {
 
     #[test]
     fn an_unread_domain_is_distinguished_from_a_data_element_that_has_none() {
-        let skipped = render_ddic_show_readable(&data_element_info());
+        let skipped = render_object_show_readable(&data_element_info());
         assert!(
             skipped.contains("domain: not read (--no-resolve)"),
             "{skipped}"
@@ -373,7 +530,7 @@ mod tests {
         let mut predefined = data_element_info();
         predefined.data_element.as_mut().unwrap().type_source =
             DataElementTypeSource::PredefinedAbapType;
-        let rendered = render_ddic_show_readable(&predefined);
+        let rendered = render_object_show_readable(&predefined);
         assert!(rendered.contains("domain: none"), "{rendered}");
         assert!(rendered.contains("type: NUMC 2 (predefined)"), "{rendered}");
     }
@@ -386,7 +543,7 @@ mod tests {
             length: Some(0),
             decimals: Some(0),
         };
-        let rendered = render_ddic_show_readable(&info);
+        let rendered = render_object_show_readable(&info);
 
         // `STRING 0` would read as a declared length rather than an unlimited one.
         assert!(rendered.contains("type: STRING (via domain"), "{rendered}");
@@ -400,7 +557,7 @@ mod tests {
         let mut info = data_element_info();
         info.domain = Some(domain);
 
-        assert!(!render_ddic_show_readable(&info).contains("output length"));
+        assert!(!render_object_show_readable(&info).contains("output length"));
     }
 
     #[test]
@@ -411,7 +568,7 @@ mod tests {
             length: Some(15),
             decimals: Some(6),
         };
-        assert!(render_ddic_show_readable(&info).contains("type: DEC 15,6"));
+        assert!(render_object_show_readable(&info).contains("type: DEC 15,6"));
     }
 
     #[test]
@@ -433,7 +590,7 @@ mod tests {
             data_element: None,
             domain: Some(domain),
         };
-        let rendered = render_ddic_show_readable(&info);
+        let rendered = render_object_show_readable(&info);
 
         assert!(rendered.contains("ZSAMPLE_STATUS_DOM (DOMA)"), "{rendered}");
         assert!(!rendered.contains("label "), "{rendered}");

@@ -5,14 +5,13 @@ mod reported;
 
 use clap::Parser;
 use cli::{
-    AuthCommand, Cli, Command, DdicCommand, EditCommand, GuardCommand, InternalCommand,
-    JournalCommand, ObjectCommand, PackageCommand, SystemCommand, TableCommand, TransportCommand,
+    AuthCommand, Cli, Command, EditCommand, GuardCommand, InternalCommand, JournalCommand,
+    ObjectCommand, PackageCommand, SystemCommand, TableCommand, TransportCommand,
 };
 use commands::auth::{
     auth_list, auth_login, auth_remove, auth_set, print_auth_list, print_auth_login,
     print_auth_remove, print_auth_set,
 };
-use commands::ddic::{ddic_show, print_ddic_show};
 use commands::edit_activate::{edit_object_activate, print_edit_object_activate};
 use commands::edit_check::{edit_source_check, print_edit_source_check};
 use commands::edit_create::{edit_object_create, print_edit_object_create};
@@ -34,6 +33,7 @@ use commands::object::{
     print_object_usages, print_object_xml,
 };
 use commands::object_delete::{object_delete, print_object_delete};
+use commands::object_show::{object_show, print_object_show};
 use commands::package::{package_items, package_tree, print_package_items, print_package_tree};
 use commands::query::{print_query, query};
 use commands::system::{print_system_list, print_system_test, system_list, system_test};
@@ -88,12 +88,12 @@ async fn main() {
             )
             .await
         }
-        Command::Ddic {
-            command: DdicCommand::Show(args),
+        Command::Object {
+            command: ObjectCommand::Show(args),
         } => {
             run_and_print_with_async(
-                || ddic_show(cli.profile.as_deref(), args),
-                print_ddic_show,
+                || object_show(cli.profile.as_deref(), args),
+                print_object_show,
                 output,
             )
             .await

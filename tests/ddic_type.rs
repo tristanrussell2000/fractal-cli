@@ -4,13 +4,14 @@ use fractal::{
     sap::{
         adt_version::AdtVersion,
         client::SapClient,
+        ddic_structure::{DdicStructureError, get_ddic_structure},
         ddic_type::{DataElementTypeSource, DdicTypeOptions, get_ddic_type},
         metadata_object::MetadataAdtObjectType,
     },
 };
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
-    matchers::{method, path, query_param},
+    matchers::{body_string_contains, method, path, query_param},
 };
 
 fn profile(base_url: String) -> Profile {
@@ -475,4 +476,242 @@ async fn a_layer_that_does_not_exist_is_reported_as_the_one_that_arrived() {
 
     assert_eq!(info.requested_version, "inactive");
     assert_eq!(info.version.as_deref(), Some("active"));
+}
+
+// ---------------------------------------------------------------------------
+// Structures
+//
+// A structure's fields come from DD03L rather than its DDL source, because the
+// source hides whatever an include or an append contributed. These live here
+// rather than in their own file so the suite links one binary fewer.
+
+const STRUCTURE_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<blue:blueSource adtcore:name="ZSAMPLE_RECORD_S" adtcore:type="TABL/DS" adtcore:description="Sample record structure" adtcore:version="active"
+    xmlns:blue="http://www.sap.com/wbobj/blue" xmlns:adtcore="http://www.sap.com/adt/core">
+  <adtcore:packageRef adtcore:uri="/sap/bc/adt/packages/zpkg" adtcore:type="DEVC/K" adtcore:name="ZPKG"/>
+</blue:blueSource>"#;
+
+/// One marker row and two real fields, column-major as the preview returns it.
+/// `MANDT` and `STATUS` are what the include contributed; the source would
+/// show neither.
+fn field_rows(table_class: &str) -> String {
+    preview(&[
+        ("POSITION", vec!["0001", "0002", "0003"]),
+        ("FIELDNAME", vec![".INCLUDE", "MANDT", "STATUS"]),
+        ("KEYFLAG", vec!["", "X", ""]),
+        ("ROLLNAME", vec!["", "MANDT", "ZSAMPLE_STATUS"]),
+        ("DOMNAME", vec!["", "MANDT", "ZSAMPLE_DOM"]),
+        ("DATATYPE", vec!["", "CLNT", "CHAR"]),
+        ("LENG", vec!["000000", "000003", "000012"]),
+        ("DECIMALS", vec!["000000", "000000", "000000"]),
+        ("INTTYPE", vec!["", "C", "C"]),
+        ("NOTNULL", vec!["", "X", ""]),
+        ("CHECKTABLE", vec!["", "*", "ZSAMPLE_VALUES"]),
+        ("DDTEXT", vec!["", "Client", "Status"]),
+        ("TABCLASS", vec![table_class, table_class, table_class]),
+    ])
+}
+
+/// What SAP returns for a SELECT that matched nothing: every selected column
+/// still described, with no values under it.
+fn no_field_rows() -> String {
+    preview(
+        &[
+            "POSITION",
+            "FIELDNAME",
+            "KEYFLAG",
+            "ROLLNAME",
+            "DOMNAME",
+            "DATATYPE",
+            "LENG",
+            "DECIMALS",
+            "INTTYPE",
+            "NOTNULL",
+            "CHECKTABLE",
+            "DDTEXT",
+            "TABCLASS",
+        ]
+        .map(|name| (name, Vec::new())),
+    )
+}
+
+fn preview(columns: &[(&str, Vec<&str>)]) -> String {
+    let mut xml = String::from(
+        r#"<dataPreview:tableData xmlns:dataPreview="http://www.sap.com/adt/dataPreview">"#,
+    );
+    for (name, values) in columns {
+        xml.push_str(&column_xml(name, values));
+    }
+    xml.push_str("</dataPreview:tableData>");
+    xml
+}
+
+fn column_xml(name: &str, values: &[&str]) -> String {
+    let data: String = values
+        .iter()
+        .map(|value| format!("<dataPreview:data>{value}</dataPreview:data>"))
+        .collect();
+    format!(
+        r#"<dataPreview:columns><dataPreview:metadata dataPreview:name="{name}"/><dataPreview:dataSet>{data}</dataPreview:dataSet></dataPreview:columns>"#
+    )
+}
+
+async fn mount_structure(server: &MockServer, table_class: &str) {
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/core/discovery"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-csrf-token", "structure-csrf")
+                .insert_header("set-cookie", "SAP_SESSIONID=structure-test; Path=/"),
+        )
+        .mount(server)
+        .await;
+    mock_version(
+        "/sap/bc/adt/ddic/structures/zsample_record_s",
+        "active",
+        STRUCTURE_XML,
+    )
+    .mount(server)
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/datapreview/freestyle"))
+        .and(body_string_contains("dd03l"))
+        .and(body_string_contains("tabname = 'ZSAMPLE_RECORD_S'"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(field_rows(table_class)))
+        .expect(1)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn reads_the_fields_an_include_contributed_and_drops_the_marker() {
+    let server = MockServer::start().await;
+    mount_structure(&server, "INTTAB").await;
+
+    let profile = profile(server.uri());
+    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let info = get_ddic_structure(&mut client, "zsample_record_s", AdtVersion::Active)
+        .await
+        .unwrap();
+
+    assert_eq!(info.name, "ZSAMPLE_RECORD_S");
+    assert_eq!(info.kind, "Structure");
+    assert_eq!(info.description.as_deref(), Some("Sample record structure"));
+    assert_eq!(info.package.as_deref(), Some("ZPKG"));
+    assert_eq!(info.uri, "/sap/bc/adt/ddic/structures/zsample_record_s");
+    assert_eq!(info.requested_version, "active");
+    assert_eq!(info.version.as_deref(), Some("active"));
+
+    // Three DD03L rows, two fields: the `.INCLUDE` marker is not one.
+    assert_eq!(info.field_count, 2);
+    assert_eq!(info.key_field_count, 1);
+    assert_eq!(info.fields[0].name, "mandt");
+    assert!(info.fields[0].is_key);
+    assert!(info.fields[0].not_null);
+    assert_eq!(info.fields[0].data_element.as_deref(), Some("mandt"));
+    assert_eq!(info.fields[0].col_type.as_deref(), Some("CLNT"));
+    assert_eq!(info.fields[0].sap_type.as_deref(), Some("C"));
+    assert_eq!(info.fields[0].length, Some(3));
+    // `*` means "any table" and names nothing.
+    assert_eq!(info.fields[0].check_table, None);
+    // DD03L carries no text; this can only have come from the DD04T join.
+    assert_eq!(info.fields[0].description.as_deref(), Some("Client"));
+    assert_eq!(info.fields[1].name, "status");
+    assert_eq!(info.fields[1].domain.as_deref(), Some("zsample_dom"));
+    assert_eq!(
+        info.fields[1].check_table.as_deref(),
+        Some("zsample_values")
+    );
+    server.verify().await;
+}
+
+/// SAP's structures collection serves tables too, so the kind has to come from
+/// DD02L rather than from the collection the document arrived through.
+#[tokio::test]
+async fn reports_a_table_read_through_the_structures_collection_as_a_table() {
+    let server = MockServer::start().await;
+    mount_structure(&server, "TRANSP").await;
+
+    let profile = profile(server.uri());
+    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let info = get_ddic_structure(&mut client, "ZSAMPLE_RECORD_S", AdtVersion::Active)
+        .await
+        .unwrap();
+
+    assert_eq!(info.kind, "Table");
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn a_name_with_no_recorded_fields_is_an_error_rather_than_an_empty_structure() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/core/discovery"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-csrf-token", "structure-csrf")
+                .insert_header("set-cookie", "SAP_SESSIONID=structure-test; Path=/"),
+        )
+        .mount(&server)
+        .await;
+    mock_version(
+        "/sap/bc/adt/ddic/structures/zsample_record_s",
+        "active",
+        STRUCTURE_XML,
+    )
+    .mount(&server)
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/datapreview/freestyle"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(no_field_rows()))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let profile = profile(server.uri());
+    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let error = get_ddic_structure(&mut client, "zsample_record_s", AdtVersion::Active)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, DdicStructureError::NoFields { .. }));
+    assert_eq!(error.code(), "ddic_structure_no_fields");
+}
+
+/// DD03L names its layers `A` and `N`, so an inactive read has to translate.
+#[tokio::test]
+async fn an_inactive_read_asks_dd03l_for_the_layer_it_calls_n() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/core/discovery"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-csrf-token", "structure-csrf")
+                .insert_header("set-cookie", "SAP_SESSIONID=structure-test; Path=/"),
+        )
+        .mount(&server)
+        .await;
+    mock_version(
+        "/sap/bc/adt/ddic/structures/zsample_record_s",
+        "inactive",
+        STRUCTURE_XML,
+    )
+    .mount(&server)
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/datapreview/freestyle"))
+        .and(body_string_contains("as4local = 'N'"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(field_rows("INTTAB")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let profile = profile(server.uri());
+    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let info = get_ddic_structure(&mut client, "zsample_record_s", AdtVersion::Inactive)
+        .await
+        .unwrap();
+
+    assert_eq!(info.requested_version, "inactive");
+    server.verify().await;
 }
