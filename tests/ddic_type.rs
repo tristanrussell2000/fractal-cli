@@ -4,6 +4,7 @@ use fractal::{
     sap::{
         adt_version::AdtVersion,
         client::SapClient,
+        ddic_fields::{DdicFieldsError, DdicTableClass},
         ddic_structure::{DdicStructureError, get_ddic_structure},
         ddic_type::{DataElementTypeSource, DdicTypeOptions, get_ddic_type},
         metadata_object::MetadataAdtObjectType,
@@ -595,7 +596,7 @@ async fn reads_the_fields_an_include_contributed_and_drops_the_marker() {
         .unwrap();
 
     assert_eq!(info.name, "ZSAMPLE_RECORD_S");
-    assert_eq!(info.kind, "Structure");
+    assert_eq!(info.kind, DdicTableClass::Structure);
     assert_eq!(info.description.as_deref(), Some("Sample record structure"));
     assert_eq!(info.package.as_deref(), Some("ZPKG"));
     assert_eq!(info.uri, "/sap/bc/adt/ddic/structures/zsample_record_s");
@@ -638,7 +639,7 @@ async fn reports_a_table_read_through_the_structures_collection_as_a_table() {
         .await
         .unwrap();
 
-    assert_eq!(info.kind, "Table");
+    assert_eq!(info.kind, DdicTableClass::Table);
     server.verify().await;
 }
 
@@ -674,7 +675,10 @@ async fn a_name_with_no_recorded_fields_is_an_error_rather_than_an_empty_structu
         .await
         .unwrap_err();
 
-    assert!(matches!(error, DdicStructureError::NoFields { .. }));
+    assert!(matches!(
+        error,
+        DdicStructureError::Fields(DdicFieldsError::NoFields { .. })
+    ));
     assert_eq!(error.code(), "ddic_structure_no_fields");
 }
 

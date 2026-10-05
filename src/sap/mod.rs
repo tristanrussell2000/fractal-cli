@@ -6,6 +6,7 @@ pub mod adt_response;
 pub mod adt_version;
 pub mod class_run;
 pub mod client;
+pub mod ddic_fields;
 pub mod ddic_structure;
 pub mod ddic_type;
 pub mod edit_session;

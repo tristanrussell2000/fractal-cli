@@ -10,7 +10,7 @@ use crate::{
 };
 use fractal::reportable_error::ReportableError;
 use fractal::sap::{
-    ddic_structure::{DdicStructureError, DdicStructureInfo, get_ddic_structure},
+    ddic_structure::{DdicStructureInfo, get_ddic_structure},
     ddic_type::{
         DataElementTypeSource, DdicTypeError, DdicTypeInfo, DdicTypeOptions, get_ddic_type,
     },
@@ -113,14 +113,12 @@ async fn detect(
 
     match get_ddic_structure(client, &args.name, version).await {
         Ok(info) => Ok(ShowInfo::Structure(Box::new(info))),
-        // The name was not any of the three. Say that, rather than reporting
-        // the last attempt's 404 as though a structure had been expected.
-        Err(DdicStructureError::NoFields { .. }) | Err(DdicStructureError::Sap(_)) => {
-            Err(UnknownDdicObject {
-                name: args.name.clone(),
-            }
-            .into())
+        // The name was none of the kinds tried. Say that, rather than
+        // reporting the last attempt's 404 as though a table had been meant.
+        Err(error) if error.is_not_found() => Err(UnknownDdicObject {
+            name: args.name.clone(),
         }
+        .into()),
         Err(error) => Err(error.into()),
     }
 }
@@ -192,7 +190,7 @@ fn render_structure_readable(info: &DdicStructureInfo) -> String {
 
 /// Decimals only matter when there are any, and a zero length means the type
 /// has no fixed one.
-fn render_length(field: &fractal::sap::ddic_structure::DdicStructureField) -> String {
+fn render_length(field: &fractal::sap::ddic_fields::DdicField) -> String {
     let Some(length) = field.length.filter(|value| *value > 0) else {
         return String::new();
     };

@@ -2,12 +2,13 @@ use reqwest::header::{HeaderMap, HeaderValue};
 
 use super::{
     TableColumn, TableDataResult, TableError, TableFieldMetadata, TableMetadata,
-    error::classify_query_error,
-    fields::{field_query, parse_fields},
-    metadata::merge_table_metadata,
-    parse_table_data,
+    error::classify_query_error, parse_table_data,
 };
-use crate::sap::client::{SapClient, SapClientError};
+use crate::sap::{
+    adt_version::AdtVersion,
+    client::{SapClient, SapClientError},
+    ddic_fields::{DdicFieldsError, read_field_list},
+};
 
 const DDIC_PREVIEW_PATH: &str = "/sap/bc/adt/datapreview/ddic";
 const FREESTYLE_PREVIEW_PATH: &str = "/sap/bc/adt/datapreview/freestyle";
@@ -72,19 +73,16 @@ pub struct TableMetadataOptions {
     pub include_row_count: bool,
 }
 
-/// Fetches a table's recorded field list and its DDIC preview metadata and
-/// combines them.
+/// Fetches a table's recorded field list.
 ///
-/// The independent field-list and preview requests run concurrently after the
-/// read-only POST session is established. When requested, the accurate count
-/// query joins those concurrent requests. The field list defines field order,
-/// declared types, and key membership; preview metadata adds the runtime type
-/// and description where SAP returns a matching column.
+/// The field list carries everything the table commands report — key flag,
+/// data element, DDIC type, runtime type, length and description — so no data
+/// preview is involved. `object show` reads the same list.
 ///
 /// # Errors
 ///
-/// Returns [`TableError`] when validation, session setup, a required SAP
-/// request, response parsing, or requested count parsing fails.
+/// Returns [`TableError`] when validation, session setup, the SAP request, or
+/// response parsing fails.
 pub async fn get_table_metadata(
     sap: &mut SapClient,
     entity: &str,
@@ -93,19 +91,18 @@ pub async fn get_table_metadata(
     let entity = validate_entity_name(entity)?;
     sap.establish_csrf_session().await?;
 
-    let (fields, columns, total_rows) = tokio::join!(
-        get_entity_fields(sap, &entity),
-        get_ddic_columns(sap, &entity),
-        get_optional_row_count(sap, &entity, options.include_row_count),
-    );
+    let fields = get_entity_fields(sap, &entity).await?;
+    let total_rows = get_optional_row_count(sap, &entity, options.include_row_count).await?;
 
-    let columns = columns?;
-    let mut metadata = merge_table_metadata(entity.to_ascii_lowercase(), fields?, &columns);
-    metadata.total_rows = total_rows?;
-    Ok(metadata)
+    Ok(TableMetadata {
+        entity: entity.to_ascii_lowercase(),
+        total_rows,
+        fields,
+    })
 }
 
-/// Reads the fields SAP records for one entity, appends and includes flattened.
+/// Reads the fields SAP records for one entity, appends and includes
+/// flattened, for a caller that wants them alongside a data read.
 ///
 /// # Errors
 ///
@@ -120,35 +117,33 @@ pub async fn get_table_fields(
     get_entity_fields(sap, &entity).await
 }
 
+/// Reads the fields SAP records for one entity, appends and includes flattened.
 async fn get_entity_fields(
-    sap: &SapClient,
+    sap: &mut SapClient,
     entity: &str,
 ) -> Result<Vec<TableFieldMetadata>, TableError> {
-    let query = break_sql_lines(&field_query(entity));
-    let xml = post_freestyle_preview(sap, &query, MAX_PREVIEW_ROWS).await?;
-    let result = parse_table_data(&xml)?;
-
-    // A capped read that came back full may have dropped fields, and a field
-    // list silently missing entries is what this whole path exists to avoid.
-    if result.rows.len() >= MAX_PREVIEW_ROWS {
-        return Err(TableError::FieldListTruncated {
-            entity: entity.to_owned(),
-            limit: MAX_PREVIEW_ROWS,
-        });
-    }
-
-    let fields = parse_fields(entity, &result)?;
-    if fields.is_empty() {
-        return Err(TableError::EntityFieldsMissing {
-            entity: entity.to_owned(),
-        });
-    }
-    Ok(fields)
+    let list = read_field_list(sap, entity, AdtVersion::Active)
+        .await
+        .map_err(|error| field_list_error(entity, error))?;
+    Ok(list.fields.into_iter().map(Into::into).collect())
 }
 
-async fn get_ddic_columns(sap: &SapClient, entity: &str) -> Result<Vec<TableColumn>, TableError> {
-    let xml = post_ddic_preview(sap, entity, 1).await?;
-    Ok(parse_table_data(&xml)?.columns)
+/// Keeps the table commands' own error vocabulary rather than leaking the
+/// shared reader's.
+fn field_list_error(entity: &str, error: DdicFieldsError) -> TableError {
+    match error {
+        DdicFieldsError::Query(error) => error,
+        DdicFieldsError::NoFields { .. } => TableError::EntityFieldsMissing {
+            entity: entity.to_owned(),
+        },
+        DdicFieldsError::TooManyFields { limit, .. } => TableError::FieldListTruncated {
+            entity: entity.to_owned(),
+            limit,
+        },
+        DdicFieldsError::Unreadable { .. } => TableError::FieldListUnreadable {
+            entity: entity.to_owned(),
+        },
+    }
 }
 
 async fn get_optional_row_count(

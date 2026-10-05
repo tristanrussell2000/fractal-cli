@@ -1,8 +1,18 @@
-use std::collections::HashMap;
+use crate::sap::ddic_fields::DdicField;
 
-use super::TableColumn;
+/// The combined metadata available for one DDIC table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableMetadata {
+    pub entity: String,
+    pub total_rows: Option<u64>,
+    pub fields: Vec<TableFieldMetadata>,
+}
 
-/// One table field, as SAP records it, enriched from DDIC preview metadata.
+/// One table field, projected from the recorded field list.
+///
+/// A narrower view of [`DdicField`] than `object show` reports: the table
+/// commands need a type, a length and a key flag, and the write path needs a
+/// declared type it can recognise a client column by.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableFieldMetadata {
     pub name: String,
@@ -14,50 +24,30 @@ pub struct TableFieldMetadata {
     pub description: Option<String>,
 }
 
-/// The combined metadata available for one DDIC table.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TableMetadata {
-    pub entity: String,
-    pub total_rows: Option<u64>,
-    pub fields: Vec<TableFieldMetadata>,
+impl From<DdicField> for TableFieldMetadata {
+    fn from(field: DdicField) -> Self {
+        Self {
+            declared_type: declared_type(&field),
+            name: field.name,
+            is_key: field.is_key,
+            sap_type: field.sap_type,
+            col_type: field.col_type,
+            length: field.length,
+            description: field.description,
+        }
+    }
 }
 
-/// Adds what only a preview response carries to the recorded field list.
-///
-/// The field list decides which fields exist, their order, and which are key.
-/// The preview contributes the runtime type and the description, and fills
-/// `col_type`/`length` only where the field list left them empty — some
-/// releases serve no `colType` at all, so the recorded value is preferred.
-pub(super) fn merge_table_metadata(
-    entity: String,
-    fields: Vec<TableFieldMetadata>,
-    columns: &[TableColumn],
-) -> TableMetadata {
-    let columns_by_name: HashMap<_, _> = columns
-        .iter()
-        .map(|column| (column.name.to_ascii_uppercase(), column))
-        .collect();
-    let fields = fields
-        .into_iter()
-        .map(|field| {
-            let Some(column) = columns_by_name.get(&field.name.to_ascii_uppercase()) else {
-                return field;
-            };
-
-            TableFieldMetadata {
-                sap_type: column.sap_type.clone(),
-                col_type: field.col_type.or_else(|| column.col_type.clone()),
-                length: field.length.or(column.length),
-                description: column.description.clone(),
-                ..field
-            }
-        })
-        .collect();
-
-    TableMetadata {
-        entity,
-        total_rows: None,
-        fields,
+/// The data element a field is typed with, or the built-in type when it has
+/// none. Spelled the way a DDL source spells it, because that is what the
+/// client-column check matches against.
+fn declared_type(field: &DdicField) -> String {
+    if let Some(data_element) = &field.data_element {
+        return data_element.clone();
+    }
+    match &field.col_type {
+        Some(col_type) => format!("abap.{}", col_type.to_ascii_lowercase()),
+        None => String::new(),
     }
 }
 
@@ -65,95 +55,44 @@ pub(super) fn merge_table_metadata(
 mod tests {
     use super::*;
 
-    fn field(name: &str, declared_type: &str, is_key: bool) -> TableFieldMetadata {
-        TableFieldMetadata {
+    fn ddic_field(name: &str, data_element: Option<&str>, col_type: Option<&str>) -> DdicField {
+        DdicField {
             name: name.to_owned(),
-            declared_type: declared_type.to_owned(),
-            is_key,
-            sap_type: None,
-            col_type: None,
-            length: None,
-            description: None,
+            is_key: true,
+            data_element: data_element.map(str::to_owned),
+            domain: None,
+            col_type: col_type.map(str::to_owned),
+            sap_type: Some("C".to_owned()),
+            length: Some(3),
+            decimals: None,
+            not_null: false,
+            check_table: None,
+            description: Some("Client".to_owned()),
         }
     }
 
     #[test]
-    fn enriches_case_insensitively_and_keeps_the_recorded_order() {
-        let result = merge_table_metadata(
-            "zsample_record".to_owned(),
-            vec![
-                field("client", "mandt", true),
-                field("status", "zsample_status", false),
-            ],
-            &[
-                TableColumn {
-                    name: "STATUS".to_owned(),
-                    sap_type: Some("C".to_owned()),
-                    col_type: Some("CHAR".to_owned()),
-                    length: Some(12),
-                    description: Some("Status".to_owned()),
-                },
-                TableColumn {
-                    name: "CLIENT".to_owned(),
-                    sap_type: Some("C".to_owned()),
-                    col_type: Some("CLNT".to_owned()),
-                    length: Some(3),
-                    description: Some("Client".to_owned()),
-                },
-            ],
-        );
+    fn projects_the_fields_the_table_commands_use() {
+        let field = TableFieldMetadata::from(ddic_field("mandt", Some("mandt"), Some("CLNT")));
 
-        assert_eq!(result.entity, "zsample_record");
-        assert_eq!(result.total_rows, None);
-        assert_eq!(result.fields[0].name, "client");
-        assert!(result.fields[0].is_key);
-        assert_eq!(result.fields[0].col_type.as_deref(), Some("CLNT"));
-        assert_eq!(result.fields[0].sap_type.as_deref(), Some("C"));
-        assert_eq!(result.fields[1].name, "status");
-        assert_eq!(result.fields[1].description.as_deref(), Some("Status"));
+        assert_eq!(field.name, "mandt");
+        assert_eq!(field.declared_type, "mandt");
+        assert!(field.is_key);
+        assert_eq!(field.col_type.as_deref(), Some("CLNT"));
+        assert_eq!(field.sap_type.as_deref(), Some("C"));
+        assert_eq!(field.length, Some(3));
+        assert_eq!(field.description.as_deref(), Some("Client"));
     }
 
-    /// A release that serves no `colType` must not blank the recorded one.
+    /// A field with no data element still has to present a declared type the
+    /// client-column check can recognise, or a write to a client-dependent
+    /// table typed that way would be refused for an incomplete key.
     #[test]
-    fn keeps_the_recorded_col_type_when_the_preview_serves_none() {
-        let mut recorded = field("client", "mandt", true);
-        recorded.col_type = Some("CLNT".to_owned());
-        recorded.length = Some(3);
+    fn names_a_built_in_type_the_way_a_ddl_source_would() {
+        let field = TableFieldMetadata::from(ddic_field("mandt", None, Some("CLNT")));
+        assert_eq!(field.declared_type, "abap.clnt");
 
-        let result = merge_table_metadata(
-            "zsample_record".to_owned(),
-            vec![recorded],
-            &[TableColumn {
-                name: "CLIENT".to_owned(),
-                sap_type: Some("C".to_owned()),
-                col_type: None,
-                length: None,
-                description: Some("Client".to_owned()),
-            }],
-        );
-
-        assert_eq!(result.fields[0].col_type.as_deref(), Some("CLNT"));
-        assert_eq!(result.fields[0].length, Some(3));
-        assert_eq!(result.fields[0].sap_type.as_deref(), Some("C"));
-    }
-
-    #[test]
-    fn leaves_a_field_the_preview_does_not_mention_untouched() {
-        let result = merge_table_metadata(
-            "zsample_partial".to_owned(),
-            vec![field("id", "abap.int4", true)],
-            &[TableColumn {
-                name: "PREVIEW_ONLY".to_owned(),
-                sap_type: Some("C".to_owned()),
-                col_type: Some("CHAR".to_owned()),
-                length: Some(4),
-                description: Some("Ignored".to_owned()),
-            }],
-        );
-
-        assert_eq!(result.fields.len(), 1);
-        assert_eq!(result.fields[0].name, "id");
-        assert_eq!(result.fields[0].sap_type, None);
-        assert_eq!(result.fields[0].description, None);
+        let field = TableFieldMetadata::from(ddic_field("mystery", None, None));
+        assert_eq!(field.declared_type, "");
     }
 }

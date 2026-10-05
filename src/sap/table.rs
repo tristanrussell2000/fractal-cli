@@ -1,6 +1,5 @@
 mod error;
 mod fetch;
-mod fields;
 mod metadata;
 mod parse;
 
