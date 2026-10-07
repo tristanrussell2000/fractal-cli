@@ -6,8 +6,6 @@
 //! wrote would be the worst possible outcome of a feature whose whole purpose
 //! is recovery.
 
-mod adt_edit_mock;
-
 use fractal::config::{EditPolicy, Profile};
 use fractal::journal::entry::{
     ActivationUndoStep, EntryObject, EntryStatus, EntrySystem, JournalEntry, JournalOperation,
@@ -484,8 +482,8 @@ async fn an_object_outside_the_customer_namespaces_is_refused_before_reading() {
 
 // --- The three write steps ------------------------------------------------
 
-fn session() -> adt_edit_mock::AdtEditSession {
-    adt_edit_mock::AdtEditSession {
+fn session() -> crate::adt_edit_mock::AdtEditSession {
+    crate::adt_edit_mock::AdtEditSession {
         sap_client: "100",
         csrf_token: "undo-csrf",
         session_cookie: "SAP_SESSIONID=undo-test",
@@ -499,7 +497,7 @@ async fn mount_sequence(server: &MockServer, version: &str, bodies: &[&str]) {
     Mock::given(method("GET"))
         .and(path(CLASS_SOURCE_URI))
         .and(query_param("version", version))
-        .respond_with(adt_edit_mock::SequentialResponses::sources(bodies))
+        .respond_with(crate::adt_edit_mock::SequentialResponses::sources(bodies))
         .mount(server)
         .await;
 }
@@ -844,7 +842,7 @@ async fn undoing_a_metadata_activation_restores_the_document_and_the_pending_one
     // The same three steps, through the metadata write path: the whole document
     // is the object, so there is no source to write and no syntax pre-check.
     let server = MockServer::start().await;
-    let session = adt_edit_mock::AdtEditSession {
+    let session = crate::adt_edit_mock::AdtEditSession {
         object_path: DTEL_URI,
         source_path: "",
         ..session()
@@ -882,7 +880,7 @@ async fn undoing_a_metadata_activation_restores_the_document_and_the_pending_one
     Mock::given(method("GET"))
         .and(path(DTEL_URI))
         .and(query_param("version", "inactive"))
-        .respond_with(adt_edit_mock::SequentialResponses::sources(&[
+        .respond_with(crate::adt_edit_mock::SequentialResponses::sources(&[
             &labelled("inactive", STATES_LINK, "two"),
             &labelled("inactive", STATES_LINK, "one"),
             &labelled("inactive", STATES_LINK, "one"),
@@ -894,7 +892,7 @@ async fn undoing_a_metadata_activation_restores_the_document_and_the_pending_one
     Mock::given(method("GET"))
         .and(path(DTEL_URI))
         .and(query_param("version", "active"))
-        .respond_with(adt_edit_mock::SequentialResponses::sources(&[
+        .respond_with(crate::adt_edit_mock::SequentialResponses::sources(&[
             &labelled("active", STATES_LINK, "two"),
             &labelled("active", "", "one"),
         ]))

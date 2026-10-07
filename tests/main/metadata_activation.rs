@@ -5,9 +5,7 @@
 //! so this path decides on the object's own post-state and never on the flag.
 //! A test pins exactly that response.
 
-mod adt_edit_mock;
-
-use adt_edit_mock::AdtEditSession;
+use crate::adt_edit_mock::AdtEditSession;
 use fractal::config::{EditPolicy, Profile};
 use fractal::journal::entry::EntrySystem;
 use fractal::journal::recorder::Journal;

@@ -13,9 +13,7 @@
 //! unrelated namespaces — so each was read off a live object and each is
 //! asserted here.
 
-mod adt_edit_mock;
-
-use adt_edit_mock::AdtEditSession;
+use crate::adt_edit_mock::AdtEditSession;
 use fractal::config::EditPolicy;
 use fractal::{
     config::Profile,

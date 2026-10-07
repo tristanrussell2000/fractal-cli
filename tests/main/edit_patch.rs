@@ -1,6 +1,4 @@
-mod adt_edit_mock;
-
-use adt_edit_mock::{AdtEditSession, SequentialResponses};
+use crate::adt_edit_mock::{AdtEditSession, SequentialResponses};
 use fractal::reportable_error::ReportableError;
 use fractal::{
     config::Profile,

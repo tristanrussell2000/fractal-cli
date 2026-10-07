@@ -11,9 +11,7 @@
 //!   classified rather than surfaced as a bare 400;
 //! - a write SAP accepts but does not apply is reported, not hidden.
 
-mod adt_edit_mock;
-
-use adt_edit_mock::AdtEditSession;
+use crate::adt_edit_mock::AdtEditSession;
 use fractal::config::EditPolicy;
 use fractal::source_change::source_sha256;
 use fractal::{

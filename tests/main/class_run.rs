@@ -1,6 +1,4 @@
-mod adt_edit_mock;
-
-use adt_edit_mock::AdtEditSession;
+use crate::adt_edit_mock::AdtEditSession;
 use fractal::reportable_error::ReportableError;
 use fractal::sap::{
     class_run::{ClassRunError, run_class},
