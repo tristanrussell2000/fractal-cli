@@ -34,11 +34,14 @@ use super::{
     editable_source::validate_object_name,
     find_child, find_non_empty_attribute,
     metadata_document::declared_version,
+    table::{QueryOptions, run_query},
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
 use crate::suggested_command;
 
 const STRUCTURE_COLLECTION: &str = "/sap/bc/adt/ddic/structures";
+/// The language a view's description is read in, matching the field texts.
+const VIEW_TEXT_LANGUAGE: &str = "E";
 
 /// One object, with every field an include or append contributed in place.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -48,10 +51,14 @@ pub struct DdicStructureInfo {
     /// Never taken from the document, whose `adtcore:type` reflects the URI it
     /// was fetched through rather than the object.
     pub kind: DdicTableClass,
-    pub uri: String,
+    /// Absent for a view: ADT serves no usable document for one, so there is
+    /// no address to report.
+    pub uri: Option<String>,
     /// The layer that was asked for.
     pub requested_version: &'static str,
-    /// The layer the document declared itself to be.
+    /// The layer the document declared itself to be. Absent for a view, which
+    /// has no document to declare it — the field list was read at the layer
+    /// that was asked for, with no silent fallback for it to disagree with.
     pub version: Option<String>,
     pub description: Option<String>,
     pub package: Option<String>,
@@ -153,27 +160,103 @@ pub async fn get_ddic_structure(
 ) -> Result<DdicStructureInfo, DdicStructureError> {
     let name =
         validate_object_name(name).map_err(|_| DdicStructureError::InvalidName(name.to_owned()))?;
-    let uri = structure_uri(&name);
 
+    // The field list comes first because it says what the object is, and that
+    // decides where its header can be read from.
+    let list = read_field_list(sap, &name, version).await?;
+    let header = match list.class {
+        DdicTableClass::View => read_view_header(sap, &name).await?,
+        _ => read_document_header(sap, &name, version).await?,
+    };
+
+    Ok(DdicStructureInfo {
+        name: header.name.unwrap_or_else(|| name.clone()),
+        kind: list.class,
+        uri: header.uri,
+        requested_version: version.as_str(),
+        version: header.version,
+        description: header.description,
+        package: header.package,
+        field_count: list.fields.len(),
+        key_field_count: list.fields.iter().filter(|field| field.is_key).count(),
+        fields: list.fields,
+    })
+}
+
+/// What a header read contributes, whichever source answered.
+#[derive(Debug, Default)]
+struct Header {
+    name: Option<String>,
+    uri: Option<String>,
+    version: Option<String>,
+    description: Option<String>,
+    package: Option<String>,
+}
+
+/// The header of anything ADT serves through its structures collection —
+/// structures, tables and append structures.
+async fn read_document_header(
+    sap: &SapClient,
+    name: &str,
+    version: AdtVersion,
+) -> Result<Header, DdicStructureError> {
+    let uri = structure_uri(name);
     let xml = sap
         .get_text_with_query(&uri, &[("version", version.as_str())])
         .await?;
-    let list = read_field_list(sap, &name, version).await?;
 
     let document = parse_adt_document(&xml)?;
     let root = document.root_element();
-    Ok(DdicStructureInfo {
-        name: find_non_empty_attribute(root, "name").unwrap_or_else(|| name.clone()),
-        kind: list.class,
-        uri,
-        requested_version: version.as_str(),
+    Ok(Header {
+        name: find_non_empty_attribute(root, "name"),
+        uri: Some(uri),
         version: declared_version(root),
         description: find_non_empty_attribute(root, "description"),
         package: find_child(root, "packageRef")
             .and_then(|node| find_non_empty_attribute(node, "name")),
-        field_count: list.fields.len(),
-        key_field_count: list.fields.iter().filter(|field| field.is_key).count(),
-        fields: list.fields,
+    })
+}
+
+/// The header of a view, which ADT will not serve: `ddic/structures/<view>` is
+/// a 404 and `ddic/views/<view>` a 500. The DDIC knows it anyway.
+///
+/// `DD25T` rather than `DD02T`, because a view has a row in both and `DD02T`
+/// describes the generated table behind it — "Generated Table for View" where
+/// `DD25T` names the view itself. `TADIR` is joined outer and pinned to
+/// `R3TR VIEW`, because a name can hold several `TADIR` rows under different
+/// object types, each with its own package.
+async fn read_view_header(sap: &mut SapClient, name: &str) -> Result<Header, DdicStructureError> {
+    let query = format!(
+        "SELECT t~ddtext, d~devclass FROM dd25t AS t \
+         LEFT OUTER JOIN tadir AS d \
+         ON d~obj_name = t~viewname AND d~pgmid = 'R3TR' AND d~object = 'VIEW' \
+         WHERE t~viewname = '{name}' AND t~ddlanguage = '{VIEW_TEXT_LANGUAGE}' \
+         AND t~as4local = 'A'"
+    );
+    let result = run_query(
+        sap,
+        &query,
+        &QueryOptions {
+            offset: 0,
+            limit: 1,
+        },
+    )
+    .await
+    .map_err(DdicFieldsError::Query)?;
+
+    let cell = |column: &str| {
+        let index = result
+            .columns
+            .iter()
+            .position(|candidate| candidate.name.eq_ignore_ascii_case(column))?;
+        let value = result.rows.first()?.get(index)?.trim();
+        (!value.is_empty()).then(|| value.to_owned())
+    };
+
+    Ok(Header {
+        description: cell("DDTEXT"),
+        package: cell("DEVCLASS"),
+        ..Header::default()
     })
 }
 

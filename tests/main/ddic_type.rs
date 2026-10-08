@@ -599,7 +599,10 @@ async fn reads_the_fields_an_include_contributed_and_drops_the_marker() {
     assert_eq!(info.kind, DdicTableClass::Structure);
     assert_eq!(info.description.as_deref(), Some("Sample record structure"));
     assert_eq!(info.package.as_deref(), Some("ZPKG"));
-    assert_eq!(info.uri, "/sap/bc/adt/ddic/structures/zsample_record_s");
+    assert_eq!(
+        info.uri.as_deref(),
+        Some("/sap/bc/adt/ddic/structures/zsample_record_s")
+    );
     assert_eq!(info.requested_version, "active");
     assert_eq!(info.version.as_deref(), Some("active"));
 
@@ -655,11 +658,14 @@ async fn a_name_with_no_recorded_fields_is_an_error_rather_than_an_empty_structu
         )
         .mount(&server)
         .await;
+    // The field list is read first, so a name with none never reaches the
+    // document: a miss costs one request, not two.
     mock_version(
         "/sap/bc/adt/ddic/structures/zsample_record_s",
         "active",
         STRUCTURE_XML,
     )
+    .expect(0)
     .mount(&server)
     .await;
     Mock::given(method("POST"))
@@ -717,5 +723,108 @@ async fn an_inactive_read_asks_dd03l_for_the_layer_it_calls_n() {
         .unwrap();
 
     assert_eq!(info.requested_version, "inactive");
+    server.verify().await;
+}
+
+/// A view has no ADT document — `ddic/structures/<view>` is a 404 and
+/// `ddic/views/<view>` a 500 — so its header comes from the DDIC instead.
+#[tokio::test]
+async fn reads_a_view_whose_header_adt_will_not_serve() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/core/discovery"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-csrf-token", "structure-csrf")
+                .insert_header("set-cookie", "SAP_SESSIONID=structure-test; Path=/"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/datapreview/freestyle"))
+        .and(body_string_contains("dd03l"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(field_rows("VIEW")))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // DD25T, not DD02T: a view has a row in both, and DD02T describes the
+    // generated table behind it rather than the view.
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/datapreview/freestyle"))
+        .and(body_string_contains("dd25t"))
+        .and(body_string_contains("t~viewname = 'ZSAMPLE_RECORD_S'"))
+        .and(body_string_contains("d~object = 'VIEW'"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(preview(&[
+            ("DDTEXT", vec!["Sample view"]),
+            ("DEVCLASS", vec!["ZPKG"]),
+        ])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // Nothing may reach the structures collection for a view.
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/ddic/structures/zsample_record_s"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let profile = profile(server.uri());
+    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let info = get_ddic_structure(&mut client, "zsample_record_s", AdtVersion::Active)
+        .await
+        .unwrap();
+
+    assert_eq!(info.kind, DdicTableClass::View);
+    assert_eq!(info.description.as_deref(), Some("Sample view"));
+    assert_eq!(info.package.as_deref(), Some("ZPKG"));
+    // No document means no address to report and no declared layer to compare
+    // against; the field list was read at the layer that was asked for.
+    assert_eq!(info.uri, None);
+    assert_eq!(info.version, None);
+    assert_eq!(info.requested_version, "active");
+    assert_eq!(info.field_count, 2);
+    server.verify().await;
+}
+
+/// A view SAP records no package for still reports everything else.
+#[tokio::test]
+async fn a_view_with_no_package_row_is_still_reported() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/core/discovery"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-csrf-token", "structure-csrf")
+                .insert_header("set-cookie", "SAP_SESSIONID=structure-test; Path=/"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/datapreview/freestyle"))
+        .and(body_string_contains("dd03l"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(field_rows("VIEW")))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/datapreview/freestyle"))
+        .and(body_string_contains("dd25t"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(preview(&[
+            ("DDTEXT", vec!["Sample view"]),
+            ("DEVCLASS", vec![""]),
+        ])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let profile = profile(server.uri());
+    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let info = get_ddic_structure(&mut client, "zsample_record_s", AdtVersion::Active)
+        .await
+        .unwrap();
+
+    assert_eq!(info.package, None);
+    assert_eq!(info.description.as_deref(), Some("Sample view"));
     server.verify().await;
 }

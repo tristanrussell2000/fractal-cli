@@ -369,12 +369,12 @@ pub enum ObjectCommand {
     Xml(XmlArgs),
     /// Read the authoritative short description for an ADT object URI.
     Info(UriArgs),
-    /// Show one data element, domain, structure or table by name.
+    /// Show one data element, domain, structure, table or view by name.
     ///
     /// A data element resolves to its domain. A structure lists its fields,
     /// with anything an include or append contributed already in place — and
-    /// so does a table, which SAP serves through the same collection and which
-    /// is labelled as a table rather than as a structure.
+    /// so do tables and views, which are labelled as what they are rather than
+    /// as structures.
     ///
     /// Reads the active version by default, and reports which version it got.
     /// Those are two separate answers: SAP serves the other layer rather than
@@ -389,7 +389,7 @@ pub enum ObjectCommand {
 
 #[derive(Debug, Args)]
 pub struct ObjectShowArgs {
-    /// Data element, domain, structure or table name.
+    /// Data element, domain, structure, table or view name.
     pub(crate) name: String,
     /// Skip detection and read this type directly.
     #[arg(long = "type", value_enum)]

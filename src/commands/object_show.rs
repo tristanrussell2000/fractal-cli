@@ -36,7 +36,7 @@ pub enum ShowInfo {
 
 /// A name that is none of the three kinds this command reads.
 #[derive(Debug, thiserror::Error)]
-#[error("'{name}' is not a data element, domain, structure or table")]
+#[error("'{name}' is not a data element, domain, structure, table or view")]
 pub struct UnknownDdicObject {
     name: String,
 }
@@ -144,11 +144,19 @@ fn render_structure_readable(info: &DdicStructureInfo) -> String {
     if let Some(package) = &info.package {
         let _ = writeln!(output, "package: {package}");
     }
-    let _ = writeln!(output, "uri: {}", info.uri);
+    if let Some(uri) = &info.uri {
+        let _ = writeln!(output, "uri: {uri}");
+    }
     let _ = writeln!(
         output,
         "version: {}",
-        render_version(info.requested_version, info.version.as_deref())
+        if info.uri.is_some() {
+            render_version(info.requested_version, info.version.as_deref())
+        } else {
+            // No document to declare a layer, and none to disagree: the field
+            // list was read at the layer the query named.
+            info.requested_version.to_owned()
+        }
     );
     let _ = writeln!(
         output,
