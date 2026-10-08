@@ -10,9 +10,11 @@ use super::{
     adt_object_uri::{
         AdtObjectUriError, SOURCE_SUFFIX, validate_adt_object_uri, validate_source_object_uri,
     },
+    adt_response::{AdtResponseParseError, parse_adt_document},
     adt_version::AdtVersion,
     client::{SapClient, SapClientError},
-    metadata_document::document_version,
+    find_non_empty_attribute,
+    metadata_document::{declared_version, document_version},
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
 use crate::suggested_command;
@@ -28,6 +30,8 @@ pub enum ObjectSourceError {
     NoSourceForKind { kind: String, uri: String },
     #[error("could not preserve valid UTF-8 while paging source: {0}")]
     Encoding(String),
+    #[error("could not parse the object document: {0}")]
+    Parse(#[from] AdtResponseParseError),
 }
 
 impl ObjectSourceError {
@@ -47,6 +51,7 @@ impl ReportableError for ObjectSourceError {
             Self::Uri(error) => error.code(),
             Self::NoSourceForKind { .. } => "no_source_for_kind",
             Self::Encoding(_) => "source_encoding_error",
+            Self::Parse(error) => error.code(),
         }
     }
 
@@ -65,6 +70,7 @@ impl ReportableError for ObjectSourceError {
                 "The source response could not be converted into a safe UTF-8 page; retry without paging or report the object URI."
                     .to_owned()
             }
+            Self::Parse(error) => error.hint()?,
         })
     }
 
@@ -74,7 +80,7 @@ impl ReportableError for ObjectSourceError {
             // The object exists but has no source view; its metadata does.
             Self::NoSourceForKind { uri, .. } => Some(suggested_command::object_xml(uri)),
             Self::Sap(error) => error.suggested_command(),
-            Self::Uri(_) | Self::Encoding(_) => None,
+            Self::Uri(_) | Self::Encoding(_) | Self::Parse(_) => None,
         }
     }
 }
@@ -219,6 +225,48 @@ fn utf8_safe_end(bytes: &[u8], requested_end: usize) -> usize {
         end -= 1;
     }
     end
+}
+
+/// Which stored layer a source read actually returned, and who last changed it.
+///
+/// ABAP source is plain text and declares nothing about itself, and the
+/// response carries no clue either — the headers for `version=active` and
+/// `version=inactive` are byte-identical on an object that has only one layer.
+/// The object's own document is the only thing that says, so this is a second
+/// request, not a parse of the first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceLayer {
+    /// The layer the document declared — `active`, `inactive` or `new`. SAP
+    /// serves the other layer rather than refusing when the requested one does
+    /// not exist, so this is not always the layer that was asked for.
+    pub version: Option<String>,
+    /// Who last changed the layer that arrived.
+    pub changed_by: Option<String>,
+}
+
+/// Asks an object's document which layer a source read of it returned.
+///
+/// # Errors
+///
+/// Returns [`ObjectSourceError`] when the URI is not an ADT object URI, SAP
+/// cannot serve the document, or it cannot be parsed.
+pub async fn read_source_layer(
+    sap: &SapClient,
+    uri: &str,
+    version: AdtVersion,
+) -> Result<SourceLayer, ObjectSourceError> {
+    validate_adt_object_uri(uri)?;
+    // The same layer the source was asked for, so the answer describes that
+    // read rather than a different one.
+    let xml = sap
+        .get_text_with_query(uri, &[("version", version.as_str())])
+        .await?;
+    let document = parse_adt_document(&xml)?;
+    let root = document.root_element();
+    Ok(SourceLayer {
+        version: declared_version(root),
+        changed_by: find_non_empty_attribute(root, "changedBy"),
+    })
 }
 
 #[cfg(test)]

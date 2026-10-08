@@ -51,9 +51,15 @@ pub struct ObjectSourceResultOutput {
     total_bytes: usize,
     truncated: bool,
     next_offset: Option<usize>,
-    /// The version asked for. ABAP source declares no version of its own, so
-    /// unlike `object xml` there is nothing to report beside it.
+    /// The version asked for.
     requested_version: &'static str,
+    /// The version that arrived. Source is plain text and declares nothing, so
+    /// this comes from the object's own document — SAP serves the other layer
+    /// rather than refusing when the requested one does not exist, and without
+    /// this the fallback is invisible.
+    version: Option<String>,
+    /// Who last changed the layer that arrived.
+    changed_by: Option<String>,
     source: String,
 }
 
@@ -210,16 +216,20 @@ pub async fn object_source(
     args: &SourceArgs,
 ) -> Result<ObjectSourceResultOutput, Reported> {
     let (profile_name, _profile, client) = connect(explicit_profile).await?;
+    let version = args.version.into();
     let result = fractal::sap::object_source::get_source(
         &client,
         &args.uri,
-        args.version.into(),
+        version,
         ByteRangeOptions {
             offset: args.offset,
             limit: args.limit,
         },
     )
     .await?;
+    // A second request, because the source response cannot answer this: the
+    // headers for both layers are identical on an object that has only one.
+    let layer = fractal::sap::object_source::read_source_layer(&client, &args.uri, version).await?;
 
     Ok(ObjectSourceResultOutput {
         ok: true,
@@ -231,6 +241,8 @@ pub async fn object_source(
         truncated: result.truncated,
         next_offset: result.next_offset,
         requested_version: version_name(args.version),
+        version: layer.version,
+        changed_by: layer.changed_by,
         source: result.content,
     })
 }
@@ -495,7 +507,14 @@ fn render_object_source_readable(result: &ObjectSourceResultOutput) -> String {
     let mut output = String::new();
     let _ = writeln!(output, "profile: {}", result.profile);
     let _ = writeln!(output, "uri: {}", result.uri);
-    let _ = writeln!(output, "requested version: {}", result.requested_version);
+    let _ = writeln!(
+        output,
+        "version: {}",
+        render_version(result.requested_version, result.version.as_deref())
+    );
+    if let Some(changed_by) = &result.changed_by {
+        let _ = writeln!(output, "changed by: {changed_by}");
+    }
     let _ = writeln!(
         output,
         "bytes: {}-{} of {}",
@@ -936,11 +955,15 @@ mod tests {
             truncated: true,
             next_offset: Some(24),
             requested_version: "active",
+            version: Some("active".to_owned()),
+            changed_by: Some("DEVELOPER".to_owned()),
             source: "CLASS zcl_sample DEFINITION.".to_owned(),
         };
 
         let rendered = render_object_source_readable(&result);
 
+        assert!(rendered.contains("version: active"));
+        assert!(rendered.contains("changed by: DEVELOPER"));
         assert!(rendered.contains("bytes: 0-24 of 96"));
         assert!(rendered.contains("truncated: yes (next offset: 24)"));
         assert!(rendered.ends_with("CLASS zcl_sample DEFINITION."));
@@ -959,10 +982,21 @@ mod tests {
             truncated: false,
             next_offset: None,
             requested_version: "active",
+            // The fallback case: asked for one layer, served the other.
+            version: Some("inactive".to_owned()),
+            changed_by: None,
             source: "REPORT".to_owned(),
         };
 
-        assert!(!render_object_source_readable(&result).contains("truncated"));
+        let rendered = render_object_source_readable(&result);
+        assert!(!rendered.contains("truncated"));
+        // The silent fallback this command exists to expose.
+        assert!(
+            rendered.contains("inactive (asked for active; this object has none)"),
+            "{rendered}"
+        );
+        // Nothing to say when SAP names no author.
+        assert!(!rendered.contains("changed by"));
     }
 
     #[test]
