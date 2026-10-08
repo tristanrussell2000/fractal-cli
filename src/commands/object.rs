@@ -12,7 +12,6 @@ use fractal::sap::{
     object_usages::get_object_usages,
     repository_kind::RepositoryKind,
 };
-use fractal::source_change::source_sha256;
 
 #[derive(Debug, Serialize)]
 pub struct ObjectSearchResultOutput {
@@ -74,8 +73,14 @@ pub struct ObjectXmlResultOutput {
     /// requested: SAP serves the other layer rather than refusing.
     #[serde(skip_serializing_if = "Option::is_none")]
     version: Option<String>,
-    /// SHA-256 of the document as read, so a later `edit set-xml` can pass it
-    /// as `--expected-sha256` and refuse to overwrite a changed document.
+    /// A token to hand to `edit set-xml --expected-sha256`, which refuses to
+    /// overwrite a document that changed underneath you.
+    ///
+    /// **Not a checksum of [`Self::xml`].** It is taken over the whole
+    /// document with `atom:link` elements removed — the same thing the write
+    /// and journal paths hash — so it survives paging, and does not move when
+    /// somebody else stages or discards pending work and ADT rewrites the link
+    /// etags.
     ///
     /// That check re-reads inactive if available, so this hash pairs with it
     /// when the read asked for `inactive`, or when the object has no pending
@@ -269,7 +274,7 @@ pub async fn object_xml(
         uri: args.uri.clone(),
         requested_version: version_name(args.version),
         version: result.declared_version,
-        sha256: source_sha256(&result.page.content),
+        sha256: result.sha256,
         xml: result.page.content,
     })
 }

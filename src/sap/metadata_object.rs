@@ -17,6 +17,7 @@ use super::package_authorization::{
 use super::staged_work::{StagedEditPolicy, StagedWorkError, refuse_when_staged_by_another};
 use crate::config::EditPolicy;
 use crate::journal::recorder::Journal;
+use crate::sap::metadata_document::strip_navigation_links;
 use crate::source_change::{SourceChangePlanError, verify_expected_sha256};
 use thiserror::Error;
 
@@ -636,7 +637,11 @@ pub async fn write_metadata_object(
         Ok(before) => before,
         Err(primary) => return Err(abandon_lock_if_stuck(sap, &identity, &lock, primary).await),
     };
-    if let Err(stale) = verify_expected_sha256(expected_sha256, &before) {
+    // Hashed with `atom:link` removed, the same as `object xml` reports and
+    // the journal records. The raw document's link etags change whenever
+    // pending work is staged or discarded, which would make the guard refuse
+    // writes over edits nobody made.
+    if let Err(stale) = verify_expected_sha256(expected_sha256, &strip_navigation_links(&before)) {
         // Nothing has been written, so the only cleanup is the lock.
         return Err(abandon_lock_if_stuck(sap, &identity, &lock, stale.into()).await);
     }

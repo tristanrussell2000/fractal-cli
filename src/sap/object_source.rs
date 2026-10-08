@@ -14,9 +14,10 @@ use super::{
     adt_version::AdtVersion,
     client::{SapClient, SapClientError},
     find_non_empty_attribute,
-    metadata_document::{declared_version, document_version},
+    metadata_document::{declared_version, document_version, strip_navigation_links},
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
+use crate::source_change::source_sha256;
 use crate::suggested_command;
 
 /// A failure while retrieving object source or metadata XML.
@@ -99,6 +100,15 @@ pub struct ByteRangeOptions {
 pub struct XmlReadResult {
     pub page: ByteRangeResult,
     pub declared_version: Option<String>,
+    /// A token for `set-xml --expected-sha256`, **not** a checksum of
+    /// [`Self::page`].
+    ///
+    /// Taken over the whole document with its `atom:link` elements removed,
+    /// which is what every write and journal path hashes. Over the page it
+    /// would be useless the moment a caller paged; over the raw document it
+    /// would move whenever somebody staged or discarded pending work, because
+    /// ADT rewrites link etags for that.
+    pub sha256: String,
 }
 
 #[derive(Debug, Clone)]
@@ -162,9 +172,11 @@ pub async fn get_xml(
     // which version it came from. An unparseable response is not a failure here
     // — this command returns whatever ADT served — it just has no version.
     let declared_version = document_version(&xml).ok().flatten();
+    let sha256 = source_sha256(&strip_navigation_links(&xml));
     Ok(XmlReadResult {
         page: page_text(&xml, options)?,
         declared_version,
+        sha256,
     })
 }
 

@@ -201,3 +201,68 @@ async fn a_response_that_is_not_xml_still_returns_what_sap_sent() {
     assert_eq!(result.page.content, "<not-closed");
     assert_eq!(result.declared_version, None);
 }
+
+/// One document with the `atom:link` etags ADT rewrites whenever pending work
+/// is staged or discarded.
+fn document_with_links(etag: &str) -> String {
+    format!(
+        r#"<?xml version="1.0"?><blue:wbobj xmlns:blue="urn:test" xmlns:adtcore="http://www.sap.com/adt/core" xmlns:atom="http://www.w3.org/2005/Atom" adtcore:name="ZSAMPLE" adtcore:version="active"><atom:link href="./zsample/source/main" rel="http://www.sap.com/adt/relations/source" etag="{etag}"/><adtcore:packageRef adtcore:name="ZPKG"/></blue:wbobj>"#
+    )
+}
+
+async fn hash_of(body: String, limit: Option<usize>) -> String {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/ddic/dataelements/zsample"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let profile = profile(server.uri());
+    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    get_xml(
+        &mut client,
+        "/sap/bc/adt/ddic/dataelements/zsample",
+        AdtVersion::Active,
+        ByteRangeOptions { offset: 0, limit },
+    )
+    .await
+    .unwrap()
+    .sha256
+}
+
+/// The hash is a token for `set-xml`, so it must not move for a reason the
+/// caller did not cause. ADT rewrites link etags whenever somebody stages or
+/// discards pending work, and that is not a change to the document's content.
+#[tokio::test]
+async fn the_hash_ignores_link_etags_that_move_on_their_own() {
+    let before = hash_of(document_with_links("20260101120000001"), None).await;
+    let after = hash_of(document_with_links("20260508093000002"), None).await;
+
+    assert_eq!(before, after);
+}
+
+/// Hashing the returned page would make the token useless the moment anyone
+/// paged, because `set-xml` compares against the whole document.
+#[tokio::test]
+async fn the_hash_covers_the_whole_document_not_the_returned_page() {
+    let whole = hash_of(document_with_links("20260101120000001"), None).await;
+    let paged = hash_of(document_with_links("20260101120000001"), Some(20)).await;
+
+    assert_eq!(whole, paged);
+}
+
+/// It is still a hash of *something* — a real content change has to move it,
+/// or the guard would never refuse anything.
+#[tokio::test]
+async fn a_real_content_change_still_moves_the_hash() {
+    let before = hash_of(document_with_links("20260101120000001"), None).await;
+    let after = hash_of(
+        document_with_links("20260101120000001").replace("ZPKG", "ZOTHER"),
+        None,
+    )
+    .await;
+
+    assert_ne!(before, after);
+}
