@@ -104,31 +104,34 @@ impl AdtObjectLock {
     }
 }
 
+/// Locks an object for editing.
+///
+/// **The transport is not named on the lock**, only recorded for the write to
+/// repeat as `corrNr`. This is what Eclipse does, and it is the difference
+/// between editing a class whose components sit in several tasks and not being
+/// able to edit it at all: naming a transport on the lock makes SAP check the
+/// whole object's task membership first, and it refuses with "object
+/// components locked in different tasks" when a colleague — or you, earlier —
+/// put another method in a task under a different request. The write still
+/// names the transport, so the change is still recorded against it.
 pub(super) async fn acquire_adt_object_lock(
     sap: &mut SapClient,
     object_uri: &str,
     transport: Option<&str>,
 ) -> Result<AdtObjectLock, AdtEditSessionError> {
-    let response = match request_adt_object_lock(sap, object_uri, transport).await {
-        Ok(response) => response,
-        Err(error)
-            if transport
-                .is_some_and(|transport| is_same_transport_lock_conflict(&error, transport)) =>
-        {
-            request_adt_object_lock(sap, object_uri, None)
-                .await
-                .map_err(|source| AdtEditSessionError::LockFailed {
-                    transport: transport.map(str::to_owned),
-                    source,
-                })?
-        }
-        Err(source) => {
-            return Err(AdtEditSessionError::LockFailed {
-                transport: transport.map(str::to_owned),
-                source,
-            });
-        }
-    };
+    let response = request_adt_object_lock(sap, object_uri, None)
+        .await
+        .map_err(|source| AdtEditSessionError::LockFailed {
+            transport: transport.map(str::to_owned),
+            source,
+        })?;
+    into_lock(response, transport)
+}
+
+fn into_lock(
+    response: String,
+    transport: Option<&str>,
+) -> Result<AdtObjectLock, AdtEditSessionError> {
     let handle =
         parse_lock_handle(&response).ok_or_else(|| AdtEditSessionError::LockHandleMissing {
             response_excerpt: response.chars().take(400).collect(),
@@ -155,12 +158,23 @@ pub(super) async fn release_adt_object_lock(
     .map_err(AdtEditSessionError::UnlockFailed)
 }
 
+/// Records an object against a transport by locking it with `corrNr` and
+/// letting go again.
+///
+/// The one place the transport *is* named on the lock, because here the naming
+/// is the whole point: there is no write afterwards to carry it.
 pub(super) async fn attach_adt_object_to_transport(
     sap: &mut SapClient,
     object_uri: &str,
     transport: &str,
 ) -> Result<(), AdtEditSessionError> {
-    let lock = acquire_adt_object_lock(sap, object_uri, Some(transport)).await?;
+    let response = request_adt_object_lock(sap, object_uri, Some(transport))
+        .await
+        .map_err(|source| AdtEditSessionError::LockFailed {
+            transport: Some(transport.to_owned()),
+            source,
+        })?;
+    let lock = into_lock(response, Some(transport))?;
     release_adt_object_lock(sap, object_uri, &lock).await
 }
 
@@ -218,15 +232,6 @@ pub(super) fn stateful_session_headers() -> HeaderMap {
         HeaderValue::from_static("stateful"),
     );
     headers
-}
-
-fn is_same_transport_lock_conflict(error: &SapClientError, transport: &str) -> bool {
-    let Some(message) = sap_error_message(error) else {
-        return false;
-    };
-    message.to_ascii_uppercase().contains("ALREADY LOCKED")
-        && transport_request_from_sap_error(error)
-            .is_some_and(|existing| existing.eq_ignore_ascii_case(transport))
 }
 
 fn transport_failure_hint(transport: Option<&str>, error: &SapClientError) -> Option<String> {

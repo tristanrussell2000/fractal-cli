@@ -293,7 +293,8 @@ async fn uses_transport_for_restore_without_relocking_during_activation() {
     const TRANSPORT: &str = "AB1K900575";
     let server = MockServer::start().await;
     mount_csrf_session(&server).await;
-    mount_lock_with_transport(&server, Some(TRANSPORT)).await;
+    // The lock is bare; the restore write is what names the transport.
+    mount_lock_with_transport(&server, None).await;
     mount_inactive_sequence(&server, 2, 3).await;
     mount_locked_source_reads(&server, ACTIVE_SOURCE).await;
     mount_restore_write_with_transport(&server, Some(TRANSPORT), ResponseTemplate::new(200)).await;

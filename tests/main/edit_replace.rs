@@ -199,11 +199,12 @@ async fn previews_complete_source_with_one_read_and_no_mutating_requests() {
 }
 
 #[tokio::test]
-async fn sends_transport_on_the_lock_and_complete_source_write() {
+async fn the_lock_never_names_the_transport_but_the_write_always_does() {
     const TRANSPORT: &str = "AB1K900575";
     let server = MockServer::start().await;
     mount_csrf_session(&server).await;
-    mount_lock(&server, Some(TRANSPORT)).await;
+    // Bare lock, transport on the write: see `acquire_adt_object_lock`.
+    mount_lock(&server, None).await;
     mount_source_sequence(&server, REPLACEMENT_SOURCE).await;
     mount_write(&server, Some(TRANSPORT), ResponseTemplate::new(200)).await;
     mount_unlock(&server, 200).await;

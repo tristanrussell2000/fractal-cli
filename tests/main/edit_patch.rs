@@ -56,10 +56,6 @@ async fn mount_successful_lock(server: &MockServer) {
     SESSION.mount_lock(server, None).await;
 }
 
-async fn mount_successful_transport_lock(server: &MockServer, transport: &'static str) {
-    SESSION.mount_lock(server, Some(transport)).await;
-}
-
 async fn mount_unlock(server: &MockServer, status: u16) {
     SESSION
         .mount_unlock(
@@ -210,10 +206,13 @@ async fn previews_a_patch_without_csrf_lock_write_or_unlock_requests() {
 }
 
 #[tokio::test]
-async fn sends_the_transport_on_both_a_successful_lock_and_source_write() {
+async fn the_lock_never_names_the_transport_but_the_write_always_does() {
     let server = MockServer::start().await;
     mount_csrf_session(&server).await;
-    mount_successful_transport_lock(&server, "AB1K900575").await;
+    // Bare, and the mock asserts the absence: naming a transport here makes
+    // SAP check the whole object's task membership and refuse a class whose
+    // components sit in several tasks.
+    mount_successful_lock(&server).await;
     Mock::given(method("GET"))
         .and(path(SOURCE_PATH))
         .and(query_param("version", "inactive"))
@@ -240,52 +239,22 @@ async fn sends_the_transport_on_both_a_successful_lock_and_source_write() {
 }
 
 #[tokio::test]
-async fn retries_an_own_request_lock_without_corrnr_but_keeps_corrnr_on_put() {
+async fn a_conflict_with_another_request_is_reported_from_the_write() {
     let server = MockServer::start().await;
     mount_csrf_session(&server).await;
-    Mock::given(method("POST"))
-        .and(path(OBJECT_PATH))
-        .and(query_param("_action", "LOCK"))
-        .and(query_param("corrNr", "AB1K900575"))
-        .respond_with(ResponseTemplate::new(409).set_body_string(
-            "<error><message>Object is already locked in request AB1K900575 of user DEVELOPER</message></error>",
-        ))
-        .expect(1)
-        .mount(&server)
-        .await;
     mount_successful_lock(&server).await;
+    // One read only: the write fails, so there is nothing to verify after it.
     Mock::given(method("GET"))
         .and(path(SOURCE_PATH))
         .and(query_param("version", "inactive"))
-        .respond_with(SequentialResponses::sources(&[
-            ORIGINAL_SOURCE,
-            PROPOSED_SOURCE,
-        ]))
-        .expect(2)
+        .respond_with(SequentialResponses::sources(&[ORIGINAL_SOURCE]))
+        .expect(1)
         .mount(&server)
         .await;
-    mount_successful_transport_put(&server, "AB1K900575").await;
-    mount_unlock(&server, 200).await;
-    let mut request = patch_request();
-    request.transport = Some("AB1K900575".to_owned());
-
-    let profile = profile(server.uri());
-    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
-    let result = patch_adt_source_atomically(&mut client, &profile.edit_policy(), &request)
-        .await
-        .unwrap();
-
-    assert_eq!(result.transport.as_deref(), Some("AB1K900575"));
-    server.verify().await;
-}
-
-#[tokio::test]
-async fn does_not_retry_a_lock_held_by_a_different_transport() {
-    let server = MockServer::start().await;
-    mount_csrf_session(&server).await;
-    Mock::given(method("POST"))
-        .and(path(OBJECT_PATH))
-        .and(query_param("_action", "LOCK"))
+    // SAP enforces transport membership on the write instead, and the hint
+    // that used to come from the lock still fires here.
+    Mock::given(method("PUT"))
+        .and(path(SOURCE_PATH))
         .and(query_param("corrNr", "AB1K900575"))
         .respond_with(ResponseTemplate::new(409).set_body_string(
             "<error><message>Object is already locked in request AB1K900999 of user OTHER</message></error>",
@@ -293,6 +262,7 @@ async fn does_not_retry_a_lock_held_by_a_different_transport() {
         .expect(1)
         .mount(&server)
         .await;
+    mount_unlock(&server, 200).await;
     let mut request = patch_request();
     request.transport = Some("AB1K900575".to_owned());
 
@@ -304,11 +274,11 @@ async fn does_not_retry_a_lock_held_by_a_different_transport() {
 
     assert!(matches!(
         error,
-        AdtSourcePatchError::Session(AdtEditSessionError::LockFailed { .. })
+        AdtSourcePatchError::Session(AdtEditSessionError::SourceWriteFailed { .. })
     ));
-    assert!(error.hint().unwrap().contains("AB1K900999"));
-    assert!(error.hint().unwrap().contains("AB1K900575"));
-    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    let hint = error.hint().unwrap();
+    assert!(hint.contains("AB1K900999"), "{hint}");
+    assert!(hint.contains("AB1K900575"), "{hint}");
     server.verify().await;
 }
 
