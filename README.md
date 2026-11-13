@@ -147,15 +147,14 @@ storing a password in the clear is always a choice you made.
 fractal auth       login | set | list | remove
 fractal system     list | test
 fractal package    tree | items
-fractal object     search | source | xml | info | usages | kinds
-fractal ddic       show
-fractal table      data | metadata
+fractal object     search | source | xml | info | show | usages | kinds
+fractal table      data | metadata | set | insert | remove
 fractal query      <complete SELECT, or - for stdin>
 fractal transport  list | show | create
 fractal edit       create | read | patch | set | set-xml | check | activate | discard
 fractal delete     <one destructive verb, kept out of `edit` on purpose>
 fractal journal    list | show | clear
-fractal undo       <reverse a recorded operation; activations today>
+fractal undo       <reverse a recorded activation or table write>
 fractal guard      install
 ```
 
@@ -212,8 +211,8 @@ fractal journal clear --older-than 30    # apply the retention policy
 
 **This is a short-horizon undo buffer, not a backup.** Be clear about what it does not cover:
 
-- Only operations that reach the **active** version are recorded: `edit activate` and
-  `fractal delete`. Inactive edits are not. `edit set`, `edit patch` and `edit set-xml` stage
+- Only operations that reach the **active** version are recorded: `edit activate`,
+  `fractal delete`, and `table set | insert | remove --execute`. Inactive edits are not. `edit set`, `edit patch` and `edit set-xml` stage
   work without publishing it, and what gets recorded is the activation that follows.
 - Entries are pruned by age and by count, so old ones go. The newest entry for each object is
   always kept.
