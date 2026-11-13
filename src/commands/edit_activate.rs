@@ -27,7 +27,13 @@ pub struct EditActivationDiagnosticOutput {
     severity: String,
     text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    uri: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    include: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     line: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    column: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     object_description: Option<String>,
 }
@@ -198,8 +204,13 @@ fn map_metadata_activation_result(
 fn map_precheck_message(message: AdtSourceCheckMessage) -> EditActivationDiagnosticOutput {
     EditActivationDiagnosticOutput {
         severity: message.severity.as_str().to_owned(),
-        text: message.text,
+        include: message
+            .include
+            .map(fractal::sap::class_include::ClassInclude::as_str),
+        uri: message.uri,
         line: message.line,
+        column: message.column,
+        text: message.text,
         object_description: None,
     }
 }
@@ -208,7 +219,10 @@ fn map_activation_message(message: AdtActivationMessage) -> EditActivationDiagno
     EditActivationDiagnosticOutput {
         severity: message.severity.as_str().to_owned(),
         text: message.text,
+        uri: None,
+        include: None,
         line: message.line,
+        column: None,
         object_description: message.object_description,
     }
 }
@@ -284,10 +298,16 @@ fn render_activation_readable(result: &EditActivationOutput) -> String {
 
 fn render_diagnostics(output: &mut String, messages: &[EditActivationDiagnosticOutput]) {
     for message in messages {
-        let location = match (&message.object_description, message.line) {
-            (Some(object), Some(line)) => format!(" {object}, line {line}"),
+        let position = match (message.include, message.line) {
+            (Some(include), Some(line)) => Some(format!("{include} line {line}")),
+            (Some(include), None) => Some(include.to_owned()),
+            (None, Some(line)) => Some(format!("line {line}")),
+            (None, None) => None,
+        };
+        let location = match (&message.object_description, position) {
+            (Some(object), Some(position)) => format!(" {object}, {position}"),
             (Some(object), None) => format!(" {object}"),
-            (None, Some(line)) => format!(" line {line}"),
+            (None, Some(position)) => format!(" {position}"),
             (None, None) => String::new(),
         };
         let _ = writeln!(output, "- {}{location}: {}", message.severity, message.text);
@@ -346,6 +366,7 @@ mod tests {
                     name: "ZCL_SAMPLE".to_owned(),
                     object_uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
                     source_uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
+                    include: Some(fractal::sap::class_include::ClassInclude::Main),
                 },
                 transport: Some("AB1K900575".to_owned()),
                 precheck: AdtSourceCheckResult {
@@ -354,6 +375,7 @@ mod tests {
                         name: "ZCL_SAMPLE".to_owned(),
                         object_uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
                         source_uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
+                        include: Some(fractal::sap::class_include::ClassInclude::Main),
                     },
                     requested_version: AdtVersion::Inactive,
                     check_executed: true,
@@ -365,7 +387,10 @@ mod tests {
                     messages: vec![AdtSourceCheckMessage {
                         severity: AdtMessageSeverity::Warning,
                         text: "Obsolete statement".to_owned(),
+                        uri: None,
+                        include: None,
                         line: Some(8),
+                        column: None,
                     }],
                 },
                 inactive: AdtSourceSnapshot::from_parts(

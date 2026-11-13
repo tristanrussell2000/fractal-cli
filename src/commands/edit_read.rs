@@ -10,7 +10,8 @@ use crate::{
     reported::Reported,
 };
 use fractal::sap::editable_source::{
-    AdtSourceReadResult, EditableAdtObjectType, read_adt_source_for_edit,
+    AdtSourceReadResult, EditableAdtObjectType, read_adt_include_source_for_edit,
+    read_adt_source_for_edit,
 };
 
 #[derive(Debug, Serialize)]
@@ -32,7 +33,19 @@ pub async fn edit_source_read(
     let object_type = EditableAdtObjectType::parse(&args.object_type)?;
     let version = args.version.into();
     let (profile_name, _profile, client) = connect(explicit_profile).await?;
-    let result = read_adt_source_for_edit(&client, object_type, &args.name, version).await?;
+    let result = match args.include {
+        Some(include) => {
+            read_adt_include_source_for_edit(
+                &client,
+                object_type,
+                &args.name,
+                include.into(),
+                version,
+            )
+            .await?
+        }
+        None => read_adt_source_for_edit(&client, object_type, &args.name, version).await?,
+    };
 
     Ok(map_edit_source_read_result(profile_name, result))
 }
@@ -69,6 +82,9 @@ fn render_edit_source_readable(result: &EditSourceReadOutput) -> String {
         "object: {} {}",
         result.object.object_type, result.object.name
     );
+    if let Some(include) = &result.object.include {
+        let _ = writeln!(output, "include: {include}");
+    }
     let _ = writeln!(output, "requested version: {}", result.requested_version);
     let _ = writeln!(output, "object uri: {}", result.object.object_uri);
     // `edit read` only ever handles source-based objects, so this is always
@@ -146,6 +162,29 @@ mod tests {
     }
 
     #[test]
+    fn parses_a_class_include() {
+        let args = read_args(
+            Cli::try_parse_from([
+                "fractal",
+                "edit",
+                "read",
+                "--type",
+                "CLAS",
+                "--name",
+                "ZCL_EXAMPLE",
+                "--include",
+                "implementations",
+            ])
+            .unwrap(),
+        );
+
+        assert_eq!(
+            args.include,
+            Some(crate::cli::ClassIncludeArg::Implementations)
+        );
+    }
+
+    #[test]
     fn rejects_an_unknown_source_version_during_cli_parsing() {
         assert!(
             Cli::try_parse_from([
@@ -174,6 +213,7 @@ mod tests {
                     name: "ZCL_EXAMPLE".to_owned(),
                     object_uri: "/sap/bc/adt/oo/classes/zcl_example".to_owned(),
                     source_uri: "/sap/bc/adt/oo/classes/zcl_example/source/main".to_owned(),
+                    include: Some(fractal::sap::class_include::ClassInclude::Main),
                 },
                 requested_version: AdtVersion::Active,
                 snapshot: AdtSourceSnapshot::from_parts(

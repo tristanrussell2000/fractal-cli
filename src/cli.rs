@@ -1,5 +1,5 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use fractal::sap::adt_version::AdtVersion;
+use fractal::sap::{adt_version::AdtVersion, class_include::ClassInclude};
 
 use crate::output::OutputFormat;
 
@@ -588,6 +588,10 @@ pub struct EditSourceReadArgs {
     /// replace: the inactive one, or the active one when nothing is staged.
     #[arg(long, value_enum, default_value = "inactive")]
     pub(crate) version: VersionArg,
+    /// Which of a class's source streams to read. Classes only; defaults to
+    /// the global class.
+    #[arg(long, value_enum)]
+    pub(crate) include: Option<ClassIncludeArg>,
 }
 
 /// Which stored layer of an object to read. Shared by every command that
@@ -596,6 +600,33 @@ pub struct EditSourceReadArgs {
 pub enum VersionArg {
     Active,
     Inactive,
+}
+
+/// One of a class's separately stored source streams, by ADT's own name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ClassIncludeArg {
+    /// The global class.
+    Main,
+    /// Class-relevant local types.
+    Definitions,
+    /// Local types, including RAP handler and saver classes.
+    Implementations,
+    /// Macros.
+    Macros,
+    /// Test classes. A class has none until one is created.
+    Testclasses,
+}
+
+impl From<ClassIncludeArg> for ClassInclude {
+    fn from(include: ClassIncludeArg) -> Self {
+        match include {
+            ClassIncludeArg::Main => Self::Main,
+            ClassIncludeArg::Definitions => Self::Definitions,
+            ClassIncludeArg::Implementations => Self::Implementations,
+            ClassIncludeArg::Macros => Self::Macros,
+            ClassIncludeArg::Testclasses => Self::Testclasses,
+        }
+    }
 }
 
 impl From<VersionArg> for AdtVersion {
@@ -842,8 +873,13 @@ pub struct SearchArgs {
 
 #[derive(Debug, Args)]
 pub struct SourceArgs {
-    /// ADT object URI, without a source suffix.
+    /// ADT object URI, without a source suffix. A class include's own URI
+    /// (`…/includes/<name>`) is also accepted.
     pub(crate) uri: String,
+    /// Which of a class's source streams to read. Classes only; defaults to
+    /// the global class.
+    #[arg(long, value_enum)]
+    pub(crate) include: Option<ClassIncludeArg>,
     /// Stored version to read. ABAP source carries no marker saying which
     /// version it is, so ask for the one you mean.
     #[arg(long, value_enum, default_value = "active")]

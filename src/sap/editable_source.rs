@@ -6,6 +6,7 @@ use thiserror::Error;
 
 use super::{
     adt_version::AdtVersion,
+    class_include::ClassInclude,
     client::{SapClient, SapClientError},
     repository_kind::{AdtObjectType, RepositoryKind},
 };
@@ -173,6 +174,9 @@ pub struct EditableAdtSourceIdentity {
     pub name: String,
     pub object_uri: String,
     pub source_uri: String,
+    /// Which stream `source_uri` addresses: always set for a class, never for
+    /// anything else.
+    pub include: Option<ClassInclude>,
 }
 
 /// A syntactically valid source object type and name.
@@ -182,6 +186,11 @@ pub enum EditableAdtSourceTargetError {
     UnsupportedObjectType(String),
     #[error("invalid edit source object name '{0}'")]
     InvalidObjectName(String),
+    #[error("{object_type} objects have no {} include; only classes do", include.as_str())]
+    IncludeOnNonClass {
+        object_type: &'static str,
+        include: ClassInclude,
+    },
 }
 
 impl ReportableError for EditableAdtSourceTargetError {
@@ -189,6 +198,7 @@ impl ReportableError for EditableAdtSourceTargetError {
         match self {
             Self::UnsupportedObjectType(_) => "unsupported_edit_object_type",
             Self::InvalidObjectName(_) => "invalid_edit_object_name",
+            Self::IncludeOnNonClass { .. } => "edit_include_not_a_class",
         }
     }
 
@@ -201,6 +211,9 @@ impl ReportableError for EditableAdtSourceTargetError {
             Self::InvalidObjectName(_) => {
                 "Use an ABAP object name containing letters, digits, or underscores, optionally in the form /NAMESPACE/NAME."
                     .to_owned()
+            }
+            Self::IncludeOnNonClass { .. } => {
+                "Drop --include: an object other than a class has a single source.".to_owned()
             }
         })
     }
@@ -303,6 +316,14 @@ pub enum AdtSourceReadError {
         #[source]
         source: SapClientError,
     },
+    #[error("class '{name}' has no {} include: {source}", include.as_str())]
+    IncludeNotFound {
+        name: String,
+        object_uri: String,
+        include: ClassInclude,
+        #[source]
+        source: SapClientError,
+    },
     #[error("SAP returned non-UTF-8 source for {object_type} object '{name}': {source}")]
     InvalidSourceEncoding {
         object_type: &'static str,
@@ -316,7 +337,7 @@ impl AdtSourceReadError {
     #[must_use]
     pub const fn sap_error(&self) -> Option<&SapClientError> {
         match self {
-            Self::Sap { source, .. } => Some(source),
+            Self::Sap { source, .. } | Self::IncludeNotFound { source, .. } => Some(source),
             Self::InvalidTarget(_) | Self::InvalidSourceEncoding { .. } => None,
         }
     }
@@ -327,6 +348,7 @@ impl ReportableError for AdtSourceReadError {
         match self {
             Self::InvalidTarget(error) => error.code(),
             Self::Sap { source, .. } => source.code(),
+            Self::IncludeNotFound { .. } => "edit_include_not_found",
             Self::InvalidSourceEncoding { .. } => "edit_source_encoding_error",
         }
     }
@@ -335,6 +357,11 @@ impl ReportableError for AdtSourceReadError {
         Some(match self {
             Self::InvalidTarget(error) => error.hint()?,
             Self::Sap { source, .. } => source.hint()?,
+            // A class has no test-classes include until one is created, so
+            // this is an ordinary answer and not necessarily a missing class.
+            Self::IncludeNotFound { .. } => {
+                "Either the class does not exist, or it has no such include. The class document lists the includes it has.".to_owned()
+            }
             Self::InvalidSourceEncoding { .. } => {
                 "The native ADT source response must be valid UTF-8 before it can be patched safely."
                     .to_owned()
@@ -351,6 +378,9 @@ impl ReportableError for AdtSourceReadError {
                 source,
             } if source.is_not_found() => Some(suggested_command::object_search(object_type, name)),
             Self::Sap { source, .. } => source.suggested_command(),
+            Self::IncludeNotFound { object_uri, .. } => {
+                Some(suggested_command::object_xml(object_uri))
+            }
             Self::InvalidTarget(_) | Self::InvalidSourceEncoding { .. } => None,
         }
     }
@@ -380,6 +410,25 @@ pub async fn read_adt_source_for_edit(
     read_adt_source_by_identity(sap, &identity, version).await
 }
 
+/// Like [`read_adt_source_for_edit`], for one named stream of a class.
+///
+/// # Errors
+///
+/// Returns [`AdtSourceReadError`] as that does, plus
+/// [`EditableAdtSourceTargetError::IncludeOnNonClass`] for an include on
+/// anything but a class, and [`AdtSourceReadError::IncludeNotFound`] when the
+/// class has no such include.
+pub async fn read_adt_include_source_for_edit(
+    sap: &SapClient,
+    object_type: EditableAdtObjectType,
+    name: &str,
+    include: ClassInclude,
+    version: AdtVersion,
+) -> Result<AdtSourceReadResult, AdtSourceReadError> {
+    let identity = editable_include_identity(object_type, name, include)?;
+    read_adt_source_by_identity(sap, &identity, version).await
+}
+
 pub(super) async fn read_adt_source_by_identity(
     sap: &SapClient,
     identity: &EditableAdtSourceIdentity,
@@ -401,10 +450,20 @@ pub(super) async fn read_adt_source(
             headers,
         )
         .await
-        .map_err(|source| AdtSourceReadError::Sap {
-            object_type: identity.object_type.as_str(),
-            name: identity.name.clone(),
-            source,
+        .map_err(|source| match identity.include {
+            Some(include) if include != ClassInclude::Main && source.is_not_found() => {
+                AdtSourceReadError::IncludeNotFound {
+                    name: identity.name.clone(),
+                    object_uri: identity.object_uri.clone(),
+                    include,
+                    source,
+                }
+            }
+            _ => AdtSourceReadError::Sap {
+                object_type: identity.object_type.as_str(),
+                name: identity.name.clone(),
+                source,
+            },
         })?;
     let bytes = response_bytes.len();
     let source = String::from_utf8(response_bytes).map_err(|source| {
@@ -451,12 +510,37 @@ pub(super) fn editable_source_identity(
     let path_name = name.to_ascii_lowercase().replace('/', "%2f");
     let object_uri = format!("{}/{path_name}", object_type.base_path());
     let source_uri = format!("{object_uri}{SOURCE_SUFFIX}");
+    let include = (object_type == EditableAdtObjectType::Class).then_some(ClassInclude::Main);
     Ok(EditableAdtSourceIdentity {
         object_type,
         name,
         object_uri,
         source_uri,
+        include,
     })
+}
+
+/// The identity of one stream of a class.
+///
+/// # Errors
+///
+/// Returns [`EditableAdtSourceTargetError::IncludeOnNonClass`] for anything
+/// but a class, or the errors of [`editable_source_identity`].
+pub fn editable_include_identity(
+    object_type: EditableAdtObjectType,
+    name: &str,
+    include: ClassInclude,
+) -> Result<EditableAdtSourceIdentity, EditableAdtSourceTargetError> {
+    if object_type != EditableAdtObjectType::Class {
+        return Err(EditableAdtSourceTargetError::IncludeOnNonClass {
+            object_type: object_type.as_str(),
+            include,
+        });
+    }
+    let mut identity = editable_source_identity(object_type, name)?;
+    identity.source_uri = include.source_uri(&identity.object_uri);
+    identity.include = Some(include);
+    Ok(identity)
 }
 
 pub(super) fn canonicalize_transport_request(

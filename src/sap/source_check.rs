@@ -6,6 +6,7 @@ use crate::suggested_command;
 use super::{
     adt_message_severity::AdtMessageSeverity,
     adt_version::AdtVersion,
+    class_include::ClassInclude,
     client::{SapClient, SapClientError},
     editable_source::{
         EditableAdtObjectType, EditableAdtSourceIdentity, EditableAdtSourceTargetError,
@@ -22,7 +23,39 @@ const INACTIVE_OBJECTS_PATH: &str = "/sap/bc/adt/activation/inactiveobjects";
 pub struct AdtSourceCheckMessage {
     pub severity: AdtMessageSeverity,
     pub text: String,
+    /// The source the message is about, without its position fragment. A
+    /// class check reports errors in every include, each at its own URI.
+    pub uri: Option<String>,
+    /// Which class stream `uri` is, when it is one.
+    pub include: Option<ClassInclude>,
+    /// Relative to the stream `uri` names, not to the object as a whole.
     pub line: Option<usize>,
+    pub column: Option<usize>,
+}
+
+impl AdtSourceCheckMessage {
+    /// `implementations line 9, column 9`, or as much of it as is known.
+    #[must_use]
+    pub fn location(&self) -> Option<String> {
+        let include = self.include.map(ClassInclude::as_str);
+        let position = match (self.line, self.column) {
+            (Some(line), Some(column)) => Some(format!("line {line}, column {column}")),
+            (Some(line), None) => Some(format!("line {line}")),
+            (None, _) => None,
+        };
+        match (include, position) {
+            (Some(include), Some(position)) => Some(format!("{include} {position}")),
+            (Some(include), None) => Some(include.to_owned()),
+            (None, position) => position,
+        }
+    }
+
+    /// The text with its location in front, for a one-line summary.
+    #[must_use]
+    pub fn located_text(&self) -> String {
+        self.location()
+            .map_or_else(|| self.text.clone(), |at| format!("{at}: {}", self.text))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,7 +227,10 @@ pub(super) async fn check_adt_source_by_identity(
             severity: AdtMessageSeverity::Info,
             text: "No inactive version exists; there are no unactivated changes to check. Use --version active to check what is live."
                 .to_owned(),
+            uri: None,
+            include: None,
             line: None,
+            column: None,
         }];
         return Ok(AdtSourceCheckResult {
             identity: identity.clone(),
@@ -268,6 +304,36 @@ fn inactive_object_response_contains_uri(
     }))
 }
 
+/// Where a check message points: `<source uri>#start=<line>,<column>`.
+///
+/// SAP sends the position only in this fragment; there is no separate line
+/// attribute on the checkrun messages it returns.
+struct MessageLocation {
+    uri: String,
+    include: Option<ClassInclude>,
+    line: Option<usize>,
+    column: Option<usize>,
+}
+
+impl MessageLocation {
+    fn parse(value: &str) -> Self {
+        let (uri, fragment) = value.split_once('#').unwrap_or((value, ""));
+        let start = fragment
+            .split(';')
+            .find_map(|part| part.strip_prefix("start="));
+        let (line, column) = start.map_or((None, None), |start| {
+            let (line, column) = start.split_once(',').unwrap_or((start, ""));
+            (line.parse().ok(), column.parse().ok())
+        });
+        Self {
+            include: ClassInclude::split_source_uri(uri).map(|(_, include)| include),
+            uri: uri.to_owned(),
+            line,
+            column,
+        }
+    }
+}
+
 fn build_checkrun_request(source_uri: &str, version: AdtVersion) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?><chkrun:checkObjectList xmlns:chkrun=\"http://www.sap.com/adt/checkrun\" xmlns:adtcore=\"http://www.sap.com/adt/core\"><chkrun:checkObject adtcore:uri=\"{source_uri}\" chkrun:version=\"{}\"/></chkrun:checkObjectList>",
@@ -304,11 +370,19 @@ fn parse_checkrun_response(
             let severity = AdtMessageSeverity::from_sap_code(
                 find_attribute_value(node, "type").unwrap_or_default(),
             );
-            let line = find_attribute_value(node, "line").and_then(|line| line.parse().ok());
+            let location = find_attribute_value(node, "uri").map(MessageLocation::parse);
+            let (uri, include, line, column) = location.map_or((None, None, None, None), |at| {
+                (Some(at.uri), at.include, at.line, at.column)
+            });
+            let line =
+                line.or_else(|| find_attribute_value(node, "line").and_then(|l| l.parse().ok()));
             Some(AdtSourceCheckMessage {
                 severity,
                 text: text.to_owned(),
+                uri,
+                include,
                 line,
+                column,
             })
         })
         .collect::<Vec<_>>();
@@ -356,6 +430,39 @@ mod tests {
         assert_eq!(parsed.messages[0].text, "Expected <identifier> & value");
         assert_eq!(parsed.messages[0].line, Some(12));
         assert_eq!(parsed.messages[2].line, None);
+    }
+
+    #[test]
+    fn locates_a_message_in_the_include_it_names() {
+        // The shape SAP returns: the position lives only in the URI fragment.
+        let parsed = parse_checkrun_response(
+            r#"<chkrun:checkRunReports xmlns:chkrun="http://www.sap.com/adt/checkrun"><chkrun:checkReport chkrun:reporter="abapCheckRun" chkrun:triggeringUri="/sap/bc/adt/oo/classes/zcl_sample/source/main" chkrun:status="processed"><chkrun:checkMessageList><chkrun:checkMessage chkrun:uri="/sap/bc/adt/oo/classes/zcl_sample/includes/implementations#start=9,9" chkrun:type="E" chkrun:shortText="Field &quot;LV_MISSING&quot; is unknown."><atom:link href="art.syntax:GTU" rel="http://www.sap.com/adt/categories/quickfixes" xmlns:atom="http://www.w3.org/2005/Atom"/></chkrun:checkMessage></chkrun:checkMessageList></chkrun:checkReport></chkrun:checkRunReports>"#,
+            &sample_identity(),
+            AdtVersion::Inactive,
+        )
+        .unwrap();
+
+        let message = &parsed.messages[0];
+        assert_eq!(
+            message.uri.as_deref(),
+            Some("/sap/bc/adt/oo/classes/zcl_sample/includes/implementations")
+        );
+        assert_eq!(message.include, Some(ClassInclude::Implementations));
+        assert_eq!(message.line, Some(9));
+        assert_eq!(message.column, Some(9));
+    }
+
+    #[test]
+    fn a_message_outside_any_class_has_no_include() {
+        let parsed = parse_checkrun_response(
+            r#"<chkrun:checkMessageList xmlns:chkrun="http://www.sap.com/adt/checkrun"><chkrun:checkMessage chkrun:uri="/sap/bc/adt/programs/programs/zsample/source/main#start=3,1" chkrun:type="E" chkrun:shortText="Syntax error"/></chkrun:checkMessageList>"#,
+            &sample_identity(),
+            AdtVersion::Inactive,
+        )
+        .unwrap();
+
+        assert_eq!(parsed.messages[0].include, None);
+        assert_eq!(parsed.messages[0].line, Some(3));
     }
 
     #[test]

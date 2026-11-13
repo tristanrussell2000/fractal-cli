@@ -197,6 +197,7 @@ mod tests {
                     name: "ZCL_SAMPLE".to_owned(),
                     object_uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
                     source_uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
+                    include: Some(fractal::sap::class_include::ClassInclude::Main),
                 },
                 transport: Some("AB1K900575".to_owned()),
                 discarded: AdtSourceSnapshot::from_parts(

@@ -12,8 +12,9 @@ use super::{
     },
     adt_response::{AdtResponseParseError, parse_adt_document},
     adt_version::AdtVersion,
+    class_include::{ClassInclude, is_class_uri},
     client::{SapClient, SapClientError},
-    find_non_empty_attribute,
+    find_attribute_value, find_non_empty_attribute,
     metadata_document::{declared_version, document_version, strip_navigation_links},
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
@@ -33,6 +34,16 @@ pub enum ObjectSourceError {
     Encoding(String),
     #[error("could not parse the object document: {0}")]
     Parse(#[from] AdtResponseParseError),
+    #[error("only a class has includes, and {uri} is not a class")]
+    IncludeOnNonClass { uri: String },
+    #[error("{uri} names the {in_uri} include, but --include asked for {requested}")]
+    ConflictingInclude {
+        uri: String,
+        in_uri: &'static str,
+        requested: &'static str,
+    },
+    #[error("{uri} is not a class include Fractal knows")]
+    UnknownInclude { uri: String },
 }
 
 impl ObjectSourceError {
@@ -53,6 +64,9 @@ impl ReportableError for ObjectSourceError {
             Self::NoSourceForKind { .. } => "no_source_for_kind",
             Self::Encoding(_) => "source_encoding_error",
             Self::Parse(error) => error.code(),
+            Self::IncludeOnNonClass { .. } => "include_not_a_class",
+            Self::ConflictingInclude { .. } => "include_conflict",
+            Self::UnknownInclude { .. } => "unknown_class_include",
         }
     }
 
@@ -72,6 +86,16 @@ impl ReportableError for ObjectSourceError {
                     .to_owned()
             }
             Self::Parse(error) => error.hint()?,
+            Self::IncludeOnNonClass { .. } => {
+                "Drop --include: an object other than a class has a single source.".to_owned()
+            }
+            Self::ConflictingInclude { .. } => {
+                "Pass the class URI with --include, or the include's URI alone.".to_owned()
+            }
+            Self::UnknownInclude { .. } => {
+                "Class includes are main, definitions, implementations, macros and testclasses."
+                    .to_owned()
+            }
         })
     }
 
@@ -81,7 +105,12 @@ impl ReportableError for ObjectSourceError {
             // The object exists but has no source view; its metadata does.
             Self::NoSourceForKind { uri, .. } => Some(suggested_command::object_xml(uri)),
             Self::Sap(error) => error.suggested_command(),
-            Self::Uri(_) | Self::Encoding(_) | Self::Parse(_) => None,
+            Self::Uri(_)
+            | Self::Encoding(_)
+            | Self::Parse(_)
+            | Self::IncludeOnNonClass { .. }
+            | Self::ConflictingInclude { .. }
+            | Self::UnknownInclude { .. } => None,
         }
     }
 }
@@ -121,6 +150,78 @@ pub struct ByteRangeResult {
     pub content: String,
 }
 
+/// What a source read addresses: the object, and for a class, which stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceTarget {
+    pub object_uri: String,
+    pub source_uri: String,
+    /// Always set for a class, so the layer is read off that stream's own
+    /// entry in the class document; the class-level marker goes `inactive`
+    /// when *any* include is staged.
+    pub include: Option<ClassInclude>,
+}
+
+/// Resolves a caller's URI and optional include into what to read.
+///
+/// A class include's own URI is accepted as well as the class URI, so a URI
+/// copied from a check message works as given.
+///
+/// # Errors
+///
+/// Returns [`ObjectSourceError`] for a URI outside ADT, a doubled source
+/// suffix, a source-less kind, an include on a non-class, an unknown include,
+/// or an include that disagrees with the one in the URI.
+pub fn resolve_source_target(
+    uri: &str,
+    include: Option<ClassInclude>,
+) -> Result<SourceTarget, ObjectSourceError> {
+    validate_source_object_uri(uri)?;
+    if let Some(kind) = no_source_kind(uri) {
+        return Err(ObjectSourceError::NoSourceForKind {
+            kind: kind.to_owned(),
+            uri: uri.to_owned(),
+        });
+    }
+    let (object_uri, in_uri) = match ClassInclude::split_source_uri(uri) {
+        Some((class_uri, in_uri)) => (class_uri.to_owned(), Some(in_uri)),
+        None if is_class_uri(uri) && uri.contains("/includes/") => {
+            return Err(ObjectSourceError::UnknownInclude {
+                uri: uri.to_owned(),
+            });
+        }
+        None => (uri.trim_end_matches('/').to_owned(), None),
+    };
+    let include = match (in_uri, include) {
+        (Some(in_uri), Some(requested)) if in_uri != requested => {
+            return Err(ObjectSourceError::ConflictingInclude {
+                uri: uri.to_owned(),
+                in_uri: in_uri.as_str(),
+                requested: requested.as_str(),
+            });
+        }
+        (Some(include), _) | (None, Some(include)) => Some(include),
+        (None, None) => None,
+    };
+    if !is_class_uri(&object_uri) {
+        if include.is_some() {
+            return Err(ObjectSourceError::IncludeOnNonClass {
+                uri: uri.to_owned(),
+            });
+        }
+        return Ok(SourceTarget {
+            source_uri: format!("{object_uri}{SOURCE_SUFFIX}"),
+            object_uri,
+            include: None,
+        });
+    }
+    let include = include.unwrap_or(ClassInclude::Main);
+    Ok(SourceTarget {
+        source_uri: include.source_uri(&object_uri),
+        object_uri,
+        include: Some(include),
+    })
+}
+
 /// Fetches an ADT object's complete source and returns a locally paged byte range.
 ///
 /// The HTTP response is fetched in full; `offset` and `limit` are applied locally.
@@ -132,22 +233,12 @@ pub struct ByteRangeResult {
 /// failures, or malformed source responses.
 pub async fn get_source(
     sap: &SapClient,
-    uri: &str,
+    target: &SourceTarget,
     version: AdtVersion,
     options: ByteRangeOptions,
 ) -> Result<ByteRangeResult, ObjectSourceError> {
-    validate_source_object_uri(uri)?;
-    let kind = no_source_kind(uri);
-    if let Some(kind) = kind {
-        return Err(ObjectSourceError::NoSourceForKind {
-            kind: kind.to_owned(),
-            uri: uri.to_owned(),
-        });
-    }
-
-    let source_uri = format!("{}{}", uri.trim_end_matches('/'), SOURCE_SUFFIX);
     let source = sap
-        .get_text_with_query(&source_uri, &[("version", version.as_str())])
+        .get_text_with_query(&target.source_uri, &[("version", version.as_str())])
         .await?;
     page_text(&source, options)
 }
@@ -264,20 +355,36 @@ pub struct SourceLayer {
 /// cannot serve the document, or it cannot be parsed.
 pub async fn read_source_layer(
     sap: &SapClient,
-    uri: &str,
+    target: &SourceTarget,
     version: AdtVersion,
 ) -> Result<SourceLayer, ObjectSourceError> {
-    validate_adt_object_uri(uri)?;
     // The same layer the source was asked for, so the answer describes that
     // read rather than a different one.
     let xml = sap
-        .get_text_with_query(uri, &[("version", version.as_str())])
+        .get_text_with_query(&target.object_uri, &[("version", version.as_str())])
         .await?;
     let document = parse_adt_document(&xml)?;
     let root = document.root_element();
+    let node = target
+        .include
+        .and_then(|include| class_include_element(root, include))
+        .unwrap_or(root);
     Ok(SourceLayer {
-        version: declared_version(root),
-        changed_by: find_non_empty_attribute(root, "changedBy"),
+        version: declared_version(node),
+        changed_by: find_non_empty_attribute(node, "changedBy"),
+    })
+}
+
+/// A class document's `class:include` entry for one stream.
+fn class_include_element<'a, 'input>(
+    root: roxmltree::Node<'a, 'input>,
+    include: ClassInclude,
+) -> Option<roxmltree::Node<'a, 'input>> {
+    root.children().find(|node| {
+        node.is_element()
+            && node.tag_name().name() == "include"
+            && find_attribute_value(*node, "includeType")
+                .is_some_and(|kind| kind.eq_ignore_ascii_case(include.as_str()))
     })
 }
 

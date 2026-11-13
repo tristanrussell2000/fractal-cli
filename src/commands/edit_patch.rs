@@ -322,6 +322,7 @@ mod tests {
                     name: "ZSAMPLE".to_owned(),
                     object_uri: "/sap/bc/adt/programs/programs/zsample".to_owned(),
                     source_uri: "/sap/bc/adt/programs/programs/zsample/source/main".to_owned(),
+                    include: None,
                 },
                 transport: Some("AB1K900575".to_owned()),
                 original: AdtSourceSnapshot::from_parts(
@@ -367,6 +368,7 @@ mod tests {
                     name: "ZSAMPLE".to_owned(),
                     object_uri: "/sap/bc/adt/programs/programs/zsample".to_owned(),
                     source_uri: "/sap/bc/adt/programs/programs/zsample/source/main".to_owned(),
+                    include: None,
                 },
                 transport: Some("AB1K900575".to_owned()),
                 original: AdtSourceSnapshot::from_parts(

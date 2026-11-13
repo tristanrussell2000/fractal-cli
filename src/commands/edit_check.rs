@@ -18,7 +18,15 @@ pub struct EditSourceCheckMessageOutput {
     severity: String,
     text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    uri: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    include: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     line: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    column: Option<usize>,
+    #[serde(skip)]
+    location: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -74,9 +82,15 @@ fn map_source_check_result(profile: String, result: AdtSourceCheckResult) -> Edi
 
 fn map_check_message(message: AdtSourceCheckMessage) -> EditSourceCheckMessageOutput {
     EditSourceCheckMessageOutput {
+        location: message.location(),
         severity: message.severity.as_str().to_owned(),
-        text: message.text,
+        include: message
+            .include
+            .map(fractal::sap::class_include::ClassInclude::as_str),
+        uri: message.uri,
         line: message.line,
+        column: message.column,
+        text: message.text,
     }
 }
 
@@ -100,11 +114,11 @@ fn render_source_check_readable(result: &EditSourceCheckOutput) -> String {
     if !result.messages.is_empty() {
         output.push_str("messages:\n");
         for message in &result.messages {
-            if let Some(line) = message.line {
+            if let Some(location) = &message.location {
                 let _ = writeln!(
                     output,
-                    "- {} line {}: {}",
-                    message.severity, line, message.text
+                    "- {} {location}: {}",
+                    message.severity, message.text
                 );
             } else {
                 let _ = writeln!(output, "- {}: {}", message.severity, message.text);
@@ -185,6 +199,7 @@ mod tests {
                     name: "ZCL_SAMPLE".to_owned(),
                     object_uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
                     source_uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
+                    include: Some(fractal::sap::class_include::ClassInclude::Main),
                 },
                 requested_version: AdtVersion::Inactive,
                 check_executed: true,
@@ -196,7 +211,12 @@ mod tests {
                 messages: vec![AdtSourceCheckMessage {
                     severity: AdtMessageSeverity::Error,
                     text: "Statement is not accessible".to_owned(),
+                    uri: Some(
+                        "/sap/bc/adt/oo/classes/zcl_sample/includes/implementations".to_owned(),
+                    ),
+                    include: Some(fractal::sap::class_include::ClassInclude::Implementations),
                     line: Some(42),
+                    column: Some(5),
                 }],
             },
         );
@@ -207,7 +227,12 @@ mod tests {
         assert_eq!(json["clean"], false);
         assert_eq!(json["messages"][0]["severity"], "error");
         assert_eq!(json["messages"][0]["line"], 42);
+        assert_eq!(json["messages"][0]["column"], 5);
+        assert_eq!(json["messages"][0]["include"], "implementations");
         let readable = render_source_check_readable(&output);
-        assert!(readable.contains("error line 42: Statement is not accessible"));
+        assert!(
+            readable
+                .contains("error implementations line 42, column 5: Statement is not accessible")
+        );
     }
 }

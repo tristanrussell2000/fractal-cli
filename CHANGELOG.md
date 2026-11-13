@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`--include` reads a class's other source streams**: `definitions` (class-relevant local
+  types), `implementations` (local types, where RAP handlers live), `macros` and `testclasses`.
+  On `edit read`, and on `object source`, which also accepts an include's own URI
+  (`…/includes/implementations`). The version and author reported are that include's own, not the
+  class's. Reading only; editing includes is not built yet.
+
+### Fixed
+
+- **Syntax-check messages had no line number.** SAP gives a message's position only in its URI
+  (`…#start=9,9`), and Fractal read a `line` attribute SAP does not send. Messages now carry
+  `line`, `column`, `uri` and, for a class, the `include` they are in — so an error in local types
+  is no longer reported as if it were in the global class.
+
 ## 0.8.0
 
 ### Breaking

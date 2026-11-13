@@ -15,6 +15,7 @@ use fractal::{
     sap::{
         adt_object_uri::AdtObjectUriError,
         adt_version::AdtVersion,
+        class_include::ClassInclude,
         client::{SapClientError, SapHttpErrorKind},
         edit_session::AdtEditSessionError,
         editable_source::{
@@ -40,6 +41,7 @@ fn identity() -> Box<EditableAdtSourceIdentity> {
         name: "ZCL_SAMPLE".to_owned(),
         object_uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
         source_uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
+        include: Some(fractal::sap::class_include::ClassInclude::Main),
     })
 }
 
@@ -117,6 +119,67 @@ fn contract() -> Vec<Expectation> {
             code: "forbidden",
             status: Some(403),
             message_contains: "Package read refused",
+            has_hint: true,
+            suggested_command: None,
+        },
+        Expectation {
+            error: Box::new(EditableAdtSourceTargetError::IncludeOnNonClass {
+                object_type: "PROG",
+                include: ClassInclude::Definitions,
+            }),
+            code: "edit_include_not_a_class",
+            status: None,
+            message_contains: "PROG objects have no definitions include",
+            has_hint: true,
+            suggested_command: None,
+        },
+        Expectation {
+            error: Box::new(AdtSourceReadError::IncludeNotFound {
+                name: "ZCL_SAMPLE".to_owned(),
+                object_uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
+                include: ClassInclude::Testclasses,
+                source: http(
+                    SapHttpErrorKind::NotFound,
+                    StatusCode::NOT_FOUND,
+                    "does not have any inactive version",
+                ),
+            }),
+            code: "edit_include_not_found",
+            status: Some(404),
+            message_contains: "has no testclasses include",
+            has_hint: true,
+            // The class document lists the includes the class has.
+            suggested_command: Some("fractal object xml /sap/bc/adt/oo/classes/zcl_sample"),
+        },
+        Expectation {
+            error: Box::new(ObjectSourceError::IncludeOnNonClass {
+                uri: "/sap/bc/adt/programs/programs/zsample".to_owned(),
+            }),
+            code: "include_not_a_class",
+            status: None,
+            message_contains: "is not a class",
+            has_hint: true,
+            suggested_command: None,
+        },
+        Expectation {
+            error: Box::new(ObjectSourceError::ConflictingInclude {
+                uri: "/sap/bc/adt/oo/classes/zcl_sample/includes/macros".to_owned(),
+                in_uri: "macros",
+                requested: "definitions",
+            }),
+            code: "include_conflict",
+            status: None,
+            message_contains: "names the macros include",
+            has_hint: true,
+            suggested_command: None,
+        },
+        Expectation {
+            error: Box::new(ObjectSourceError::UnknownInclude {
+                uri: "/sap/bc/adt/oo/classes/zcl_sample/includes/locals".to_owned(),
+            }),
+            code: "unknown_class_include",
+            status: None,
+            message_contains: "not a class include",
             has_hint: true,
             suggested_command: None,
         },

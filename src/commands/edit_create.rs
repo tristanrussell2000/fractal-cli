@@ -296,6 +296,7 @@ mod tests {
                     name: "ZSAMPLE".to_owned(),
                     object_uri: "/sap/bc/adt/programs/programs/zsample".to_owned(),
                     source_uri: "/sap/bc/adt/programs/programs/zsample/source/main".to_owned(),
+                    include: None,
                 }
                 .into(),
                 package: "ZPKG".to_owned(),

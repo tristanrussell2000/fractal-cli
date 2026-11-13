@@ -188,7 +188,12 @@ impl ReportableError for AdtSourceActivationError {
             Self::PrecheckRejected {
                 identity, messages, ..
             } => first_message_hint(
-                messages.iter().map(|message| message.text.as_str()),
+                messages
+                    .iter()
+                    .map(AdtSourceCheckMessage::located_text)
+                    .collect::<Vec<_>>()
+                    .iter()
+                    .map(String::as_str),
                 &format!(
                     "Run `{}` to inspect every syntax finding.",
                     suggested_command::edit_check(identity.object_type.as_str(), &identity.name, AdtVersion::Inactive.as_str())

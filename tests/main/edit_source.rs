@@ -3,8 +3,12 @@ use fractal::{
     config::Profile,
     sap::{
         adt_version::AdtVersion,
+        class_include::ClassInclude,
         client::SapClient,
-        editable_source::{AdtSourceReadError, EditableAdtObjectType, read_adt_source_for_edit},
+        editable_source::{
+            AdtSourceReadError, EditableAdtObjectType, EditableAdtSourceTargetError,
+            read_adt_include_source_for_edit, read_adt_source_for_edit,
+        },
     },
     source_change::source_sha256,
 };
@@ -176,4 +180,127 @@ async fn preserves_sap_errors_from_the_source_request() {
     assert_eq!(error.code(), "not_found");
     assert!(error.sap_error().is_some());
     server.verify().await;
+}
+
+#[tokio::test]
+async fn reads_a_class_include_at_its_own_uri() {
+    let server = MockServer::start().await;
+    let source =
+        "CLASS lhc_sample DEFINITION INHERITING FROM cl_abap_behavior_handler.\r\nENDCLASS.\r\n";
+    Mock::given(method("GET"))
+        .and(path(
+            "/sap/bc/adt/oo/classes/zcl_example/includes/implementations",
+        ))
+        .and(query_param("version", "inactive"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(source))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let result = read_adt_include_source_for_edit(
+        &client,
+        EditableAdtObjectType::Class,
+        "zcl_example",
+        ClassInclude::Implementations,
+        AdtVersion::Inactive,
+    )
+    .await
+    .unwrap();
+
+    // Locked and activated through the class, so the object stays the class.
+    assert_eq!(
+        result.identity.object_uri,
+        "/sap/bc/adt/oo/classes/zcl_example"
+    );
+    assert_eq!(
+        result.identity.source_uri,
+        "/sap/bc/adt/oo/classes/zcl_example/includes/implementations"
+    );
+    assert_eq!(result.identity.include, Some(ClassInclude::Implementations));
+    assert_eq!(result.snapshot.sha256, source_sha256(source));
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn a_missing_include_is_reported_as_one() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/sap/bc/adt/oo/classes/zcl_example/includes/testclasses",
+        ))
+        .respond_with(
+            ResponseTemplate::new(404)
+                .set_body_string("ZCL_EXAMPLE=========CCAU does not have any inactive version"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let error = read_adt_include_source_for_edit(
+        &client,
+        EditableAdtObjectType::Class,
+        "zcl_example",
+        ClassInclude::Testclasses,
+        AdtVersion::Inactive,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), "edit_include_not_found");
+    assert_eq!(
+        error.suggested_command().as_deref(),
+        Some("fractal object xml /sap/bc/adt/oo/classes/zcl_example")
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn a_missing_class_main_stays_an_ordinary_not_found() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/oo/classes/zcl_example/source/main"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let error = read_adt_include_source_for_edit(
+        &client,
+        EditableAdtObjectType::Class,
+        "zcl_example",
+        ClassInclude::Main,
+        AdtVersion::Inactive,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), "not_found");
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn refuses_an_include_on_anything_but_a_class_before_http() {
+    let client = SapClient::new(
+        &profile("http://127.0.0.1:1".to_owned()),
+        "password".to_owned(),
+    )
+    .unwrap();
+    let error = read_adt_include_source_for_edit(
+        &client,
+        EditableAdtObjectType::Interface,
+        "zif_example",
+        ClassInclude::Definitions,
+        AdtVersion::Inactive,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        AdtSourceReadError::InvalidTarget(EditableAdtSourceTargetError::IncludeOnNonClass { .. })
+    ));
+    assert_eq!(error.code(), "edit_include_not_a_class");
 }

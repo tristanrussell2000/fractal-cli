@@ -6,7 +6,7 @@ use super::{
     client::{SapClient, SapClientError},
     editable_source::EditableAdtObjectType,
     object_creation::{AdtObjectCreationError, AdtObjectCreationRequest, create_adt_object},
-    object_source::{ByteRangeOptions, ObjectSourceError, get_source},
+    object_source::{ByteRangeOptions, ObjectSourceError, get_source, resolve_source_target},
     source_activation::{
         AdtSourceActivationError, AdtSourceActivationRequest, activate_adt_source,
     },
@@ -218,9 +218,16 @@ async fn active_source_matches(
     uri: &str,
     expected: &str,
 ) -> Result<bool, ExecClassError> {
-    let active = get_source(sap, uri, AdtVersion::Active, ByteRangeOptions::default())
-        .await
+    let target = resolve_source_target(uri, None)
         .map_err(|source| ExecClassError::ReadBack(Box::new(source)))?;
+    let active = get_source(
+        sap,
+        &target,
+        AdtVersion::Active,
+        ByteRangeOptions::default(),
+    )
+    .await
+    .map_err(|source| ExecClassError::ReadBack(Box::new(source)))?;
     Ok(normalized(&active.content) == normalized(expected))
 }
 

@@ -20,6 +20,9 @@ pub struct EditObjectIdentityOutput {
     pub object_uri: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_uri: Option<String>,
+    /// Which class stream `source_uri` is. Absent for anything but a class.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include: Option<&'static str>,
 }
 
 impl From<EditableAdtSourceIdentity> for EditObjectIdentityOutput {
@@ -29,6 +32,9 @@ impl From<EditableAdtSourceIdentity> for EditObjectIdentityOutput {
             name: identity.name,
             object_uri: identity.object_uri,
             source_uri: Some(identity.source_uri),
+            include: identity
+                .include
+                .map(fractal::sap::class_include::ClassInclude::as_str),
         }
     }
 }
@@ -40,6 +46,7 @@ impl From<AdtObjectIdentity> for EditObjectIdentityOutput {
             name: object.name,
             object_uri: object.object_uri,
             source_uri: object.source_uri,
+            include: None,
         }
     }
 }
@@ -66,6 +73,7 @@ mod tests {
                 name: "ZCL_SAMPLE".to_owned(),
                 object_uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
                 source_uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
+                include: Some(fractal::sap::class_include::ClassInclude::Main),
             }
             .into(),
             trailing: true,

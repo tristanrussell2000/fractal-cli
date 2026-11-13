@@ -44,7 +44,12 @@ struct ObjectSearchHitOutput {
 pub struct ObjectSourceResultOutput {
     ok: bool,
     profile: String,
+    /// The object, even when the URI given was one of a class's includes.
     uri: String,
+    /// Which class stream was read. Absent for anything but a class.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    include: Option<&'static str>,
+    source_uri: String,
     start_byte: usize,
     end_byte: usize,
     total_bytes: usize,
@@ -220,11 +225,15 @@ pub async fn object_source(
     explicit_profile: Option<&str>,
     args: &SourceArgs,
 ) -> Result<ObjectSourceResultOutput, Reported> {
+    let target = fractal::sap::object_source::resolve_source_target(
+        &args.uri,
+        args.include.map(Into::into),
+    )?;
     let (profile_name, _profile, client) = connect(explicit_profile).await?;
     let version = args.version.into();
     let result = fractal::sap::object_source::get_source(
         &client,
-        &args.uri,
+        &target,
         version,
         ByteRangeOptions {
             offset: args.offset,
@@ -234,12 +243,16 @@ pub async fn object_source(
     .await?;
     // A second request, because the source response cannot answer this: the
     // headers for both layers are identical on an object that has only one.
-    let layer = fractal::sap::object_source::read_source_layer(&client, &args.uri, version).await?;
+    let layer = fractal::sap::object_source::read_source_layer(&client, &target, version).await?;
 
     Ok(ObjectSourceResultOutput {
         ok: true,
         profile: profile_name,
-        uri: args.uri.clone(),
+        uri: target.object_uri,
+        include: target
+            .include
+            .map(fractal::sap::class_include::ClassInclude::as_str),
+        source_uri: target.source_uri,
         start_byte: result.start_byte,
         end_byte: result.end_byte,
         total_bytes: result.total_bytes,
@@ -512,6 +525,9 @@ fn render_object_source_readable(result: &ObjectSourceResultOutput) -> String {
     let mut output = String::new();
     let _ = writeln!(output, "profile: {}", result.profile);
     let _ = writeln!(output, "uri: {}", result.uri);
+    if let Some(include) = result.include {
+        let _ = writeln!(output, "include: {include}");
+    }
     let _ = writeln!(
         output,
         "version: {}",
@@ -953,7 +969,9 @@ mod tests {
         let result = ObjectSourceResultOutput {
             ok: true,
             profile: "de2".to_owned(),
-            uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
+            uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
+            include: Some("implementations"),
+            source_uri: "/sap/bc/adt/oo/classes/zcl_sample/includes/implementations".to_owned(),
             start_byte: 0,
             end_byte: 24,
             total_bytes: 96,
@@ -967,6 +985,7 @@ mod tests {
 
         let rendered = render_object_source_readable(&result);
 
+        assert!(rendered.contains("include: implementations"));
         assert!(rendered.contains("version: active"));
         assert!(rendered.contains("changed by: DEVELOPER"));
         assert!(rendered.contains("bytes: 0-24 of 96"));
@@ -980,7 +999,9 @@ mod tests {
         let result = ObjectSourceResultOutput {
             ok: true,
             profile: "de2".to_owned(),
-            uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
+            uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
+            include: Some("implementations"),
+            source_uri: "/sap/bc/adt/oo/classes/zcl_sample/includes/implementations".to_owned(),
             start_byte: 0,
             end_byte: 6,
             total_bytes: 6,
