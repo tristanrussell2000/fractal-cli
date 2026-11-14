@@ -73,6 +73,7 @@ fn patch_request() -> AdtSourcePatchRequest {
         replace: "new".to_owned(),
         expected_sha256: None,
         transport: None,
+        include: None,
     }
 }
 

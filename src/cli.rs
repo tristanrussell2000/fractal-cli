@@ -694,6 +694,11 @@ pub struct EditSourcePatchArgs {
     /// ABAP repository object name.
     #[arg(long)]
     pub(crate) name: String,
+    /// Which of a class's source streams to write. Classes only; defaults to
+    /// the global class. Writing `testclasses` creates the include if the
+    /// class has none yet.
+    #[arg(long, value_enum)]
+    pub(crate) include: Option<ClassIncludeArg>,
     /// Exact literal source text that must occur once.
     #[arg(long, allow_hyphen_values = true)]
     pub(crate) find: String,
@@ -719,6 +724,11 @@ pub struct EditSourceSetArgs {
     /// ABAP repository object name.
     #[arg(long)]
     pub(crate) name: String,
+    /// Which of a class's source streams to write. Classes only; defaults to
+    /// the global class. Writing `testclasses` creates the include if the
+    /// class has none yet.
+    #[arg(long, value_enum)]
+    pub(crate) include: Option<ClassIncludeArg>,
     /// Read complete UTF-8 replacement source from this file, or - for stdin.
     #[arg(long, value_name = "PATH", allow_hyphen_values = true)]
     pub(crate) source_file: String,

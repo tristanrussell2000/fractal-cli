@@ -3,6 +3,7 @@ use thiserror::Error;
 
 use super::{
     adt_version::AdtVersion,
+    class_include::ClassInclude,
     client::{SapClient, SapClientError},
     editable_source::{
         AdtSourceReadError, AdtSourceReadResult, EditableAdtSourceIdentity, read_adt_source,
@@ -13,6 +14,7 @@ use crate::reportable_error::{ReportableError, sap_http_status};
 const STATEFUL_SESSION_HEADER: &str = "X-sap-adt-sessiontype";
 const LOCK_RESULT_MEDIA_TYPE: &str =
     "application/vnd.sap.as+xml; charset=UTF-8; dataname=com.sap.adt.lock.Result";
+const CLASS_INCLUDE_MEDIA_TYPE: &str = "application/vnd.sap.adt.oo.classincludes+xml";
 
 /// A failure in the reusable native ADT lock/write/unlock session machinery.
 #[derive(Debug, Error)]
@@ -33,16 +35,23 @@ pub enum AdtEditSessionError {
     },
     #[error("the ADT object lock could not be released: {0}")]
     UnlockFailed(#[source] SapClientError),
+    #[error("could not create the class's {} include: {source}", include.as_str())]
+    IncludeCreateFailed {
+        include: ClassInclude,
+        transport: Option<String>,
+        #[source]
+        source: SapClientError,
+    },
 }
 
 impl AdtEditSessionError {
     #[must_use]
     pub const fn sap_error(&self) -> Option<&SapClientError> {
         match self {
-            Self::LockFailed { source, .. } | Self::SourceWriteFailed { source, .. } => {
-                Some(source)
-            }
-            Self::UnlockFailed(source) => Some(source),
+            Self::LockFailed { source, .. }
+            | Self::SourceWriteFailed { source, .. }
+            | Self::IncludeCreateFailed { source, .. }
+            | Self::UnlockFailed(source) => Some(source),
             Self::LockHandleMissing { .. } => None,
         }
     }
@@ -55,6 +64,7 @@ impl ReportableError for AdtEditSessionError {
             Self::LockHandleMissing { .. } => "edit_lock_response_invalid",
             Self::SourceWriteFailed { .. } => "edit_source_write_failed",
             Self::UnlockFailed(_) => "edit_unlock_failed",
+            Self::IncludeCreateFailed { .. } => "edit_include_create_failed",
         }
     }
 
@@ -74,10 +84,11 @@ impl ReportableError for AdtEditSessionError {
                 "SAP accepted the lock request but returned an unexpected ADT lock payload."
                     .to_owned()
             }
-            Self::SourceWriteFailed { transport, source } => {
-                transport_failure_hint(transport.as_deref(), source)
-                    .or_else(|| source.hint())?
-            }
+            Self::SourceWriteFailed { transport, source }
+            | Self::IncludeCreateFailed {
+                transport, source, ..
+            } => transport_failure_hint(transport.as_deref(), source)
+                .or_else(|| source.hint())?,
             Self::UnlockFailed(_) => {
                 "The source operation may have succeeded, but the SAP lock may remain; close or unlock the object before retrying."
                     .to_owned()
@@ -200,6 +211,47 @@ pub(super) async fn write_adt_source(
             transport: lock.transport.clone(),
             source,
         })
+}
+
+/// Creates one of a class's includes under the class's lock.
+///
+/// Only the test-classes include can be missing: the other four exist from the
+/// moment a class is created. Writing to it before it exists is a 500, so it is
+/// created first. SAP answers 200 with an empty body, and the new include
+/// reads back empty. Creating it also stages `main`, with unchanged text, as a
+/// header change.
+pub(super) async fn create_class_include(
+    sap: &mut SapClient,
+    class_uri: &str,
+    lock: &AdtObjectLock,
+    include: ClassInclude,
+) -> Result<(), AdtEditSessionError> {
+    let mut headers = stateful_session_headers();
+    headers.insert(
+        "Content-Type",
+        HeaderValue::from_static(CLASS_INCLUDE_MEDIA_TYPE),
+    );
+    let mut query = vec![("lockHandle", lock.handle.as_str())];
+    if let Some(transport) = &lock.transport {
+        query.push(("corrNr", transport));
+    }
+    let body = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><class:abapClassInclude xmlns:class="http://www.sap.com/adt/oo/classes" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="dummy" class:includeType="{}"/>"#,
+        include.as_str()
+    );
+    sap.post_text(
+        &format!("{}/includes", class_uri.trim_end_matches('/')),
+        &query,
+        Some(&body),
+        headers,
+    )
+    .await
+    .map(|_| ())
+    .map_err(|source| AdtEditSessionError::IncludeCreateFailed {
+        include,
+        transport: lock.transport.clone(),
+        source,
+    })
 }
 
 pub(super) async fn read_adt_source_in_stateful_session(

@@ -1,5 +1,8 @@
 use super::package_authorization::{PackageAuthorizationError, authorize_object_package};
-use super::staged_work::{StagedEditPolicy, StagedWorkError, refuse_when_staged_by_another};
+use super::staged_work::{
+    StagedEditPolicy, StagedWorkError, StagedWorkTarget, class_has_include,
+    refuse_when_staged_by_another,
+};
 use crate::config::EditPolicy;
 use thiserror::Error;
 
@@ -10,17 +13,18 @@ use super::{
     edit_session::AdtEditSessionError,
     editable_source::{
         AdtEditTargetValidationError, AdtSourceReadError, AdtSourceSnapshot, EditableAdtObjectType,
-        EditableAdtSourceIdentity, ValidatedAdtEditTarget, read_adt_source_for_edit,
+        EditableAdtSourceIdentity, ValidatedAdtEditTarget, read_adt_source_by_identity,
         validate_adt_include_edit_target,
     },
     inactive_source_save::{
-        InactiveSourceSaveError, PlannedInactiveSourceChange, save_inactive_source_atomically,
+        InactiveSourceSaveError, PlannedInactiveSourceChange, TargetSource,
+        save_inactive_source_atomically,
     },
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
 use crate::source_change::{
     SourceChangePlanError, SourceReplacementPlan, plan_source_replacement,
-    plan_source_replacement_allowing_blank,
+    plan_source_replacement_allowing_blank, source_sha256,
 };
 use crate::suggested_command;
 
@@ -49,6 +53,8 @@ pub struct AdtSourceReplacementPreview {
     pub transport: Option<String>,
     pub original: AdtSourceSnapshot,
     pub replacement: AdtSourceSnapshot,
+    /// The include does not exist yet; the write would create it.
+    pub creates_include: bool,
 }
 
 /// Source versions observed before and after a complete inactive-source replacement.
@@ -60,6 +66,8 @@ pub struct AdtSourceReplacementWriteResult {
     pub replacement: AdtSourceSnapshot,
     pub stored: AdtSourceSnapshot,
     pub sap_normalized_source: bool,
+    /// The include did not exist and was created for this write.
+    pub created_include: bool,
     /// The write landed, but its lock could not be released.
     ///
     /// Reported as success with a caveat rather than as a failure: the source
@@ -137,6 +145,13 @@ impl ReportableError for AdtSourceReplacementError {
             }
             Self::Session(AdtEditSessionError::UnlockFailed(_)) => {
                 "edit_source_replacement_unlock_failed"
+            }
+            Self::Session(error @ AdtEditSessionError::IncludeCreateFailed { .. }) => error.code(),
+            // A missing include keeps its own code: it is the one read failure
+            // with an ordinary cause, and a caller has to be able to tell.
+            Self::LockedSourceRead(error @ AdtSourceReadError::IncludeNotFound { .. })
+            | Self::PreviewSourceRead(error @ AdtSourceReadError::IncludeNotFound { .. }) => {
+                error.code()
             }
             Self::LockedSourceRead(_) => "edit_source_replacement_locked_read_failed",
             Self::PreviewSourceRead(_) => "edit_source_replacement_preview_read_failed",
@@ -243,20 +258,22 @@ pub async fn preview_adt_source_replacement(
     .await?;
     let identity = target.identity;
     let transport = target.transport;
-    let original = read_adt_source_for_edit(
-        sap,
-        identity.object_type,
-        &identity.name,
-        AdtVersion::Inactive,
-    )
-    .await
-    .map_err(AdtSourceReplacementError::PreviewSourceRead)?;
-    let plan = plan_replacement(&original.snapshot.source, request, &identity)?;
+    let creates_include = target_source(sap, &identity).await? == TargetSource::CreateFirst;
+    let original = if creates_include {
+        AdtSourceSnapshot::from_parts(String::new(), source_sha256(""), 0)
+    } else {
+        read_adt_source_by_identity(sap, &identity, AdtVersion::Inactive)
+            .await
+            .map_err(AdtSourceReplacementError::PreviewSourceRead)?
+            .snapshot
+    };
+    let plan = plan_replacement(&original.source, request, &identity)?;
 
     Ok(AdtSourceReplacementPreview {
         identity,
         transport,
-        original: original.snapshot,
+        creates_include,
+        original,
         replacement: AdtSourceSnapshot::from_parts(
             plan.replacement_source,
             plan.replacement_sha256,
@@ -293,14 +310,18 @@ pub async fn replace_adt_source_atomically(
     // Before the lock, a refusal must not leave a lock behind
     refuse_when_staged_by_another(
         sap,
-        &target.identity.object_uri,
+        StagedWorkTarget {
+            object_uri: &target.identity.object_uri,
+            object_type: request.object_type.as_str(),
+            name: &target.identity.name,
+            include: target.identity.include,
+        },
         &request.staged_edits,
-        request.object_type.as_str(),
-        &target.identity.name,
         request.expected_sha256.is_some(),
     )
     .await?;
-    let saved = save_inactive_source_atomically(sap, &target, |original| {
+    let source = target_source(sap, &target.identity).await?;
+    let saved = save_inactive_source_atomically(sap, &target, source, |original| {
         let plan = if request.blank_allowed {
             plan_source_replacement_allowing_blank
         } else {
@@ -332,7 +353,25 @@ pub async fn replace_adt_source_atomically(
         replacement: saved.proposed,
         stored: saved.stored,
         sap_normalized_source,
+        created_include: source == TargetSource::CreateFirst,
         still_locked: saved.still_locked,
+    })
+}
+
+/// Whether the include being written has to be created first. Only a class's
+/// test-classes include can be missing, so only that one costs a read.
+async fn target_source(
+    sap: &SapClient,
+    identity: &EditableAdtSourceIdentity,
+) -> Result<TargetSource, AdtSourceReplacementError> {
+    if identity.include != Some(ClassInclude::Testclasses) {
+        return Ok(TargetSource::Exists);
+    }
+    let exists = class_has_include(sap, &identity.object_uri, ClassInclude::Testclasses).await?;
+    Ok(if exists {
+        TargetSource::Exists
+    } else {
+        TargetSource::CreateFirst
     })
 }
 

@@ -152,6 +152,7 @@ impl ReportableError for AdtInactiveSourceDiscardError {
                 "edit_discard_restore_write_failed"
             }
             Self::Session(AdtEditSessionError::UnlockFailed(_)) => "edit_discard_unlock_failed",
+            Self::Session(error @ AdtEditSessionError::IncludeCreateFailed { .. }) => error.code(),
             Self::InactiveVersionProbe(_) => "edit_discard_inactive_probe_failed",
             Self::NoInactiveVersion { .. } => "edit_discard_no_inactive_source",
             Self::ActiveSourceRead(_) => "edit_discard_active_read_failed",

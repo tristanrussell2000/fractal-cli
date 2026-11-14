@@ -4,15 +4,17 @@ use thiserror::Error;
 
 use super::editable_source::{
     AdtEditTargetValidationError, AdtSourceReadError, EditableAdtObjectType,
-    EditableAdtSourceIdentity, read_adt_source_for_edit,
+    EditableAdtSourceIdentity, read_adt_source_by_identity,
 };
 use super::{
     adt_version::AdtVersion,
+    class_include::ClassInclude,
     client::{SapClient, SapClientError},
     edit_session::AdtEditSessionError,
-    editable_source::{AdtSourceSnapshot, validate_adt_edit_target},
+    editable_source::{AdtSourceSnapshot, validate_adt_include_edit_target},
     inactive_source_save::{
-        InactiveSourceSaveError, PlannedInactiveSourceChange, save_inactive_source_atomically,
+        InactiveSourceSaveError, PlannedInactiveSourceChange, TargetSource,
+        save_inactive_source_atomically,
     },
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
@@ -28,6 +30,9 @@ pub struct AdtSourcePatchRequest {
     pub replace: String,
     pub expected_sha256: Option<String>,
     pub transport: Option<String>,
+    /// Which class stream to patch. `None` means the object's only stream, or
+    /// a class's `main`.
+    pub include: Option<ClassInclude>,
 }
 
 /// A non-mutating patch plan based on the source currently returned by SAP.
@@ -114,6 +119,12 @@ impl ReportableError for AdtSourcePatchError {
             Self::PackageNotAllowed(error) => error.code(),
             Self::Session(error) => error.code(),
             Self::Patch { source, .. } => source.code(),
+            // A missing include keeps its own code: it is the one read failure
+            // with an ordinary cause, and a caller has to be able to tell.
+            Self::LockedSourceRead(error @ AdtSourceReadError::IncludeNotFound { .. })
+            | Self::PreviewSourceRead(error @ AdtSourceReadError::IncludeNotFound { .. }) => {
+                error.code()
+            }
             Self::LockedSourceRead(_) => "edit_locked_source_read_failed",
             Self::PreviewSourceRead(_) => "edit_preview_source_read_failed",
             Self::StoredSourceRead { .. } => "edit_source_verification_failed",
@@ -218,9 +229,10 @@ pub async fn patch_adt_source_atomically(
     policy: &EditPolicy,
     request: &AdtSourcePatchRequest,
 ) -> Result<AdtSourcePatchWriteResult, AdtSourcePatchError> {
-    let target = validate_adt_edit_target(
+    let target = validate_adt_include_edit_target(
         request.object_type,
         &request.name,
+        request.include,
         policy,
         request.transport.as_deref(),
     )?;
@@ -231,7 +243,7 @@ pub async fn patch_adt_source_atomically(
         &target.identity.object_uri,
     )
     .await?;
-    let saved = save_inactive_source_atomically(sap, &target, |original| {
+    let saved = save_inactive_source_atomically(sap, &target, TargetSource::Exists, |original| {
         let expected_sha256 = request
             .expected_sha256
             .as_deref()
@@ -283,9 +295,10 @@ pub async fn preview_adt_source_patch(
     policy: &EditPolicy,
     request: &AdtSourcePatchRequest,
 ) -> Result<AdtSourcePatchPreview, AdtSourcePatchError> {
-    let target = validate_adt_edit_target(
+    let target = validate_adt_include_edit_target(
         request.object_type,
         &request.name,
+        request.include,
         policy,
         request.transport.as_deref(),
     )?;
@@ -298,14 +311,9 @@ pub async fn preview_adt_source_patch(
     .await?;
     let identity = target.identity;
     let transport = target.transport;
-    let original = read_adt_source_for_edit(
-        sap,
-        identity.object_type,
-        &identity.name,
-        AdtVersion::Inactive,
-    )
-    .await
-    .map_err(AdtSourcePatchError::PreviewSourceRead)?;
+    let original = read_adt_source_by_identity(sap, &identity, AdtVersion::Inactive)
+        .await
+        .map_err(AdtSourcePatchError::PreviewSourceRead)?;
     let expected_sha256 = request
         .expected_sha256
         .as_deref()

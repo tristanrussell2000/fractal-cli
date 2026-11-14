@@ -47,10 +47,15 @@ pub enum StagedWorkError {
     Sap(#[from] SapClientError),
     #[error(transparent)]
     Parse(#[from] AdtResponseParseError),
-    #[error("{author} has an unactivated edit staged on {object_type} {name}")]
+    #[error(
+        "{author} has an unactivated edit staged on {object_type} {name}{}",
+        include.map_or_else(String::new, |include| format!("'s {} include", include.as_str()))
+    )]
     StagedByAnother {
         object_type: &'static str,
         name: String,
+        /// The class include the edit is staged in, for a class.
+        include: Option<ClassInclude>,
         author: String,
     },
 }
@@ -91,11 +96,20 @@ impl ReportableError for StagedWorkError {
     fn suggested_command(&self) -> Option<String> {
         match self {
             Self::StagedByAnother {
-                object_type, name, ..
-            } => Some(suggested_command::edit_read(
                 object_type,
                 name,
-                AdtVersion::Inactive.as_str(),
+                include,
+                ..
+            } => Some(include.map_or_else(
+                || suggested_command::edit_read(object_type, name, AdtVersion::Inactive.as_str()),
+                |include| {
+                    suggested_command::edit_read_include(
+                        object_type,
+                        name,
+                        include.as_str(),
+                        AdtVersion::Inactive.as_str(),
+                    )
+                },
             )),
             Self::Sap(error) => error.suggested_command(),
             Self::Parse(_) => None,
@@ -172,6 +186,31 @@ fn staged_by_anyone_in(xml: &str) -> Result<Vec<StagedInclude>, StagedWorkError>
         .collect())
 }
 
+/// Whether a class has one of its includes yet, staged or active.
+///
+/// Only the test-classes include can be missing; the class document lists an
+/// include once it exists.
+///
+/// # Errors
+///
+/// Returns [`StagedWorkError`] when the document cannot be read or parsed.
+pub async fn class_has_include(
+    sap: &SapClient,
+    class_uri: &str,
+    include: ClassInclude,
+) -> Result<bool, StagedWorkError> {
+    let xml = sap
+        .get_text_with_query(class_uri, &[("version", AdtVersion::Inactive.as_str())])
+        .await?;
+    let document = parse_adt_document(&xml)?;
+    Ok(document.root_element().children().any(|node| {
+        node.is_element()
+            && node.tag_name().name() == "include"
+            && find_attribute_value(node, "includeType").and_then(ClassInclude::parse)
+                == Some(include)
+    }))
+}
+
 /// Refuses a whole-document write that would replace somebody else's staged edit.
 ///
 /// Reads nothing when the answer could not change the outcome, so the extra
@@ -184,10 +223,8 @@ fn staged_by_anyone_in(xml: &str) -> Result<Vec<StagedInclude>, StagedWorkError>
 /// [`StagedWorkError::StagedByAnother`] when another user's edit would be lost.
 pub async fn refuse_when_staged_by_another(
     sap: &SapClient,
-    object_uri: &str,
+    target: StagedWorkTarget<'_>,
     policy: &StagedEditPolicy,
-    object_type: &'static str,
-    name: &str,
     asserted_hash: bool,
 ) -> Result<(), StagedWorkError> {
     // An asserted hash is the caller saying they have seen what is there; the
@@ -198,19 +235,48 @@ pub async fn refuse_when_staged_by_another(
     if asserted_hash {
         return Ok(());
     }
-    let Some(staged) = read_staged_work(sap, object_uri).await? else {
+    // For a class, only the include being written. The class-level marker goes
+    // inactive when *any* include is staged, but a write replaces one include
+    // and cannot touch the others.
+    let author = match target.include {
+        Some(include) => read_staged_by_anyone(sap, target.object_uri)
+            .await?
+            .into_iter()
+            .find(|staged| staged.include == include)
+            .map(|staged| staged.author),
+        None => read_staged_work(sap, target.object_uri)
+            .await?
+            .map(|staged| Some(staged.author)),
+    };
+    let Some(author) = author else {
         return Ok(());
     };
+    // No author recorded is treated as somebody else's: refusing is the side
+    // that can be recovered from.
     // Case-insensitively: SAP reports user ids uppercased, and a profile need
     // not spell its own that way.
-    if staged.author.eq_ignore_ascii_case(caller) {
+    if author
+        .as_deref()
+        .is_some_and(|author| author.eq_ignore_ascii_case(caller))
+    {
         return Ok(());
     }
     Err(StagedWorkError::StagedByAnother {
-        object_type,
-        name: name.to_owned(),
-        author: staged.author,
+        object_type: target.object_type,
+        name: target.name.to_owned(),
+        include: target.include,
+        author: author.unwrap_or_else(|| "another user".to_owned()),
     })
+}
+
+/// What a write is about to replace, for [`refuse_when_staged_by_another`].
+#[derive(Debug, Clone, Copy)]
+pub struct StagedWorkTarget<'a> {
+    pub object_uri: &'a str,
+    pub object_type: &'static str,
+    pub name: &'a str,
+    /// The class include being written, for a class.
+    pub include: Option<ClassInclude>,
 }
 
 #[cfg(test)]

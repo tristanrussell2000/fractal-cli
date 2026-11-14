@@ -374,7 +374,7 @@ impl ReportableError for AdtSourceReadError {
             // A class has no test-classes include until one is created, so
             // this is an ordinary answer and not necessarily a missing class.
             Self::IncludeNotFound { .. } => {
-                "Either the class does not exist, or it has no such include. The class document lists the includes it has.".to_owned()
+                "Either the class does not exist, or it has no such include. The class document lists the includes it has; `fractal edit set --include testclasses` creates the test-classes include.".to_owned()
             }
             Self::InvalidSourceEncoding { .. } => {
                 "The native ADT source response must be valid UTF-8 before it can be patched safely."

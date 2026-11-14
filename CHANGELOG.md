@@ -8,7 +8,11 @@
   types), `implementations` (local types, where RAP handlers live), `macros` and `testclasses`.
   On `edit read`, and on `object source`, which also accepts an include's own URI
   (`…/includes/implementations`). The version and author reported are that include's own, not the
-  class's. Reading only; editing includes is not built yet.
+  class's.
+- **`edit set --include` and `edit patch --include` write a class's other includes.** Writing
+  `testclasses` creates the include first if the class has none; a dry run says it would
+  (`creates_include`). A patch never creates an include, and a missing one is reported as
+  `edit_include_not_found`.
 
 ### Breaking
 
@@ -22,6 +26,11 @@
   class) instead of top-level `discarded_sha256`, `active_sha256_before` and friends.
 
 ### Fixed
+
+- **Writing `main` was refused while a colleague had any include staged.** The check for another
+  user's staged edit looked at the class as a whole, whose marker goes inactive when any include is
+  staged. It now looks at the include being written, so a colleague's staged local types no longer
+  block a write to `main`, and a refusal names the include.
 
 - **Undoing a class activation restored only `main`.** An activation publishes every include the
   caller has staged, local types included, and the journal recorded only `main`, so an undo

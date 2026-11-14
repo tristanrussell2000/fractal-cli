@@ -47,6 +47,10 @@ pub struct EditSourceSetOutput {
     replacement_sha256: String,
     stored_sha256: Option<String>,
     sap_normalized_source: Option<bool>,
+    /// The include did not exist: a dry run says the write would create it,
+    /// a real one that it did.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    creates_include: bool,
     replacement_source: String,
     stored_source: Option<String>,
     /// Present when the change landed but its lock could not be released.
@@ -72,7 +76,7 @@ pub async fn edit_source_set(
         expected_sha256: args.expected_sha256.clone(),
         transport: args.transport.clone(),
         staged_edits: staged_edit_policy(args.force, &profile.username),
-        include: None,
+        include: args.include.map(Into::into),
         blank_allowed: false,
     };
 
@@ -179,6 +183,7 @@ fn map_set_preview(
         replacement_sha256: preview.replacement.sha256,
         stored_sha256: None,
         sap_normalized_source: None,
+        creates_include: preview.creates_include,
         replacement_source: preview.replacement.source,
         stored_source: None,
         // A dry run never locks, so there is no lock to leave behind.
@@ -208,6 +213,7 @@ fn map_applied_set(
         replacement_sha256: result.replacement.sha256,
         stored_sha256: Some(result.stored.sha256),
         sap_normalized_source: Some(result.sap_normalized_source),
+        creates_include: result.created_include,
         warning: still_locked_warning(result.still_locked),
         replacement_source: result.replacement.source,
         stored_source: Some(result.stored.source),
@@ -395,6 +401,7 @@ mod tests {
                     source_sha256(original),
                     original.len(),
                 ),
+                creates_include: false,
                 replacement: AdtSourceSnapshot::from_parts(
                     replacement.to_owned(),
                     source_sha256(replacement),
@@ -437,6 +444,7 @@ mod tests {
                     stored.len(),
                 ),
                 sap_normalized_source: true,
+                created_include: false,
                 still_locked: false,
             },
         );
@@ -469,6 +477,7 @@ mod tests {
             replacement: snapshot(),
             stored: snapshot(),
             sap_normalized_source: false,
+            created_include: false,
             still_locked: false,
         }
     }

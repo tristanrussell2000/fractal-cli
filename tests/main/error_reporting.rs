@@ -70,6 +70,7 @@ fn contract() -> Vec<Expectation> {
             error: Box::new(StagedWorkError::StagedByAnother {
                 object_type: "PROG",
                 name: "ZSAMPLE".to_owned(),
+                include: None,
                 author: "COLLEAGUE".to_owned(),
             }),
             code: "edit_staged_by_another_user",
@@ -79,6 +80,22 @@ fn contract() -> Vec<Expectation> {
             // Reading the layer that holds their work, which is read-only.
             suggested_command: Some(
                 "fractal edit read --type PROG --name ZSAMPLE --version inactive",
+            ),
+        },
+        Expectation {
+            error: Box::new(StagedWorkError::StagedByAnother {
+                object_type: "CLAS",
+                name: "ZCL_SAMPLE".to_owned(),
+                include: Some(ClassInclude::Implementations),
+                author: "COLLEAGUE".to_owned(),
+            }),
+            code: "edit_staged_by_another_user",
+            status: None,
+            message_contains: "ZCL_SAMPLE's implementations include",
+            has_hint: true,
+            // The include holding their work, read-only.
+            suggested_command: Some(
+                "fractal edit read --type CLAS --name ZCL_SAMPLE --include implementations --version inactive",
             ),
         },
         Expectation {

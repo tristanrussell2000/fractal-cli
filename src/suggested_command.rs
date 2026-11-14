@@ -30,6 +30,14 @@ pub fn edit_read(object_type: &str, name: &str, version: &str) -> String {
     edit("read", object_type, name, version)
 }
 
+/// Reads one stored version of one of a class's includes.
+#[must_use]
+pub fn edit_read_include(object_type: &str, name: &str, include: &str, version: &str) -> String {
+    format!(
+        "fractal edit read --type {object_type} --name {name} --include {include} --version {version}"
+    )
+}
+
 /// Syntax-checks one stored source version of an editable object.
 #[must_use]
 pub fn edit_check(object_type: &str, name: &str, version: &str) -> String {

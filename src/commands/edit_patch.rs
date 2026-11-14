@@ -64,6 +64,7 @@ pub async fn edit_source_patch(
         replace: args.replace.clone(),
         expected_sha256: args.expected_sha256.clone(),
         transport: args.transport.clone(),
+        include: args.include.map(Into::into),
     };
     let (profile_name, profile, mut client) = connect(explicit_profile).await?;
 
@@ -234,6 +235,7 @@ mod tests {
             replace: "WRITE 'after'.".to_owned(),
             expected_sha256: None,
             transport: None,
+            include: None,
         }
     }
 

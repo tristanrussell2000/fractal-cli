@@ -3,6 +3,7 @@ use fractal::reportable_error::ReportableError;
 use fractal::{
     config::Profile,
     sap::{
+        class_include::ClassInclude,
         client::SapClient,
         edit_session::AdtEditSessionError,
         editable_source::{AdtEditTargetValidationError, EditableAdtObjectType},
@@ -638,5 +639,273 @@ async fn asserting_a_hash_skips_the_staged_check_entirely() {
 
     assert!(result.is_ok(), "{:?}", result.err());
     // Enforces the expect(0) above: the staged check is skipped, not answered.
+    server.verify().await;
+}
+
+// --- Class includes -----------------------------------------------------------
+
+const CLASS: AdtEditSession = AdtEditSession {
+    sap_client: "903",
+    csrf_token: "replace-csrf",
+    session_cookie: "SAP_SESSIONID=replace-test",
+    object_path: "/sap/bc/adt/oo/classes/zcl_sample",
+    source_path: "/sap/bc/adt/oo/classes/zcl_sample/source/main",
+    lock_handle: "202608251234567890",
+};
+const LOCAL_TYPES_PATH: &str = "/sap/bc/adt/oo/classes/zcl_sample/includes/implementations";
+const TEST_CLASSES_PATH: &str = "/sap/bc/adt/oo/classes/zcl_sample/includes/testclasses";
+const LOCAL_TYPES: &str = "CLASS lhc_sample DEFINITION.\nENDCLASS.\n";
+const TESTS: &str = "CLASS ltc_sample DEFINITION FOR TESTING.\nENDCLASS.\n";
+
+fn class_request(include: ClassInclude, source: &str) -> AdtSourceReplacementRequest {
+    AdtSourceReplacementRequest {
+        object_type: EditableAdtObjectType::Class,
+        name: "zcl_sample".to_owned(),
+        replacement_source: source.to_owned(),
+        expected_sha256: None,
+        transport: None,
+        staged_edits: StagedEditPolicy::Protect("developer".to_owned()),
+        include: Some(include),
+        blank_allowed: false,
+    }
+}
+
+/// The class document as SAP serves it at `?version=inactive`: one element per
+/// include, each with its own layer and author.
+async fn mount_class_document(server: &MockServer, includes: &[(&str, &str, &str)]) {
+    let elements: String = includes
+        .iter()
+        .map(|(include, version, author)| {
+            format!(
+                r#"<class:include class:includeType="{include}" adtcore:version="{version}" adtcore:changedBy="{author}"/>"#
+            )
+        })
+        .collect();
+    Mock::given(method("GET"))
+        .and(path(CLASS.object_path))
+        .and(query_param("version", "inactive"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            r#"<class:abapClass xmlns:class="http://www.sap.com/adt/oo/classes" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="ZCL_SAMPLE" adtcore:version="inactive" adtcore:changedBy="COLLEAGUE">{elements}</class:abapClass>"#
+        )))
+        .mount(server)
+        .await;
+}
+
+async fn run(
+    server: &MockServer,
+    request: &AdtSourceReplacementRequest,
+) -> Result<fractal::sap::source_replace::AdtSourceReplacementWriteResult, AdtSourceReplacementError>
+{
+    let profile = CLASS.profile(server.uri(), &["Z*"]);
+    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    replace_adt_source_atomically(&mut client, &profile.edit_policy(), request).await
+}
+
+#[tokio::test]
+async fn a_colleagues_staged_include_refuses_a_write_to_that_include() {
+    let server = MockServer::start().await;
+    mount_class_document(
+        &server,
+        &[
+            ("implementations", "inactive", "COLLEAGUE"),
+            ("main", "active", "DEVELOPER"),
+        ],
+    )
+    .await;
+    CLASS
+        .lock_request(None)
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let error = run(
+        &server,
+        &class_request(ClassInclude::Implementations, LOCAL_TYPES),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), "edit_staged_by_another_user");
+    assert!(
+        error.message().contains("implementations include"),
+        "{}",
+        error.message()
+    );
+    assert_eq!(
+        error.suggested_command().as_deref(),
+        Some(
+            "fractal edit read --type CLAS --name ZCL_SAMPLE --include implementations --version inactive"
+        )
+    );
+    server.verify().await;
+}
+
+/// The class-level marker says "inactive" whenever any include is staged, but a
+/// write to `main` replaces `main` alone and cannot touch the colleague's local
+/// types. Refusing on the class marker blocked work that was never at risk.
+#[tokio::test]
+async fn a_colleagues_staged_local_types_do_not_block_a_write_to_main() {
+    let server = MockServer::start().await;
+    CLASS.mount_csrf_session(&server).await;
+    mount_class_document(
+        &server,
+        &[
+            ("implementations", "inactive", "COLLEAGUE"),
+            ("main", "active", "DEVELOPER"),
+        ],
+    )
+    .await;
+    CLASS.mount_lock(&server, None).await;
+    CLASS
+        .mount_unlock(&server, ResponseTemplate::new(200))
+        .await;
+    CLASS
+        .source_read("inactive")
+        .respond_with(SequentialResponses::sources(&[
+            ORIGINAL_SOURCE,
+            REPLACEMENT_SOURCE,
+        ]))
+        .mount(&server)
+        .await;
+    CLASS
+        .source_write(None)
+        .and(body_string(REPLACEMENT_SOURCE))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    run(
+        &server,
+        &class_request(ClassInclude::Main, REPLACEMENT_SOURCE),
+    )
+    .await
+    .unwrap();
+    server.verify().await;
+}
+
+/// A class has no test-classes include until one is created, and writing to it
+/// before then is a 500. It is created under the same lock, then written.
+#[tokio::test]
+async fn writing_test_classes_creates_the_include_first() {
+    let server = MockServer::start().await;
+    CLASS.mount_csrf_session(&server).await;
+    mount_class_document(&server, &[("main", "active", "DEVELOPER")]).await;
+    CLASS.mount_lock(&server, None).await;
+    CLASS
+        .mount_unlock(&server, ResponseTemplate::new(200))
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("{}/includes", CLASS.object_path)))
+        .and(query_param("lockHandle", CLASS.lock_handle))
+        .and(header("content-type", "application/vnd.sap.adt.oo.classincludes+xml"))
+        .and(body_string(
+            r#"<?xml version="1.0" encoding="UTF-8"?><class:abapClassInclude xmlns:class="http://www.sap.com/adt/oo/classes" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="dummy" class:includeType="testclasses"/>"#,
+        ))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(TEST_CLASSES_PATH))
+        .and(query_param("lockHandle", CLASS.lock_handle))
+        .and(body_string(TESTS))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(TEST_CLASSES_PATH))
+        .and(query_param("version", "inactive"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(TESTS))
+        .mount(&server)
+        .await;
+
+    let result = run(&server, &class_request(ClassInclude::Testclasses, TESTS))
+        .await
+        .unwrap();
+
+    assert!(result.created_include);
+    assert_eq!(result.original.bytes, 0);
+    let requests = server.received_requests().await.unwrap();
+    let position = |method: &str, path: &str| {
+        requests
+            .iter()
+            .position(|request| request.method.as_str() == method && request.url.path() == path)
+            .unwrap()
+    };
+    assert!(
+        position("POST", &format!("{}/includes", CLASS.object_path))
+            < position("PUT", TEST_CLASSES_PATH)
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn a_dry_run_says_it_would_create_test_classes_and_writes_nothing() {
+    let server = MockServer::start().await;
+    mount_class_document(&server, &[("main", "active", "DEVELOPER")]).await;
+    for verb in ["POST", "PUT"] {
+        Mock::given(method(verb))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+    }
+
+    let profile = CLASS.profile(server.uri(), &["Z*"]);
+    let client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let preview = preview_adt_source_replacement(
+        &client,
+        &profile.edit_policy(),
+        &class_request(ClassInclude::Testclasses, TESTS),
+    )
+    .await
+    .unwrap();
+
+    assert!(preview.creates_include);
+    assert_eq!(preview.original.bytes, 0);
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn a_local_types_write_goes_to_the_include_not_main() {
+    let server = MockServer::start().await;
+    CLASS.mount_csrf_session(&server).await;
+    mount_class_document(&server, &[("implementations", "active", "DEVELOPER")]).await;
+    CLASS.mount_lock(&server, None).await;
+    CLASS
+        .mount_unlock(&server, ResponseTemplate::new(200))
+        .await;
+    CLASS
+        .source_write(None)
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(LOCAL_TYPES_PATH))
+        .and(query_param("version", "inactive"))
+        .respond_with(SequentialResponses::sources(&["", LOCAL_TYPES]))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(LOCAL_TYPES_PATH))
+        .and(body_string(LOCAL_TYPES))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let result = run(
+        &server,
+        &class_request(ClassInclude::Implementations, LOCAL_TYPES),
+    )
+    .await
+    .unwrap();
+
+    assert!(!result.created_include);
+    assert_eq!(result.identity.source_uri, LOCAL_TYPES_PATH);
     server.verify().await;
 }

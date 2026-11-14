@@ -1,8 +1,11 @@
+use crate::source_change::source_sha256;
+
 use super::{
     adt_version::AdtVersion,
+    class_include::ClassInclude,
     client::SapClient,
     edit_session::{
-        AdtEditSessionError, AdtObjectLock, acquire_adt_object_lock,
+        AdtEditSessionError, AdtObjectLock, acquire_adt_object_lock, create_class_include,
         read_adt_source_in_stateful_session, release_adt_object_lock, write_adt_source,
     },
     editable_source::{
@@ -44,6 +47,14 @@ pub(super) enum InactiveSourceSaveError<E> {
     AbandonedLock(Box<Self>),
 }
 
+/// Whether the target's source exists yet. Only a class's test-classes include
+/// can be missing; it is created under the same lock as the write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TargetSource {
+    Exists,
+    CreateFirst,
+}
+
 /// Saves one planned inactive source through a lock/read/write/unlock/verify cycle.
 ///
 /// The planner is synchronous because it operates only on the exact source snapshot
@@ -52,6 +63,7 @@ pub(super) enum InactiveSourceSaveError<E> {
 pub(super) async fn save_inactive_source_atomically<M, E, F>(
     sap: &mut SapClient,
     target: &ValidatedAdtEditTarget,
+    source: TargetSource,
     planner: F,
 ) -> Result<SavedInactiveSourceChange<M>, InactiveSourceSaveError<E>>
 where
@@ -61,7 +73,7 @@ where
     let lock = acquire_adt_object_lock(sap, &identity.object_uri, target.transport.as_deref())
         .await
         .map_err(InactiveSourceSaveError::Session)?;
-    let operation = plan_and_write_while_locked(sap, identity, &lock, planner).await;
+    let operation = plan_and_write_while_locked(sap, identity, &lock, source, planner).await;
     let unlock = release_adt_object_lock(sap, &identity.object_uri, &lock).await;
 
     let (original, change) = match operation {
@@ -97,15 +109,29 @@ async fn plan_and_write_while_locked<M, E, F>(
     sap: &mut SapClient,
     identity: &EditableAdtSourceIdentity,
     lock: &AdtObjectLock,
+    source: TargetSource,
     planner: F,
 ) -> Result<(AdtSourceSnapshot, PlannedInactiveSourceChange<M>), InactiveSourceSaveError<E>>
 where
     F: FnOnce(&AdtSourceSnapshot) -> Result<PlannedInactiveSourceChange<M>, E>,
 {
-    let original = read_adt_source_in_stateful_session(sap, identity, AdtVersion::Inactive)
-        .await
-        .map(|read| read.snapshot)
-        .map_err(InactiveSourceSaveError::LockedSourceRead)?;
+    let original = match source {
+        TargetSource::Exists => {
+            read_adt_source_in_stateful_session(sap, identity, AdtVersion::Inactive)
+                .await
+                .map(|read| read.snapshot)
+                .map_err(InactiveSourceSaveError::LockedSourceRead)?
+        }
+        // A new include is empty: nothing to read, and nothing for a caller's
+        // expected hash to have seen except the empty source.
+        TargetSource::CreateFirst => {
+            let include = identity.include.unwrap_or(ClassInclude::Testclasses);
+            create_class_include(sap, &identity.object_uri, lock, include)
+                .await
+                .map_err(InactiveSourceSaveError::Session)?;
+            AdtSourceSnapshot::from_parts(String::new(), source_sha256(""), 0)
+        }
+    };
     let change = planner(&original).map_err(InactiveSourceSaveError::Plan)?;
     write_adt_source(sap, identity, lock, &change.proposed.source)
         .await

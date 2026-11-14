@@ -14,7 +14,9 @@
 use super::package_authorization::{
     PackageAuthorizationError, authorize_known_package, package_of_object_xml,
 };
-use super::staged_work::{StagedEditPolicy, StagedWorkError, refuse_when_staged_by_another};
+use super::staged_work::{
+    StagedEditPolicy, StagedWorkError, StagedWorkTarget, refuse_when_staged_by_another,
+};
 use crate::config::EditPolicy;
 use crate::journal::recorder::Journal;
 use crate::sap::metadata_document::strip_navigation_links;
@@ -632,10 +634,13 @@ pub async fn write_metadata_object(
     // Before the lock
     refuse_when_staged_by_another(
         sap,
-        &identity.object_uri,
+        StagedWorkTarget {
+            object_uri: &identity.object_uri,
+            object_type: object_type.as_str(),
+            name: &identity.name,
+            include: None,
+        },
         staged_edits,
-        object_type.as_str(),
-        &identity.name,
         expected_sha256.is_some(),
     )
     .await?;

@@ -45,6 +45,7 @@ fn patch_request() -> AdtSourcePatchRequest {
         replace: "'after'".to_owned(),
         expected_sha256: None,
         transport: None,
+        include: None,
     }
 }
 
@@ -596,5 +597,117 @@ async fn reports_when_a_completed_write_cannot_be_verified() {
     assert_eq!(error.code(), "edit_source_verification_failed");
     assert!(error.to_string().contains("Verification unavailable"));
     assert!(error.hint().unwrap().contains("write and unlock succeeded"));
+    server.verify().await;
+}
+
+const CLASS: AdtEditSession = AdtEditSession {
+    sap_client: "903",
+    csrf_token: "mock-csrf-token",
+    session_cookie: "SAP_SESSIONID=edit-test",
+    object_path: "/sap/bc/adt/oo/classes/zcl_sample",
+    source_path: "/sap/bc/adt/oo/classes/zcl_sample/source/main",
+    lock_handle: "202608211234567890",
+};
+const LOCAL_TYPES_PATH: &str = "/sap/bc/adt/oo/classes/zcl_sample/includes/implementations";
+
+fn class_patch(include: fractal::sap::class_include::ClassInclude) -> AdtSourcePatchRequest {
+    AdtSourcePatchRequest {
+        object_type: EditableAdtObjectType::Class,
+        name: "zcl_sample".to_owned(),
+        find: "'before'".to_owned(),
+        replace: "'after'".to_owned(),
+        expected_sha256: None,
+        transport: None,
+        include: Some(include),
+    }
+}
+
+#[tokio::test]
+async fn a_patch_to_local_types_reads_and_writes_the_include() {
+    let server = MockServer::start().await;
+    CLASS.mount_csrf_session(&server).await;
+    CLASS.mount_lock(&server, None).await;
+    CLASS
+        .mount_unlock(&server, ResponseTemplate::new(200))
+        .await;
+    Mock::given(method("GET"))
+        .and(path(LOCAL_TYPES_PATH))
+        .and(query_param("version", "inactive"))
+        .respond_with(SequentialResponses::sources(&[
+            ORIGINAL_SOURCE,
+            PROPOSED_SOURCE,
+        ]))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(LOCAL_TYPES_PATH))
+        .and(body_string(PROPOSED_SOURCE))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    CLASS
+        .source_write(None)
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let profile = CLASS.profile(server.uri(), &["Z*"]);
+    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let result = patch_adt_source_atomically(
+        &mut client,
+        &profile.edit_policy(),
+        &class_patch(fractal::sap::class_include::ClassInclude::Implementations),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.stored.sha256, source_sha256(PROPOSED_SOURCE));
+    server.verify().await;
+}
+
+/// A patch needs something to anchor in, so it never creates an include.
+#[tokio::test]
+async fn a_patch_to_missing_test_classes_says_the_include_is_missing() {
+    let server = MockServer::start().await;
+    CLASS.mount_csrf_session(&server).await;
+    CLASS.mount_lock(&server, None).await;
+    CLASS
+        .mount_unlock(&server, ResponseTemplate::new(200))
+        .await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/sap/bc/adt/oo/classes/zcl_sample/includes/testclasses",
+        ))
+        .respond_with(
+            ResponseTemplate::new(404)
+                .set_body_string("ZCL_SAMPLE=========CCAU does not have any inactive version"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/oo/classes/zcl_sample/includes"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let profile = CLASS.profile(server.uri(), &["Z*"]);
+    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let error = patch_adt_source_atomically(
+        &mut client,
+        &profile.edit_policy(),
+        &class_patch(fractal::sap::class_include::ClassInclude::Testclasses),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), "edit_include_not_found");
+    assert!(
+        error.message().contains("no testclasses include"),
+        "{}",
+        error.message()
+    );
     server.verify().await;
 }
