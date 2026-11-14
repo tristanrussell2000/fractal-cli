@@ -491,7 +491,22 @@ pub(super) fn validate_adt_edit_target(
     policy: &EditPolicy,
     transport: Option<&str>,
 ) -> Result<ValidatedAdtEditTarget, AdtEditTargetValidationError> {
-    let identity = editable_source_identity(object_type, name)
+    validate_adt_include_edit_target(object_type, name, None, policy, transport)
+}
+
+/// [`validate_adt_edit_target`] for one stream of a class.
+pub(super) fn validate_adt_include_edit_target(
+    object_type: EditableAdtObjectType,
+    name: &str,
+    include: Option<ClassInclude>,
+    policy: &EditPolicy,
+    transport: Option<&str>,
+) -> Result<ValidatedAdtEditTarget, AdtEditTargetValidationError> {
+    let identity = include
+        .map_or_else(
+            || editable_source_identity(object_type, name),
+            |include| editable_include_identity(object_type, name, include),
+        )
         .map_err(AdtEditTargetValidationError::InvalidObject)?;
     validate_customer_namespace(&identity.name, &policy.customer_namespaces)?;
     let transport = canonicalize_transport_request(transport)?;

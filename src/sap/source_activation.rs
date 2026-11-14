@@ -1,8 +1,8 @@
 use super::package_authorization::{PackageAuthorizationError, authorize_object_package};
 use crate::config::EditPolicy;
 use crate::journal::JournalError;
-use crate::journal::entry::{EntryObject, JournalOperation};
-use crate::journal::recorder::{Journal, Resolution, resolve};
+use crate::journal::entry::{RecordedObject, Stream};
+use crate::journal::recorder::{ActivationBefore, AfterImages, Journal, Resolution, resolve};
 use crate::sap::object_family::AdtObjectFamily;
 use thiserror::Error;
 
@@ -14,16 +14,18 @@ use super::{
         parse_activation_response, post_activation,
     },
     adt_version::AdtVersion,
+    class_include::ClassInclude,
     client::{SapClient, SapClientError},
     edit_session::{AdtEditSessionError, attach_adt_object_to_transport},
     editable_source::{
         AdtEditTargetValidationError, AdtSourceReadError, AdtSourceReadResult, AdtSourceSnapshot,
         EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
-        read_adt_source_for_edit, validate_adt_edit_target,
+        read_adt_include_source_for_edit, read_adt_source_for_edit, validate_adt_edit_target,
     },
     source_check::{
         AdtInactiveSourceProbeError, AdtSourceCheckError, AdtSourceCheckMessage,
-        AdtSourceCheckResult, check_adt_source_by_identity, probe_inactive_adt_source,
+        AdtSourceCheckResult, Worklist, check_adt_source_by_identity, probe_inactive_adt_source,
+        read_worklist,
     },
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
@@ -101,6 +103,15 @@ pub enum AdtSourceActivationError {
         #[source]
         source: AdtSourceReadError,
     },
+    /// A class include could not be read for the journal, so nothing was
+    /// activated: without its before-image, an undo could not put it back.
+    #[error("could not record the active version of {name}'s {} include: {source}", include.as_str())]
+    BeforeImageUnreadable {
+        name: String,
+        include: ClassInclude,
+        #[source]
+        source: AdtSourceReadError,
+    },
     #[error(
         "SAP accepted the activation request, but its inactive-source state could not be verified: {source}"
     )]
@@ -124,9 +135,9 @@ impl AdtSourceActivationError {
     pub const fn sap_error(&self) -> Option<&SapClientError> {
         match self {
             Self::PackageNotAllowed(error) => error.sap_error(),
-            Self::InactiveSourceRead(error) | Self::ActiveSourceRead { source: error, .. } => {
-                error.sap_error()
-            }
+            Self::InactiveSourceRead(error)
+            | Self::ActiveSourceRead { source: error, .. }
+            | Self::BeforeImageUnreadable { source: error, .. } => error.sap_error(),
             Self::InactiveVersionProbe(error) | Self::PostActivationProbe { source: error, .. } => {
                 error.sap_error()
             }
@@ -160,6 +171,7 @@ impl ReportableError for AdtSourceActivationError {
             Self::ActivationResponseInvalid(_) => "edit_activation_response_invalid",
             Self::ActivationRefused { .. } => "edit_activation_refused",
             Self::ActiveSourceRead { .. } => "edit_activation_active_read_failed",
+            Self::BeforeImageUnreadable { .. } => "edit_activation_before_image_unreadable",
             Self::PostActivationProbe { .. } => "edit_activation_verification_probe_failed",
             Self::VerificationMismatch { .. } => "edit_activation_verification_mismatch",
         }
@@ -212,6 +224,9 @@ impl ReportableError for AdtSourceActivationError {
                 messages.iter().map(|message| message.text.as_str()),
                 "Review SAP's activation messages and the object's transport before retrying.",
             ),
+            Self::BeforeImageUnreadable { .. } => {
+                "Nothing was activated. Retry; or pass --no-journal to activate without a record, which leaves this activation impossible to undo.".to_owned()
+            }
             Self::ActiveSourceRead { identity, .. } | Self::PostActivationProbe { identity, .. } => {
                 format!(
                     "Activation may have succeeded. Read both active source and the inactive-object state before retrying. Run `{}`.",
@@ -247,7 +262,9 @@ impl ReportableError for AdtSourceActivationError {
                     AdtVersion::Inactive.as_str(),
                 ))
             }
-            Self::InactiveSourceRead(error) => error.suggested_command(),
+            Self::InactiveSourceRead(error) | Self::BeforeImageUnreadable { source: error, .. } => {
+                error.suggested_command()
+            }
             Self::Journal(_)
             | Self::Validation(_)
             | Self::InactiveVersionProbe(_)
@@ -305,23 +322,20 @@ pub(super) async fn activate_validated_adt_source(
     let identity = target.identity;
     let transport = target.transport;
 
-    let (inactive, precheck) = prepare_activation(sap, &identity, transport.as_deref()).await?;
+    let (inactive, precheck, worklist) =
+        prepare_activation(sap, &identity, transport.as_deref()).await?;
 
     let entry = match journal {
         Some(journal) => {
-            // The one thing an undo of this activation needs, and the one thing
-            // nothing read before: what the active version was beforehand.
-            // Costs a request, so it is only made when it will be recorded.
-            let active_before = read_active_source_if_any(sap, &identity).await;
+            // What an undo of this activation needs and nothing read before:
+            // every stream's active version beforehand, and for a class, which
+            // includes this activation is about to publish. Costs requests, so
+            // they are only made when they will be recorded.
+            let before =
+                activation_before(sap, &identity, &worklist, &inactive.snapshot.source).await?;
             Some(
                 journal
-                    .begin(
-                        journal_object(&identity),
-                        JournalOperation::activate(),
-                        transport.clone(),
-                        active_before.as_deref(),
-                        Some(&inactive.snapshot.source),
-                    )
+                    .begin_activation(before, transport.clone())
                     .map_err(AdtSourceActivationError::Journal)?,
             )
         }
@@ -354,7 +368,7 @@ pub(super) async fn activate_validated_adt_source(
             // SAP accepted it and the post-state could not be established.
             // Deliberately ignored: a cleanup failure must not replace the
             // failure that caused it.
-            let _ = resolve(journal, entry, Resolution::Unverified(None));
+            let _ = resolve(journal, entry, Resolution::Unverified(&AfterImages::new()));
             return Err(error);
         }
     };
@@ -375,7 +389,7 @@ pub(super) async fn activate_validated_adt_source(
         Err(source) => {
             // Deliberately ignored: a cleanup failure must not replace the
             // failure that caused it.
-            let _ = resolve(journal, entry, Resolution::Unverified(None));
+            let _ = resolve(journal, entry, Resolution::Unverified(&AfterImages::new()));
             return Err(AdtSourceActivationError::ActiveSourceRead {
                 identity: Box::new(identity),
                 source,
@@ -384,18 +398,20 @@ pub(super) async fn activate_validated_adt_source(
     };
     if active.snapshot.sha256 != inactive.snapshot.sha256 {
         // Deliberately ignored: a cleanup failure must not replace the cause.
-        let _ = resolve(journal, entry, Resolution::Unverified(None));
+        let _ = resolve(journal, entry, Resolution::Unverified(&AfterImages::new()));
         return Err(AdtSourceActivationError::VerificationMismatch {
             identity: Box::new(identity),
             inactive_sha256: inactive.snapshot.sha256,
             active_sha256: active.snapshot.sha256,
         });
     }
-    let journal_entry_incomplete = resolve(
-        journal,
-        entry,
-        Resolution::Succeeded(Some(&active.snapshot.source)),
-    );
+    let journal_entry_incomplete = match journal {
+        Some(_) => {
+            let after = activation_after(sap, &identity, &active.snapshot.source).await;
+            resolve(journal, entry, Resolution::Succeeded(&after))
+        }
+        None => None,
+    };
 
     // Post-state now proves success, so preserve malformed response XML as metadata.
     let (activation_response_parsed, parsed) = parsed_response.map_or_else(
@@ -419,14 +435,133 @@ pub(super) async fn activate_validated_adt_source(
 ///
 /// Refuses before any mutation when the check reports errors: activation must
 /// never be attempted on source that will not compile.
-fn journal_object(identity: &EditableAdtSourceIdentity) -> EntryObject {
-    EntryObject {
-        object_type: AdtObjectFamily::Source(identity.object_type),
-        name: identity.name.clone(),
-        uri: identity.object_uri.clone(),
-        // Fractal reads and writes a class's `main` include only.
-        source_part: None,
+/// What every stream held before the activation, for the journal.
+///
+/// For a class, the pending work recorded is exactly what the caller's
+/// worklist will publish: activation leaves other users' staged includes
+/// alone, so recording them would claim an undo can restore what it never
+/// touched.
+async fn activation_before(
+    sap: &SapClient,
+    identity: &EditableAdtSourceIdentity,
+    worklist: &Worklist,
+    main_inactive: &str,
+) -> Result<RecordedObject<ActivationBefore>, AdtSourceActivationError> {
+    let family = AdtObjectFamily::Source(identity.object_type);
+    if identity.object_type != EditableAdtObjectType::Class {
+        let active = read_active_source_if_any(sap, identity).await;
+        return Ok(RecordedObject::for_family(
+            family,
+            identity.name.clone(),
+            identity.object_uri.clone(),
+            |_| ActivationBefore {
+                active: active.clone(),
+                inactive: Some(main_inactive.to_owned()),
+            },
+        ));
     }
+
+    let staged = worklist
+        .staged_includes(&identity.object_uri)
+        .map_err(AdtSourceActivationError::InactiveVersionProbe)?;
+    let mut before = Vec::new();
+    for include in ClassInclude::ALL {
+        // Only a missing include is an absence. Any other failure stops the
+        // activation: recorded as absent, an undo would write the include
+        // back empty.
+        let active = match read_adt_include_source_for_edit(
+            sap,
+            identity.object_type,
+            &identity.name,
+            include,
+            AdtVersion::Active,
+        )
+        .await
+        {
+            Ok(read) => Some(read.snapshot.source),
+            Err(AdtSourceReadError::IncludeNotFound { .. }) => None,
+            Err(source) => {
+                return Err(AdtSourceActivationError::BeforeImageUnreadable {
+                    name: identity.name.clone(),
+                    include,
+                    source,
+                });
+            }
+        };
+        let inactive = if !staged.contains(&include) {
+            None
+        } else if include == ClassInclude::Main {
+            Some(main_inactive.to_owned())
+        } else {
+            Some(
+                read_adt_include_source_for_edit(
+                    sap,
+                    identity.object_type,
+                    &identity.name,
+                    include,
+                    AdtVersion::Inactive,
+                )
+                .await
+                .map_err(AdtSourceActivationError::InactiveSourceRead)?
+                .snapshot
+                .source,
+            )
+        };
+        before.push((include, ActivationBefore { active, inactive }));
+    }
+    Ok(RecordedObject::for_family(
+        family,
+        identity.name.clone(),
+        identity.object_uri.clone(),
+        |stream| {
+            before
+                .iter()
+                .find(|(include, _)| Stream::Include(*include) == stream)
+                .map(|(_, before)| before.clone())
+                .unwrap_or_default()
+        },
+    ))
+}
+
+/// What every stream holds after the activation, as read back.
+///
+/// A stream that cannot be read is left out, so its entry carries no
+/// after-image rather than a wrong one.
+async fn activation_after(
+    sap: &SapClient,
+    identity: &EditableAdtSourceIdentity,
+    main_active: &str,
+) -> AfterImages {
+    if identity.object_type != EditableAdtObjectType::Class {
+        return AfterImages::from([(Stream::Whole, Some(main_active.to_owned()))]);
+    }
+    let mut after = AfterImages::from([(
+        Stream::Include(ClassInclude::Main),
+        Some(main_active.to_owned()),
+    )]);
+    for include in ClassInclude::ALL {
+        if include == ClassInclude::Main {
+            continue;
+        }
+        match read_adt_include_source_for_edit(
+            sap,
+            identity.object_type,
+            &identity.name,
+            include,
+            AdtVersion::Active,
+        )
+        .await
+        {
+            Ok(read) => {
+                after.insert(Stream::Include(include), Some(read.snapshot.source));
+            }
+            Err(AdtSourceReadError::IncludeNotFound { .. }) => {
+                after.insert(Stream::Include(include), None);
+            }
+            Err(_) => {}
+        }
+    }
+    after
 }
 
 /// The active source, or `None` when the object has never been activated.
@@ -457,9 +592,14 @@ async fn prepare_activation(
     sap: &mut SapClient,
     identity: &EditableAdtSourceIdentity,
     transport: Option<&str>,
-) -> Result<(AdtSourceReadResult, AdtSourceCheckResult), AdtSourceActivationError> {
-    let inactive_exists = probe_inactive_adt_source(sap, &identity.object_uri)
+) -> Result<(AdtSourceReadResult, AdtSourceCheckResult, Worklist), AdtSourceActivationError> {
+    // Read once: it answers whether there is anything to activate, and for a
+    // class, which includes the activation will publish.
+    let worklist = read_worklist(sap)
         .await
+        .map_err(AdtSourceActivationError::InactiveVersionProbe)?;
+    let inactive_exists = worklist
+        .contains(&identity.object_uri)
         .map_err(AdtSourceActivationError::InactiveVersionProbe)?;
     if !inactive_exists {
         return Err(AdtSourceActivationError::NoInactiveVersion {
@@ -474,14 +614,14 @@ async fn prepare_activation(
             source,
         })
     })?;
-    let checked = read_and_precheck_inactive_source(sap, identity).await?;
+    let (inactive, precheck) = read_and_precheck_inactive_source(sap, identity).await?;
 
     if let Some(transport) = transport {
         attach_adt_object_to_transport(sap, &identity.object_uri, transport)
             .await
             .map_err(AdtSourceActivationError::TransportAttachment)?;
     }
-    Ok(checked)
+    Ok((inactive, precheck, worklist))
 }
 
 async fn read_and_precheck_inactive_source(

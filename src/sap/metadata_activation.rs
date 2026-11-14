@@ -44,8 +44,8 @@ use super::{
 };
 use crate::config::EditPolicy;
 use crate::journal::JournalError;
-use crate::journal::entry::{EntryObject, JournalOperation};
-use crate::journal::recorder::{Journal, Resolution, resolve};
+use crate::journal::entry::{RecordedObject, Stream};
+use crate::journal::recorder::{ActivationBefore, AfterImages, Journal, Resolution, resolve};
 use crate::reportable_error::{ReportableError, sap_http_status};
 use crate::sap::object_family::AdtObjectFamily;
 use crate::suggested_command;
@@ -246,12 +246,12 @@ pub async fn activate_metadata_object(
             let inactive_before = read_document(sap, &identity, "inactive").await;
             Some(
                 journal
-                    .begin(
-                        journal_object(request.object_type, &identity),
-                        JournalOperation::activate(),
+                    .begin_activation(
+                        journal_object(request.object_type, &identity, |_| ActivationBefore {
+                            active: active_before.clone(),
+                            inactive: inactive_before.clone(),
+                        }),
                         transport.clone(),
-                        active_before.as_deref(),
-                        inactive_before.as_deref(),
                     )
                     .map_err(MetadataObjectActivationError::Journal)?,
             )
@@ -289,7 +289,7 @@ pub async fn activate_metadata_object(
             // SAP accepted it and the post-state could not be established.
             // Deliberately ignored: a cleanup failure must not replace the
             // failure that caused it.
-            let _ = resolve(journal, entry, Resolution::Unverified(None));
+            let _ = resolve(journal, entry, Resolution::Unverified(&AfterImages::new()));
             return Err(error);
         }
     };
@@ -298,7 +298,7 @@ pub async fn activate_metadata_object(
         Err(source) => {
             // Deliberately ignored: a cleanup failure must not replace the
             // failure that caused it.
-            let _ = resolve(journal, entry, Resolution::Unverified(None));
+            let _ = resolve(journal, entry, Resolution::Unverified(&AfterImages::new()));
             return Err(MetadataObjectActivationError::PostActivationProbe {
                 name: identity.name,
                 source,
@@ -319,8 +319,8 @@ pub async fn activate_metadata_object(
         });
     }
 
-    let journal_entry_incomplete =
-        resolve(journal, entry, Resolution::Succeeded(Some(&active_xml)));
+    let after = AfterImages::from([(Stream::Whole, Some(active_xml.clone()))]);
+    let journal_entry_incomplete = resolve(journal, entry, Resolution::Succeeded(&after));
 
     // The post-state proves success, so a response we could not parse is
     // metadata rather than a failure.
@@ -344,13 +344,17 @@ pub async fn activate_metadata_object(
     })
 }
 
-fn journal_object(object_type: MetadataAdtObjectType, identity: &AdtObjectIdentity) -> EntryObject {
-    EntryObject {
-        object_type: AdtObjectFamily::Metadata(object_type),
-        name: identity.name.clone(),
-        uri: identity.object_uri.clone(),
-        source_part: None,
-    }
+fn journal_object<T>(
+    object_type: MetadataAdtObjectType,
+    identity: &AdtObjectIdentity,
+    content: impl FnMut(Stream) -> T,
+) -> RecordedObject<T> {
+    RecordedObject::for_family(
+        AdtObjectFamily::Metadata(object_type),
+        identity.name.clone(),
+        identity.object_uri.clone(),
+        content,
+    )
 }
 
 /// Everything that must hold before anything is published.

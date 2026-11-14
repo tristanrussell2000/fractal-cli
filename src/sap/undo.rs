@@ -23,9 +23,11 @@ use thiserror::Error;
 use super::{
     adt_object_identity::AdtObjectIdentity,
     adt_version::AdtVersion,
+    class_include::ClassInclude,
     client::{SapClient, SapClientError},
     editable_source::{
-        AdtEditTargetValidationError, EditableAdtObjectType, editable_source_identity,
+        AdtEditTargetValidationError, AdtSourceReadError, AdtSourceReadResult,
+        EditableAdtObjectType, editable_source_identity, read_adt_include_source_for_edit,
         read_adt_source_for_edit,
     },
     metadata_activation::{
@@ -42,7 +44,7 @@ use super::{
     source_activation::{
         AdtSourceActivationError, AdtSourceActivationRequest, activate_adt_source,
     },
-    source_check::{AdtInactiveSourceProbeError, probe_inactive_adt_source},
+    source_check::{AdtInactiveSourceProbeError, probe_inactive_adt_source, staged_class_includes},
     source_replace::{
         AdtSourceReplacementError, AdtSourceReplacementRequest, replace_adt_source_atomically,
     },
@@ -51,29 +53,71 @@ use super::{
 use crate::config::EditPolicy;
 use crate::journal::JournalError;
 use crate::journal::blobs::BlobStore;
-use crate::journal::entry::{ActivationUndoStep, ContentRef, EntryStatus, JournalEntry};
+use crate::journal::entry::{
+    ActivationImages, ActivationUndoStep, ContentRef, EntryRecord, EntryStatus, JournalEntry,
+    RecordedObject, Stream,
+};
 use crate::journal::recorder::Journal;
 use crate::reportable_error::{ReportableError, sap_http_status};
 use crate::source_change::{SourceChangePlanError, source_sha256};
+
+/// What undoing one stream involves.
+///
+/// An object with one source has one of these; a class has one per include,
+/// because one activation published all of them and one undo has to put all of
+/// them back.
+#[derive(Debug, Clone)]
+pub struct StreamUndo {
+    pub stream: Stream,
+    /// The previous active content, which step 1 writes back as inactive.
+    /// `None` when the stream had no active version: a test-classes include
+    /// the activation introduced, written back empty because an include
+    /// cannot be deleted.
+    pub restore: Option<String>,
+    pub restore_sha256: Option<String>,
+    /// The pending work the activation consumed, which step 3 puts back
+    /// **without** activating it. `None` means there was none in this stream,
+    /// and step 3 then does nothing rather than inventing one.
+    pub restore_inactive: Option<String>,
+    pub restore_inactive_sha256: Option<String>,
+    /// What the entry says the activation left in this stream. `None` only for
+    /// a stream that was never read back, which is refused without `--force`.
+    pub expected_active: Option<ContentRef>,
+    /// What the stream holds now. `None` means it has no active version.
+    pub current_active_sha256: Option<String>,
+}
+
+impl StreamUndo {
+    /// Whether the stream still holds what the entry recorded activating.
+    ///
+    /// Two absences match only when the entry recorded an absence: with no
+    /// after-image at all, an absent stream proves nothing.
+    #[must_use]
+    pub fn matches_recorded_state(&self) -> bool {
+        match &self.expected_active {
+            Some(ContentRef::Sha256(expected)) => {
+                self.current_active_sha256.as_deref() == Some(expected.as_str())
+            }
+            Some(ContentRef::Absent) => self.current_active_sha256.is_none(),
+            None => false,
+        }
+    }
+
+    /// Whether step 1 writes this stream: all but one that had no active
+    /// version and still has none.
+    #[must_use]
+    pub const fn written(&self) -> bool {
+        self.restore.is_some() || self.current_active_sha256.is_some()
+    }
+}
 
 /// What an undo of one activation would do.
 #[derive(Debug, Clone)]
 pub struct UndoPlan {
     pub entry: JournalEntry,
     pub object_uri: String,
-    /// The previous active content, which step 1 writes back as inactive.
-    pub restore: String,
-    pub restore_sha256: String,
-    /// The pending work the activation consumed, which step 3 puts back
-    /// **without** activating it. `None` means the caller had none, and step 3
-    /// then does nothing rather than inventing one.
-    pub restore_inactive: Option<String>,
-    pub restore_inactive_sha256: Option<String>,
-    /// What the entry says the activation left in place. Absent only for an
-    /// entry that never recorded a result, which is refused without `--force`.
-    pub expected_active_sha256: Option<String>,
-    /// What the object holds now. `None` means it has no active version at all.
-    pub current_active_sha256: Option<String>,
+    /// Every stream the entry recorded, `main` first for a class.
+    pub streams: Vec<StreamUndo>,
     /// Whether pending work would be **lost**. An undo overwrites the inactive
     /// layer, so pending work is at risk — but only when it is not one of the
     /// two versions the undo leaves behind.
@@ -83,11 +127,10 @@ pub struct UndoPlan {
 }
 
 impl UndoPlan {
-    /// Whether the object still holds what the entry recorded activating.
+    /// Whether every stream still holds what the entry recorded activating.
     #[must_use]
     pub fn matches_recorded_state(&self) -> bool {
-        self.expected_active_sha256.is_some()
-            && self.expected_active_sha256 == self.current_active_sha256
+        self.streams.iter().all(StreamUndo::matches_recorded_state)
     }
 }
 
@@ -120,6 +163,20 @@ impl Override {
     }
 }
 
+/// What moved since an activation was recorded, and where its before-image is.
+#[derive(Debug)]
+pub struct Staleness {
+    pub name: String,
+    pub id: String,
+    /// Which includes moved, for a class. Empty for an object with one source.
+    pub moved: Vec<&'static str>,
+    pub expected: String,
+    pub found: Option<String>,
+    /// Where the content that would have been restored is, so a refusal is
+    /// still an answer.
+    pub blob_path: String,
+}
+
 #[derive(Debug, Error)]
 pub enum UndoError {
     #[error(transparent)]
@@ -140,16 +197,8 @@ pub enum UndoError {
     AlreadyUndone { id: String, name: String },
     #[error("journal entry {id} has no after-image to check the object against")]
     Ungated { id: String },
-    #[error("{name} is no longer what journal entry {id} recorded activating")]
-    Stale {
-        name: String,
-        id: String,
-        expected: String,
-        found: Option<String>,
-        /// Where the content that would have been restored is, so a refusal is
-        /// still an answer.
-        blob_path: String,
-    },
+    #[error("{} is no longer what journal entry {} recorded activating", .0.name, .0.id)]
+    Stale(Box<Staleness>),
     #[error("{name} has pending changes that undoing would replace")]
     PendingWork { name: String, id: String },
     #[error("could not establish whether {name} has pending changes: {source}")]
@@ -197,7 +246,7 @@ impl ReportableError for UndoError {
             Self::Unresolved { .. } => "undo_entry_unresolved",
             Self::AlreadyUndone { .. } => "undo_already_undone",
             Self::Ungated { .. } => "undo_no_after_image",
-            Self::Stale { .. } => "undo_stale",
+            Self::Stale(_) => "undo_stale",
             Self::PendingWork { .. } => "undo_pending_work",
             Self::PendingWorkProbe { .. } => "undo_pending_work_probe_failed",
             Self::CurrentStateUnreadable { .. } => "undo_current_state_unreadable",
@@ -241,9 +290,17 @@ impl ReportableError for UndoError {
                 "Without an after-image there is nothing to check the object against. Read it first, then use --force."
                     .to_owned()
             }
-            Self::Stale { blob_path, .. } => format!(
-                "Something changed the object after the activation this entry recorded, so undoing it would discard that. The content it would have restored is at {blob_path}. Use --force to restore it anyway."
-            ),
+            Self::Stale(staleness) => {
+                let streams = if staleness.moved.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (changed: {})", staleness.moved.join(", "))
+                };
+                format!(
+                    "Something changed the object after the activation this entry recorded{streams}, so undoing it would discard that. The content it would have restored is at {}. Use --force to restore it anyway.",
+                    staleness.blob_path
+                )
+            }
             Self::PendingWork { .. } => {
                 "You have pending changes on this object. Undoing writes the previous active version over them, and then restores the pending version this entry recorded, not yours. Activate or discard them first, or use --force."
                     .to_owned()
@@ -271,9 +328,9 @@ impl ReportableError for UndoError {
             | Self::Unresolved { id, .. }
             | Self::Ungated { id }
             | Self::AlreadyUndone { id, .. }
-            | Self::Stale { id, .. }
             | Self::PendingWork { id, .. }
             | Self::WouldDelete { id, .. } => Some(format!("fractal journal show {id}")),
+            Self::Stale(staleness) => Some(format!("fractal journal show {}", staleness.id)),
             Self::PackageNotAllowed(error) => error.suggested_command(),
             Self::InactiveWrite(error) => error.suggested_command(),
             Self::MetadataWrite(error) => error.suggested_command(),
@@ -303,88 +360,104 @@ pub async fn plan_activation_undo(
     blobs: &BlobStore,
     force: bool,
 ) -> Result<UndoPlan, UndoError> {
-    if !entry.operation.is_activation() {
+    let EntryRecord::Activate { object, .. } = &entry.record else {
         return Err(UndoError::UnsupportedOperation {
             id: entry.id.clone(),
-            operation: entry.operation.as_str().to_owned(),
+            operation: entry.record.operation().to_owned(),
+        });
+    };
+    let object = object.clone();
+
+    // Undoing an object's first activation would leave it with no active
+    // version, which is a delete by another name. Only the primary stream
+    // decides that: a class include that did not exist is put back empty.
+    if primary_images(&object).is_some_and(|images| images.active_before == ContentRef::Absent) {
+        return Err(UndoError::WouldDelete {
+            name: object.name().to_owned(),
+            id: entry.id.clone(),
         });
     }
 
-    // Before anything is read from SAP: an entry that cannot be undone at all
-    // should cost nothing to find out about.
-    let ContentRef::Sha256(restore_sha256) = entry.active_before.clone() else {
-        return Err(UndoError::WouldDelete {
-            name: entry.object.name.clone(),
-            id: entry.id.clone(),
-        });
-    };
+    let overridden = entry_refusals(&entry, &object, force)?;
 
-    let overridden = entry_refusals(&entry, force)?;
-    let expected_active_sha256 = expected_active_sha256(&entry);
-
-    // Read the content before touching SAP: a blob that is gone makes the whole
-    // question moot, and the read costs nothing.
-    let restore = blobs.read(&restore_sha256)?;
-    let restore_inactive_sha256 = entry
-        .inactive_before
-        .as_ref()
-        .and_then(ContentRef::sha256)
-        .map(str::to_owned);
-    let restore_inactive = match &restore_inactive_sha256 {
-        Some(sha256) => Some(blobs.read(sha256)?),
-        None => None,
-    };
-
-    let identity = undo_identity(&entry, policy)?;
+    let identity = undo_identity(&object, policy)?;
     authorize_object_package(sap, policy, &identity.name, &identity.object_uri).await?;
 
-    let current = current_active_content(sap, &identity).await?;
-    let current_active_sha256 = current.as_deref().map(source_sha256);
+    let mut streams = Vec::new();
+    for (stream, images) in object.streams() {
+        let restore_sha256 = images.active_before.sha256().map(str::to_owned);
+        let restore = match &restore_sha256 {
+            Some(sha256) => Some(blobs.read(sha256)?),
+            None => None,
+        };
+        let restore_inactive_sha256 = images
+            .inactive_before
+            .as_ref()
+            .and_then(ContentRef::sha256)
+            .map(str::to_owned);
+        let restore_inactive = match &restore_inactive_sha256 {
+            Some(sha256) => Some(blobs.read(sha256)?),
+            None => None,
+        };
+        let current = current_active_content(sap, &identity, stream).await?;
+        streams.push(StreamUndo {
+            stream,
+            restore,
+            restore_sha256,
+            restore_inactive,
+            restore_inactive_sha256,
+            expected_active: images.active_after.clone(),
+            current_active_sha256: current.as_deref().map(source_sha256),
+        });
+    }
 
-    // The two versions an undo leaves behind: what it activates, and what it
-    // puts back as pending.
-    let pending_work_at_risk = pending_work_at_risk(
-        sap,
-        &entry,
-        &identity,
-        [Some(&restore_sha256), restore_inactive_sha256.as_deref()],
-    )
-    .await?;
+    let pending_work_at_risk = pending_work_at_risk(sap, &entry, &identity, &streams).await?;
 
-    let plan = UndoPlan {
+    let mut plan = UndoPlan {
         object_uri: identity.object_uri.clone(),
-        restore,
-        restore_sha256,
-        restore_inactive,
-        restore_inactive_sha256,
-        expected_active_sha256,
-        current_active_sha256,
+        streams,
         pending_work_at_risk,
         overridden,
         entry,
     };
 
-    let mut plan = plan;
-    if plan.expected_active_sha256.is_some() && !plan.matches_recorded_state() {
+    // Every recorded stream must still hold what the activation left. A stream
+    // with no after-image at all was refused above as ungated.
+    let moved: Vec<&StreamUndo> = plan
+        .streams
+        .iter()
+        .filter(|stream| stream.expected_active.is_some() && !stream.matches_recorded_state())
+        .collect();
+    if let Some(first) = moved.first() {
         if !force {
-            return Err(UndoError::Stale {
-                name: plan.entry.object.name.clone(),
+            return Err(UndoError::Stale(Box::new(Staleness {
+                name: object.name().to_owned(),
                 id: plan.entry.id.clone(),
-                expected: plan.expected_active_sha256.clone().unwrap_or_default(),
-                found: plan.current_active_sha256.clone(),
-                blob_path: blobs.path_of(&plan.restore_sha256).display().to_string(),
-            });
+                moved: moved
+                    .iter()
+                    .filter_map(|stream| stream.stream.include())
+                    .map(ClassInclude::as_str)
+                    .collect(),
+                expected: first
+                    .expected_active
+                    .as_ref()
+                    .and_then(ContentRef::sha256)
+                    .unwrap_or_default()
+                    .to_owned(),
+                found: first.current_active_sha256.clone(),
+                blob_path: first.restore_sha256.as_deref().map_or_else(
+                    || "(nowhere: that include did not exist before)".to_owned(),
+                    |sha256| blobs.path_of(sha256).display().to_string(),
+                ),
+            })));
         }
         plan.overridden.push(Override::Stale);
     }
 
-    // Separate from staleness, and checked after it: the active version can be
-    // exactly what the entry recorded while somebody has staged pending work
-    // that is not the version this undo would put back.
     if plan.pending_work_at_risk {
         if !force {
             return Err(UndoError::PendingWork {
-                name: plan.entry.object.name.clone(),
+                name: object.name().to_owned(),
                 id: plan.entry.id.clone(),
             });
         }
@@ -393,20 +466,23 @@ pub async fn plan_activation_undo(
     Ok(plan)
 }
 
-/// Resolves the object the same way the forward command would.
-///
-/// Not taken from the entry's stored URI: the profile's namespace rules and the
-/// object's own naming are re-checked, so an undo cannot reach somewhere a
-/// forward edit could not.
-///
-/// [`AdtObjectIdentity`] carries the family as a typed value, so every step
-/// below routes on `identity.object_type` and the family cannot disagree with
-/// the identity it came from.
+/// The stream whose absence would make an undo a delete: the only one, or a
+/// class's `main`.
+fn primary_images(object: &RecordedObject<ActivationImages>) -> Option<&ActivationImages> {
+    object
+        .stream(Stream::Whole)
+        .or_else(|| object.stream(Stream::Include(ClassInclude::Main)))
+}
+
 /// The refusals that can be decided from the entry alone, before SAP is touched.
 ///
 /// Each is forceable, so with `force` they become a list of what was overridden
 /// rather than an error.
-fn entry_refusals(entry: &JournalEntry, force: bool) -> Result<Vec<Override>, UndoError> {
+fn entry_refusals(
+    entry: &JournalEntry,
+    object: &RecordedObject<ActivationImages>,
+    force: bool,
+) -> Result<Vec<Override>, UndoError> {
     let mut overridden = Vec::new();
     if !entry.status.is_undoable() {
         // Named apart from the unresolved case: an already-undone entry is
@@ -417,7 +493,7 @@ fn entry_refusals(entry: &JournalEntry, force: bool) -> Result<Vec<Override>, Un
             return Err(if already_undone {
                 UndoError::AlreadyUndone {
                     id: entry.id.clone(),
-                    name: entry.object.name.clone(),
+                    name: object.name().to_owned(),
                 }
             } else {
                 UndoError::Unresolved {
@@ -432,7 +508,11 @@ fn entry_refusals(entry: &JournalEntry, force: bool) -> Result<Vec<Override>, Un
             Override::Unresolved
         });
     }
-    if expected_active_sha256(entry).is_none() {
+    let ungated = object
+        .streams()
+        .iter()
+        .any(|(_, images)| images.active_after.is_none());
+    if ungated {
         if !force {
             return Err(UndoError::Ungated {
                 id: entry.id.clone(),
@@ -443,23 +523,22 @@ fn entry_refusals(entry: &JournalEntry, force: bool) -> Result<Vec<Override>, Un
     Ok(overridden)
 }
 
-/// What the object's active version was left at, and so what the gate compares
-/// against. Absent on an entry whose operation was never confirmed.
-fn expected_active_sha256(entry: &JournalEntry) -> Option<String> {
-    entry
-        .active_after
-        .as_ref()
-        .and_then(ContentRef::sha256)
-        .map(str::to_owned)
-}
-
+/// Resolves the object the same way the forward command would.
+///
+/// Not taken from the entry's stored URI: the profile's namespace rules and the
+/// object's own naming are re-checked, so an undo cannot reach somewhere a
+/// forward edit could not.
+///
+/// [`AdtObjectIdentity`] carries the family as a typed value, so every step
+/// below routes on `identity.object_type` and the family cannot disagree with
+/// the identity it came from.
 fn undo_identity(
-    entry: &JournalEntry,
+    object: &RecordedObject<ActivationImages>,
     policy: &EditPolicy,
 ) -> Result<AdtObjectIdentity, AdtEditTargetValidationError> {
-    match entry.object.object_type {
+    match object.family() {
         AdtObjectFamily::Source(object_type) => {
-            let identity = editable_source_identity(object_type, &entry.object.name)
+            let identity = editable_source_identity(object_type, object.name())
                 .map_err(AdtEditTargetValidationError::InvalidObject)?;
             super::editable_source::validate_customer_namespace(
                 &identity.name,
@@ -468,7 +547,7 @@ fn undo_identity(
             Ok(identity.into())
         }
         AdtObjectFamily::Metadata(object_type) => {
-            metadata_object_identity(object_type, &entry.object.name, policy)
+            metadata_object_identity(object_type, object.name(), policy)
         }
     }
 }
@@ -492,41 +571,87 @@ async fn pending_work_at_risk(
     sap: &SapClient,
     entry: &JournalEntry,
     identity: &AdtObjectIdentity,
-    survives: [Option<&str>; 2],
+    streams: &[StreamUndo],
 ) -> Result<bool, UndoError> {
     if entry.undo_progress().is_some() {
         return Ok(false);
     }
-    let pending = probe_inactive_adt_source(sap, &identity.object_uri)
+    let probe_failed = |source| UndoError::PendingWorkProbe {
+        name: identity.name.clone(),
+        source,
+    };
+
+    // Which streams the caller has pending work in. For a class this matters
+    // twice over: step 2 activates the class, and that publishes every include
+    // the caller has staged, including ones this undo never touches.
+    let pending: Vec<Stream> = if is_class(identity) {
+        staged_class_includes(sap, &identity.object_uri)
+            .await
+            .map_err(probe_failed)?
+            .into_iter()
+            .map(Stream::Include)
+            .collect()
+    } else if probe_inactive_adt_source(sap, &identity.object_uri)
         .await
-        .map_err(|source| UndoError::PendingWorkProbe {
-            name: identity.name.clone(),
-            source,
-        })?;
-    if !pending {
-        return Ok(false);
+        .map_err(probe_failed)?
+    {
+        vec![Stream::Whole]
+    } else {
+        Vec::new()
+    };
+
+    for stream in pending {
+        // In a stream the undo writes, steps 1 and 3 replace the pending
+        // version with `active_before` and then `inactive_before`. The caller's
+        // pending work is safe only if it is one of those two, as when the
+        // same undo runs twice.
+        //
+        // In a stream the undo does not write, nothing replaces it, but step 2
+        // activates the class, which publishes every include on the caller's
+        // worklist. Their half-finished edit would go live, so that is a
+        // refusal too.
+        let survives: Vec<Option<&str>> = streams
+            .iter()
+            .find(|candidate| candidate.stream == stream && candidate.written())
+            .map(|undo| {
+                vec![
+                    undo.restore_sha256.as_deref(),
+                    undo.restore_inactive_sha256.as_deref(),
+                ]
+            })
+            .unwrap_or_default();
+        let current = current_inactive_content(sap, identity, stream)
+            .await?
+            .as_deref()
+            .map(source_sha256);
+        if !survives.contains(&current.as_deref()) {
+            return Ok(true);
+        }
     }
-    let current = current_inactive_content(sap, identity)
-        .await?
-        .as_deref()
-        .map(source_sha256);
-    Ok(!survives.contains(&current.as_deref()))
+    Ok(false)
 }
 
-/// The object's pending content, read the same way its active content is.
+fn is_class(identity: &AdtObjectIdentity) -> bool {
+    identity.object_type == AdtObjectFamily::Source(EditableAdtObjectType::Class)
+}
+
+/// One stream's pending content, read the same way its active content is.
 async fn current_inactive_content(
     sap: &SapClient,
     identity: &AdtObjectIdentity,
+    stream: Stream,
 ) -> Result<Option<String>, UndoError> {
     match identity.object_type {
-        AdtObjectFamily::Source(object_type) => {
-            Ok(
-                read_adt_source_for_edit(sap, object_type, &identity.name, AdtVersion::Inactive)
-                    .await
-                    .ok()
-                    .map(|read| read.snapshot.source),
-            )
-        }
+        AdtObjectFamily::Source(object_type) => Ok(read_stream(
+            sap,
+            object_type,
+            &identity.name,
+            stream,
+            AdtVersion::Inactive,
+        )
+        .await
+        .ok()
+        .map(|read| read.snapshot.source)),
         AdtObjectFamily::Metadata(_) => {
             let document = sap
                 .get_text_with_query(&identity.object_uri, &[("version", "inactive")])
@@ -540,7 +665,7 @@ async fn current_inactive_content(
     }
 }
 
-/// The object's current active content, or `None` when it has none.
+/// One stream's current active content, or `None` when it has none.
 ///
 /// A read that fails is an error rather than an absence: "SAP would not answer"
 /// and "there is no active version" are different facts, and treating the first
@@ -548,15 +673,12 @@ async fn current_inactive_content(
 async fn current_active_content(
     sap: &SapClient,
     identity: &AdtObjectIdentity,
+    stream: Stream,
 ) -> Result<Option<String>, UndoError> {
     match identity.object_type {
         AdtObjectFamily::Source(object_type) => {
-            match read_adt_source_for_edit(sap, object_type, &identity.name, AdtVersion::Active)
-                .await
-            {
+            match read_stream(sap, object_type, &identity.name, stream, AdtVersion::Active).await {
                 Ok(read) => Ok(Some(read.snapshot.source)),
-                // ABAP text carries no layer marker, so a refused read is the
-                // only signal that there is no active version.
                 Err(_) => Ok(None),
             }
         }
@@ -569,13 +691,26 @@ async fn current_active_content(
                     source,
                 })?;
             let document = strip_navigation_links(&document);
-            // `?version=active` serves the pending document when there is no
-            // active version, so the document's own layer decides.
             Ok(
                 (document_version(&document)?.as_deref() == Some(ACTIVE_VERSION))
                     .then_some(document),
             )
         }
+    }
+}
+
+async fn read_stream(
+    sap: &SapClient,
+    object_type: EditableAdtObjectType,
+    name: &str,
+    stream: Stream,
+    version: AdtVersion,
+) -> Result<AdtSourceReadResult, AdtSourceReadError> {
+    match stream.include() {
+        Some(include) => {
+            read_adt_include_source_for_edit(sap, object_type, name, include, version).await
+        }
+        None => read_adt_source_for_edit(sap, object_type, name, version).await,
     }
 }
 
@@ -585,10 +720,8 @@ pub struct UndoOutcome {
     pub entry_id: String,
     pub name: String,
     pub object_uri: String,
-    /// The content now active again.
-    pub restored_sha256: String,
-    /// Whether step 3 put pending work back.
-    pub inactive_restored: bool,
+    /// The streams step 3 put pending work back into.
+    pub inactive_restored: Vec<Stream>,
     /// Steps this run performed. Shorter than three when a previous run got
     /// part way.
     pub steps_run: Vec<ActivationUndoStep>,
@@ -625,17 +758,36 @@ pub async fn undo_activation(
     transport: Option<&str>,
     journal: &Journal,
 ) -> Result<UndoOutcome, UndoError> {
-    let identity = undo_identity(&plan.entry, policy)?;
+    let EntryRecord::Activate { object, .. } = &plan.entry.record else {
+        return Err(UndoError::UnsupportedOperation {
+            id: plan.entry.id.clone(),
+            operation: plan.entry.record.operation().to_owned(),
+        });
+    };
+    let identity = undo_identity(object, policy)?;
     let mut entry = plan.entry.clone();
     let resumed_from = entry.undo_progress();
     let mut steps_run = Vec::new();
     let mut still_locked = false;
 
+    // Whether step 1 changed anything. A rerun that resumes past step 1
+    // assumes it did, so step 2 still insists on activating.
     let mut wrote_something = true;
     if !already_done(resumed_from, ActivationUndoStep::WroteInactive) {
-        let write = write_inactive(sap, policy, &identity, &plan.restore, transport).await?;
-        wrote_something = write.changed;
-        still_locked |= write.still_locked;
+        wrote_something = false;
+        for stream in plan.streams.iter().filter(|stream| stream.written()) {
+            let write = write_inactive(
+                sap,
+                policy,
+                &identity,
+                stream.stream,
+                stream.restore.as_deref(),
+                transport,
+            )
+            .await?;
+            wrote_something |= write.changed;
+            still_locked |= write.still_locked;
+        }
         record_progress(journal, &mut entry, ActivationUndoStep::WroteInactive)?;
         steps_run.push(ActivationUndoStep::WroteInactive);
     }
@@ -646,28 +798,30 @@ pub async fn undo_activation(
         steps_run.push(ActivationUndoStep::Activated);
     }
 
-    // Step 3, and the reason an undo is three steps rather than one: the
-    // activation consumed the caller's pending work, and restoring only the
-    // active version would discard it silently.
-    let inactive_restored = if let Some(pending) = &plan.restore_inactive
-        && !already_done(resumed_from, ActivationUndoStep::RestoredInactive)
-    {
-        let write = write_inactive(sap, policy, &identity, pending, transport).await?;
-        still_locked |= write.still_locked;
-        record_progress(journal, &mut entry, ActivationUndoStep::RestoredInactive)?;
-        steps_run.push(ActivationUndoStep::RestoredInactive);
-        true
-    } else {
-        false
-    };
+    let mut inactive_restored = Vec::new();
+    if !already_done(resumed_from, ActivationUndoStep::RestoredInactive) {
+        for stream in &plan.streams {
+            let Some(pending) = &stream.restore_inactive else {
+                continue;
+            };
+            let write = write_inactive(
+                sap,
+                policy,
+                &identity,
+                stream.stream,
+                Some(pending),
+                transport,
+            )
+            .await?;
+            still_locked |= write.still_locked;
+            inactive_restored.push(stream.stream);
+        }
+        if !inactive_restored.is_empty() {
+            record_progress(journal, &mut entry, ActivationUndoStep::RestoredInactive)?;
+            steps_run.push(ActivationUndoStep::RestoredInactive);
+        }
+    }
 
-    // Only now: a partway failure leaves the entry resolved and its progress
-    // recorded, so a rerun resumes rather than treating the undo as finished.
-    //
-    // Failing to write it does **not** fail the undo. All three steps have
-    // landed, so an error would report failure for work that is done; the entry
-    // simply keeps its old status, and rerunning converges because the steps
-    // are idempotent.
     entry.undone();
     let journal_entry_incomplete = journal.entries().update(&entry).is_err();
 
@@ -675,7 +829,6 @@ pub async fn undo_activation(
         entry_id: entry.id,
         name: identity.name.clone(),
         object_uri: identity.object_uri.clone(),
-        restored_sha256: plan.restore_sha256.clone(),
         inactive_restored,
         steps_run,
         resumed_from,
@@ -684,8 +837,6 @@ pub async fn undo_activation(
     })
 }
 
-/// The steps in order, so "already done" is a comparison rather than a list of
-/// special cases.
 const fn rank(step: ActivationUndoStep) -> u8 {
     match step {
         ActivationUndoStep::WroteInactive => 1,
@@ -714,30 +865,47 @@ struct InactiveWrite {
     still_locked: bool,
 }
 
-/// Writes one version as the inactive version, through the ordinary write path
-/// for its family.
+/// Writes one stream as the inactive version, through the ordinary write path
+/// for its family. `None` content is a stream that had no active version,
+/// written back empty.
 async fn write_inactive(
     sap: &mut SapClient,
     policy: &EditPolicy,
     identity: &AdtObjectIdentity,
-    content: &str,
+    stream: Stream,
+    content: Option<&str>,
     transport: Option<&str>,
 ) -> Result<InactiveWrite, UndoError> {
     match identity.object_type {
         AdtObjectFamily::Source(object_type) => {
-            write_inactive_source(sap, policy, object_type, identity, content, transport).await
+            let target = SourceTarget {
+                object_type,
+                identity,
+                stream,
+            };
+            write_inactive_source(sap, policy, &target, content, transport).await
         }
         AdtObjectFamily::Metadata(object_type) => {
-            write_inactive_document(sap, policy, object_type, identity, content, transport).await
+            write_inactive_document(
+                sap,
+                policy,
+                object_type,
+                identity,
+                content.unwrap_or_default(),
+                transport,
+            )
+            .await
         }
     }
 }
 
-/// Writes the whole document back, which for this family is the whole object.
-///
-/// The document the journal holds is the canonical one, stripped of its
-/// `atom:link` navigation; SAP regenerates those on the next read. See
-/// [`super::metadata_document`].
+/// The source stream an undo step writes.
+struct SourceTarget<'a> {
+    object_type: EditableAdtObjectType,
+    identity: &'a AdtObjectIdentity,
+    stream: Stream,
+}
+
 async fn write_inactive_document(
     sap: &mut SapClient,
     policy: &EditPolicy,
@@ -777,24 +945,30 @@ async fn write_inactive_document(
 async fn write_inactive_source(
     sap: &mut SapClient,
     policy: &EditPolicy,
-    object_type: EditableAdtObjectType,
-    identity: &AdtObjectIdentity,
-    source: &str,
+    target: &SourceTarget<'_>,
+    source: Option<&str>,
     transport: Option<&str>,
 ) -> Result<InactiveWrite, UndoError> {
-    // `force` because undo runs its own, sharper guard: `pending_work_at_risk`
-    // asks whether the staged content is one of the two versions this undo
-    // leaves behind, which a bare author check cannot tell.
     let request = AdtSourceReplacementRequest {
-        object_type,
-        name: identity.name.clone(),
-        replacement_source: source.to_owned(),
+        object_type: target.object_type,
+        name: target.identity.name.clone(),
+        replacement_source: source.unwrap_or_default().to_owned(),
         // The gate is on the active version and has already been checked; the
         // inactive layer is what this deliberately overwrites.
         expected_sha256: None,
         transport: transport.map(str::to_owned),
-        // Undo runs its own, sharper guard: `pending_work_at_risk`.
+        // Undo runs its own, sharper guard: `pending_work_at_risk` asks whether
+        // the staged content is one of the two versions this undo leaves
+        // behind, which a bare author check cannot tell.
         staged_edits: StagedEditPolicy::Overwrite,
+        include: target.stream.include(),
+        // Empty is an ordinary state for a class's local include: SAP creates
+        // one empty, serves it empty, and an include cannot be deleted. Only
+        // `main` and single-source objects keep the blank-source refusal.
+        blank_allowed: target
+            .stream
+            .include()
+            .is_some_and(|include| include != ClassInclude::Main),
     };
     match replace_adt_source_atomically(sap, policy, &request).await {
         Ok(result) => Ok(InactiveWrite {
@@ -907,43 +1081,96 @@ async fn activate_restored_source(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::entry::{EntryObject, EntryStatus, EntrySystem, JournalOperation};
-
-    fn plan(expected: Option<&str>, current: Option<&str>) -> UndoPlan {
-        UndoPlan {
-            entry: JournalEntry {
-                id: "20260909T203517.404Z".to_owned(),
-                recorded_at: "2026-09-09T20:35:17.404Z".to_owned(),
-                status: EntryStatus::Succeeded,
-                system: EntrySystem {
-                    base_url: "https://sap.example:8001".to_owned(),
-                    profile: "dev".to_owned(),
-                    client: "100".to_owned(),
-                    user: "developer".to_owned(),
-                },
-                object: EntryObject {
-                    object_type: AdtObjectFamily::parse("PROG").unwrap(),
-                    name: "ZSAMPLE".to_owned(),
-                    uri: "/sap/bc/adt/programs/programs/zsample".to_owned(),
-                    source_part: None,
-                },
-                operation: JournalOperation::activate(),
-                transport: None,
-                active_before: ContentRef::Sha256("a".repeat(64)),
-                inactive_before: None,
-                active_after: expected.map(|sha256| ContentRef::Sha256(sha256.to_owned())),
-                etag_after: None,
-            },
-            object_uri: "/sap/bc/adt/programs/programs/zsample".to_owned(),
-            restore: "REPORT zsample.".to_owned(),
-            restore_sha256: "a".repeat(64),
+    fn stream(stream: Stream, expected: Option<ContentRef>, current: Option<&str>) -> StreamUndo {
+        StreamUndo {
+            stream,
+            restore: Some("REPORT zsample.".to_owned()),
+            restore_sha256: Some("a".repeat(64)),
             restore_inactive: None,
             restore_inactive_sha256: None,
-            expected_active_sha256: expected.map(str::to_owned),
+            expected_active: expected,
             current_active_sha256: current.map(str::to_owned),
+        }
+    }
+
+    fn plan_of(streams: Vec<StreamUndo>) -> UndoPlan {
+        let mut entry = crate::journal::entry::sample_activation(
+            "/sap/bc/adt/programs/programs/zsample",
+            ContentRef::Sha256("a".repeat(64)),
+        );
+        entry.status = EntryStatus::Succeeded;
+        UndoPlan {
+            entry,
+            object_uri: "/sap/bc/adt/programs/programs/zsample".to_owned(),
+            streams,
             pending_work_at_risk: false,
             overridden: Vec::new(),
         }
+    }
+
+    fn plan(expected: Option<&str>, current: Option<&str>) -> UndoPlan {
+        plan_of(vec![stream(
+            Stream::Whole,
+            expected.map(|sha256| ContentRef::Sha256(sha256.to_owned())),
+            current,
+        )])
+    }
+
+    #[test]
+    fn one_moved_include_makes_the_whole_class_stale() {
+        let sha256 = "b".repeat(64);
+        let unmoved = |include| {
+            stream(
+                Stream::Include(include),
+                Some(ContentRef::Sha256(sha256.clone())),
+                Some(&sha256),
+            )
+        };
+        let mut streams = vec![
+            unmoved(ClassInclude::Main),
+            unmoved(ClassInclude::Definitions),
+            unmoved(ClassInclude::Macros),
+        ];
+        assert!(plan_of(streams.clone()).matches_recorded_state());
+
+        streams.push(stream(
+            Stream::Include(ClassInclude::Implementations),
+            Some(ContentRef::Sha256(sha256.clone())),
+            Some(&"c".repeat(64)),
+        ));
+        assert!(!plan_of(streams).matches_recorded_state());
+    }
+
+    #[test]
+    fn an_include_recorded_absent_matches_only_while_it_is_still_absent() {
+        let absent = stream(
+            Stream::Include(ClassInclude::Testclasses),
+            Some(ContentRef::Absent),
+            None,
+        );
+        assert!(absent.matches_recorded_state());
+
+        let appeared = stream(
+            Stream::Include(ClassInclude::Testclasses),
+            Some(ContentRef::Absent),
+            Some(&"c".repeat(64)),
+        );
+        assert!(!appeared.matches_recorded_state());
+    }
+
+    #[test]
+    fn a_stream_that_never_existed_and_still_does_not_is_not_written() {
+        let mut never = stream(Stream::Include(ClassInclude::Testclasses), None, None);
+        never.restore = None;
+        never.restore_sha256 = None;
+        assert!(!never.written());
+
+        // One the activation introduced is written back, empty.
+        let introduced = StreamUndo {
+            current_active_sha256: Some("c".repeat(64)),
+            ..never
+        };
+        assert!(introduced.written());
     }
 
     #[test]
@@ -980,13 +1207,14 @@ mod tests {
             UndoError::Ungated {
                 id: "20260909T203517.404Z".to_owned(),
             },
-            UndoError::Stale {
+            UndoError::Stale(Box::new(Staleness {
                 name: "ZSAMPLE".to_owned(),
                 id: "20260909T203517.404Z".to_owned(),
+                moved: Vec::new(),
                 expected: "b".repeat(64),
                 found: Some("c".repeat(64)),
                 blob_path: "/blobs/bbbb".to_owned(),
-            },
+            })),
         ]
     }
 
@@ -1022,15 +1250,17 @@ mod tests {
     fn a_stale_refusal_points_at_the_content_it_would_have_restored() {
         // A refusal that only says no leaves the caller with nothing; this one
         // has to hand over the blob path so the restore can be done by hand.
-        let stale = UndoError::Stale {
+        let stale = UndoError::Stale(Box::new(Staleness {
             name: "ZSAMPLE".to_owned(),
             id: "20260909T203517.404Z".to_owned(),
+            moved: vec!["implementations"],
             expected: "b".repeat(64),
             found: None,
             blob_path: "/blobs/bbbb".to_owned(),
-        };
+        }));
         let hint = stale.hint().expect("has a hint");
         assert!(hint.contains("/blobs/bbbb"), "{hint}");
+        assert!(hint.contains("changed: implementations"), "{hint}");
         assert!(hint.contains("--force"), "{hint}");
     }
 }

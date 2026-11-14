@@ -137,6 +137,8 @@ pub async fn run_generated_source(
         // Fractal owns this class and rewrites it every run; there is no
         // colleague's work to protect here.
         staged_edits: StagedEditPolicy::Overwrite,
+        include: None,
+        blank_allowed: false,
     };
 
     // Create first, and treat "already exists" as the steady state. The

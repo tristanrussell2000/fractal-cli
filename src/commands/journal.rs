@@ -17,10 +17,14 @@ use crate::{
 };
 use fractal::config;
 use fractal::journal::blobs::BlobStore;
-use fractal::journal::entry::{ContentKind, ContentRef, JournalEntry, RowWrite};
+use fractal::journal::entry::{
+    ContentRef, EntryRecord, JournalEntry, RecordedObject, RecordedRow, Stream,
+};
 use fractal::journal::paths;
 use fractal::journal::retention::{PruneOutcome, RetentionPolicy, entry_stores, run_retention};
 use fractal::journal::store::EntryStore;
+use fractal::sap::class_include::ClassInclude;
+use fractal::sap::object_family::AdtObjectFamily;
 
 #[derive(Debug, Serialize)]
 pub struct JournalListOutput {
@@ -30,6 +34,16 @@ pub struct JournalListOutput {
     total: usize,
     returned: usize,
     entries: Vec<JournalEntrySummary>,
+    /// Entry files that exist and cannot be read. Listed rather than hidden:
+    /// their content is no longer protected from a sweep.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    unreadable: Vec<UnreadableEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct UnreadableEntry {
+    object_key: String,
+    id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -75,6 +89,10 @@ struct RestoreRecipe {
 
 #[derive(Debug, Serialize)]
 struct JournalContentPath {
+    /// Which class include, or which row (`row 1`), the content belongs to.
+    /// Absent for an object with one stream.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream: Option<String>,
     field: &'static str,
     sha256: String,
     path: String,
@@ -99,8 +117,15 @@ pub fn journal_list(
     let blobs = BlobStore::new(paths::blob_root()?);
 
     let mut entries = Vec::new();
+    let mut unreadable = Vec::new();
     for store in stores(&profile, args.all_systems)? {
         entries.extend(store.list()?);
+        unreadable.extend(
+            store
+                .unreadable()?
+                .into_iter()
+                .map(|(object_key, id)| UnreadableEntry { object_key, id }),
+        );
     }
     entries.retain(|entry| matches(entry, args));
     // Newest first: a journal is read to find what just happened.
@@ -122,6 +147,7 @@ pub fn journal_list(
             .iter()
             .map(|entry| summarize(entry, &blobs))
             .collect(),
+        unreadable,
     })
 }
 
@@ -205,7 +231,7 @@ fn preview_retention(policy: RetentionPolicy) -> Result<PruneOutcome, Reported> 
                 if !newest && (too_many || old) {
                     outcome.entries_removed += 1;
                 } else {
-                    live.extend(entry.referenced_blobs().map(str::to_owned));
+                    live.extend(entry.referenced_blobs().into_iter().map(str::to_owned));
                 }
             }
         }
@@ -246,17 +272,14 @@ fn stores(profile: &config::Profile, all_systems: bool) -> Result<Vec<EntryStore
 }
 
 fn matches(entry: &JournalEntry, args: &JournalListArgs) -> bool {
-    let type_matches = args.object_type.as_ref().is_none_or(|wanted| {
-        entry
-            .object
-            .object_type
-            .as_str()
-            .eq_ignore_ascii_case(wanted)
-    });
+    let type_matches = args
+        .object_type
+        .as_ref()
+        .is_none_or(|wanted| entry.record.object_type().eq_ignore_ascii_case(wanted));
     let name_matches = args
         .name
         .as_ref()
-        .is_none_or(|wanted| entry.object.name.eq_ignore_ascii_case(wanted));
+        .is_none_or(|wanted| entry.record.object_name().eq_ignore_ascii_case(wanted));
     type_matches && name_matches
 }
 
@@ -265,44 +288,50 @@ fn summarize(entry: &JournalEntry, blobs: &BlobStore) -> JournalEntrySummary {
         id: entry.id.clone(),
         recorded_at: entry.recorded_at.clone(),
         status: entry.status.as_str().to_owned(),
-        operation: entry.operation.as_str().to_owned(),
-        object_type: entry.object.object_type.as_str().to_owned(),
-        name: entry.object.name.clone(),
+        operation: entry.record.operation().to_owned(),
+        object_type: entry.record.object_type().to_owned(),
+        name: entry.record.object_name().to_owned(),
         transport: entry.transport.clone(),
-        content_available: entry.referenced_blobs().all(|hash| blobs.contains(hash)),
+        content_available: entry
+            .referenced_blobs()
+            .into_iter()
+            .all(|hash| blobs.contains(hash)),
     }
 }
 
 /// The commands that recreate a deleted object, filled in from what the entry
 /// recorded.
 fn restore_recipe(entry: &JournalEntry, blobs: &BlobStore) -> Option<RestoreRecipe> {
-    let (package, description) = entry.operation.deletion_recipe()?;
-    let object_type = entry.object.object_type.as_str();
-    let name = &entry.object.name;
-    let content = entry
-        .active_before
-        .sha256()
-        .map(|sha256| blobs.path_of(sha256));
+    let EntryRecord::Delete {
+        object,
+        package,
+        description,
+    } = &entry.record
+    else {
+        return None;
+    };
+    let object_type = object.family().as_str();
+    let name = object.name();
+    let primary = object
+        .stream(Stream::Whole)
+        .or_else(|| object.stream(Stream::Include(ClassInclude::Main)))?;
+    let content = primary.sha256().map(|sha256| blobs.path_of(sha256));
 
     let mut steps = vec![format!(
         "fractal edit create --type {object_type} --name {name} --package {} --description '{}'{}",
         // Named as unknown rather than guessed: a create against the wrong
         // package is a new object in the wrong place.
-        package.map_or("<package>", String::as_str),
-        description.map_or("<description>", String::as_str),
+        package.as_deref().unwrap_or("<package>"),
+        description.as_deref().unwrap_or("<description>"),
         if entry.transport.is_some() {
             " --transport <request>"
         } else {
             ""
         }
     )];
-    let (write, file) = match entry.content_kind() {
-        ContentKind::Source => ("edit set", "--source-file"),
-        ContentKind::Xml => ("edit set-xml", "--xml-file"),
-        // Unreachable: only a delete has a recipe, and a row is never deleted
-        // as an object. Answering rather than panicking, because a recipe is
-        // advice and there is none to give.
-        ContentKind::Row => return None,
+    let (write, file) = match object.family() {
+        AdtObjectFamily::Source(_) => ("edit set", "--source-file"),
+        AdtObjectFamily::Metadata(_) => ("edit set-xml", "--xml-file"),
     };
     // A match, not `map_or_else`: each arm carries a note that would have to
     // move out of line into a closure.
@@ -340,26 +369,75 @@ fn restore_recipe(entry: &JournalEntry, blobs: &BlobStore) -> Option<RestoreReci
                 .to_owned(),
         );
     }
+    // Fractal cannot write a class's other includes yet, so they have to go
+    // back by hand before the activation.
+    for (stream, content) in object.streams() {
+        let (Some(include), Some(sha256)) = (stream.include(), content.sha256()) else {
+            continue;
+        };
+        if include == ClassInclude::Main || sha256 == fractal::source_change::source_sha256("") {
+            continue;
+        }
+        warnings.push(format!(
+            "The {} include held content too, at '{}'. Fractal cannot write it back yet: restore it in Eclipse before step 3.",
+            include.as_str(),
+            blobs.path_of(sha256).display()
+        ));
+    }
     Some(RestoreRecipe { steps, warnings })
 }
 
 fn content_paths(entry: &JournalEntry, blobs: &BlobStore) -> Vec<JournalContentPath> {
-    [
-        ("active_before", Some(&entry.active_before)),
-        ("inactive_before", entry.inactive_before.as_ref()),
-        ("active_after", entry.active_after.as_ref()),
-    ]
-    .into_iter()
-    .filter_map(|(field, reference)| {
-        let sha256 = reference?.sha256()?;
-        Some(JournalContentPath {
-            field,
-            sha256: sha256.to_owned(),
-            path: blobs.path_of(sha256).display().to_string(),
-            available: blobs.contains(sha256),
+    let mut paths: Vec<(Option<String>, &'static str, &ContentRef)> = Vec::new();
+    match &entry.record {
+        EntryRecord::Activate { object, .. } => {
+            for (stream, images) in object.streams() {
+                let label = stream_label(object, stream);
+                paths.push((label.clone(), "active_before", &images.active_before));
+                if let Some(inactive) = &images.inactive_before {
+                    paths.push((label.clone(), "inactive_before", inactive));
+                }
+                if let Some(after) = &images.active_after {
+                    paths.push((label, "active_after", after));
+                }
+            }
+        }
+        EntryRecord::Delete { object, .. } => {
+            for (stream, content) in object.streams() {
+                paths.push((stream_label(object, stream), "active_before", content));
+            }
+        }
+        EntryRecord::TableWrite { rows, .. } => {
+            for (index, row) in rows.iter().enumerate() {
+                let label = Some(format!("row {}", index + 1));
+                paths.push((label.clone(), "before", &row.before));
+                if let Some(after) = &row.after {
+                    paths.push((label, "after", after));
+                }
+            }
+        }
+    }
+    paths
+        .into_iter()
+        .filter_map(|(stream, field, reference)| {
+            let sha256 = reference.sha256()?;
+            Some(JournalContentPath {
+                stream,
+                field,
+                sha256: sha256.to_owned(),
+                path: blobs.path_of(sha256).display().to_string(),
+                available: blobs.contains(sha256),
+            })
         })
-    })
-    .collect()
+        .collect()
+}
+
+/// A class include's name; nothing for an object with one stream.
+fn stream_label<T>(object: &RecordedObject<T>, stream: Stream) -> Option<String> {
+    match object {
+        RecordedObject::Class { .. } => Some(stream.as_str().to_owned()),
+        RecordedObject::Source { .. } | RecordedObject::Metadata { .. } => None,
+    }
 }
 
 pub fn print_journal_list(result: &JournalListOutput, output: OutputFormat) {
@@ -392,9 +470,9 @@ pub fn print_journal_list(result: &JournalListOutput, output: OutputFormat) {
 ///
 /// The same renderer `table data` uses, so a row reads the same here as it does
 /// when it was queried — header of field names, one row of values.
-fn render_row_writes(rows: &[RowWrite]) -> String {
+fn render_row_writes(rows: &[RecordedRow]) -> String {
     let mut rendered = String::new();
-    for row in rows {
+    for row in rows.iter().map(|row| &row.write) {
         let key_columns: Vec<_> = row.key.keys().map(|field| plain_column(field)).collect();
         let key_values: Vec<String> = row.key.values().cloned().collect();
         let _ = write!(rendered, "\nrow:\n");
@@ -434,31 +512,40 @@ pub fn print_journal_show(result: &JournalShowOutput, output: OutputFormat) {
     let _ = writeln!(
         rendered,
         "object: {} {}",
-        entry.object.object_type.as_str(),
-        entry.object.name
+        entry.record.object_type(),
+        entry.record.object_name()
     );
     let _ = writeln!(
         rendered,
         "operation: {} ({})",
-        entry.operation.as_str(),
+        entry.record.operation(),
         entry.status.as_str()
     );
     if let Some(transport) = &entry.transport {
         let _ = writeln!(rendered, "transport: {transport}");
     }
-    if entry.active_before == ContentRef::Absent {
+    if let EntryRecord::Activate { object, .. } = &entry.record
+        && object
+            .stream(Stream::Whole)
+            .or_else(|| object.stream(Stream::Include(ClassInclude::Main)))
+            .is_some_and(|images| images.active_before == ContentRef::Absent)
+    {
         let _ = writeln!(rendered, "active before: none, the object was not active");
     }
     for content in &result.content {
+        let stream = content
+            .stream
+            .as_deref()
+            .map_or_else(String::new, |stream| format!("{stream} "));
         let _ = writeln!(
             rendered,
-            "{}: {}{}",
+            "{stream}{}: {}{}",
             content.field,
             content.path,
             if content.available { "" } else { "  (gone)" }
         );
     }
-    if let Some(rows) = entry.operation.table_write_rows() {
+    if let EntryRecord::TableWrite { rows, .. } = &entry.record {
         rendered.push_str(&render_row_writes(rows));
     }
     if let Some(restore) = &result.restore {
@@ -511,7 +598,7 @@ mod tests {
 
     use super::*;
     use crate::cli::{Cli, Command, JournalCommand};
-    use fractal::journal::entry::JournalOperation;
+    use fractal::journal::entry::{ActivationImages, EntryStatus, EntrySystem};
 
     fn list_args(cli: Cli) -> JournalListArgs {
         let Command::Journal {
@@ -533,10 +620,7 @@ mod tests {
         args
     }
 
-    fn entry(name: &str, object_type: &str) -> JournalEntry {
-        use fractal::journal::entry::{EntryObject, EntryStatus, EntrySystem, JournalOperation};
-        use fractal::sap::object_family::AdtObjectFamily;
-
+    fn with_record(record: EntryRecord) -> JournalEntry {
         JournalEntry {
             id: "20260909T000000.000Z".to_owned(),
             recorded_at: "2026-09-09T00:00:00.000Z".to_owned(),
@@ -547,19 +631,53 @@ mod tests {
                 client: "100".to_owned(),
                 user: "developer".to_owned(),
             },
-            object: EntryObject {
-                object_type: AdtObjectFamily::parse(object_type).unwrap(),
-                name: name.to_owned(),
-                uri: format!("/sap/bc/adt/programs/programs/{}", name.to_lowercase()),
-                source_part: None,
-            },
-            operation: JournalOperation::activate(),
             transport: None,
-            active_before: ContentRef::Sha256("a".repeat(64)),
-            inactive_before: None,
-            active_after: Some(ContentRef::Sha256("b".repeat(64))),
-            etag_after: None,
+            record,
         }
+    }
+
+    fn object<T>(
+        name: &str,
+        object_type: &str,
+        content: impl FnMut(Stream) -> T,
+    ) -> RecordedObject<T> {
+        RecordedObject::for_family(
+            AdtObjectFamily::parse(object_type).unwrap(),
+            name.to_owned(),
+            format!("/sap/bc/adt/programs/programs/{}", name.to_lowercase()),
+            content,
+        )
+    }
+
+    fn activation(name: &str, object_type: &str, images: ActivationImages) -> JournalEntry {
+        with_record(EntryRecord::Activate {
+            object: object(name, object_type, |_| images.clone()),
+            undo_progress: None,
+        })
+    }
+
+    fn entry(name: &str, object_type: &str) -> JournalEntry {
+        activation(
+            name,
+            object_type,
+            ActivationImages {
+                active_before: ContentRef::Sha256("a".repeat(64)),
+                inactive_before: None,
+                active_after: Some(ContentRef::Sha256("b".repeat(64))),
+            },
+        )
+    }
+
+    fn deletion(
+        name: &str,
+        object_type: &str,
+        content: impl FnMut(Stream) -> ContentRef,
+    ) -> JournalEntry {
+        with_record(EntryRecord::Delete {
+            object: object(name, object_type, content),
+            package: Some("ZPKG".to_owned()),
+            description: Some("Sample".to_owned()),
+        })
     }
 
     #[test]
@@ -619,7 +737,7 @@ mod tests {
         // filtering the JSON sees.
         let entry = entry("ZSAMPLE", "PROG");
         assert_eq!(entry.status.as_str(), "succeeded");
-        assert_eq!(entry.operation.as_str(), "activate");
+        assert_eq!(entry.record.operation(), "activate");
         // Both spellings are written out, not derived from `Debug`: the
         // operation gained a payload and a derived one would have silently
         // started emitting `activate { undo_progress: none }`.
@@ -634,10 +752,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let blobs = BlobStore::new(dir.path().join("blobs"));
         let sha256 = blobs.put("REPORT zsample.").unwrap();
-        let mut entry = entry("ZSAMPLE", "PROG");
-        entry.operation =
-            JournalOperation::delete(Some("ZPKG".to_owned()), Some("Sample".to_owned()));
-        entry.active_before = ContentRef::Sha256(sha256.clone());
+        let entry = deletion("ZSAMPLE", "PROG", |_| ContentRef::Sha256(sha256.clone()));
 
         let recipe = restore_recipe(&entry, &blobs).expect("a delete has a recipe");
 
@@ -682,9 +797,10 @@ mod tests {
     fn a_recipe_says_when_the_content_is_gone_rather_than_naming_a_missing_file() {
         let dir = tempfile::tempdir().unwrap();
         let blobs = BlobStore::new(dir.path().join("blobs"));
-        let mut entry = entry("ZSAMPLE", "PROG");
-        entry.operation = JournalOperation::delete(None, None);
-        entry.active_before = ContentRef::Absent;
+        let mut entry = deletion("ZSAMPLE", "PROG", |_| ContentRef::Absent);
+        if let EntryRecord::Delete { package, .. } = &mut entry.record {
+            *package = None;
+        }
 
         let recipe = restore_recipe(&entry, &blobs).unwrap();
 
@@ -706,10 +822,15 @@ mod tests {
         let blobs = BlobStore::new(dir.path().join("blobs"));
         let stored = blobs.put("kept").unwrap();
 
-        let mut entry = entry("ZSAMPLE", "PROG");
-        entry.active_before = ContentRef::Absent;
-        entry.active_after = Some(ContentRef::Sha256(stored.clone()));
-        entry.inactive_before = Some(ContentRef::Sha256("c".repeat(64)));
+        let entry = activation(
+            "ZSAMPLE",
+            "PROG",
+            ActivationImages {
+                active_before: ContentRef::Absent,
+                inactive_before: Some(ContentRef::Sha256("c".repeat(64))),
+                active_after: Some(ContentRef::Sha256(stored.clone())),
+            },
+        );
 
         let paths = content_paths(&entry, &blobs);
         // The absence is not a path, and the swept blob is reported as gone
@@ -722,5 +843,37 @@ mod tests {
                 .any(|path| path.sha256 == stored && path.available)
         );
         assert!(paths.iter().any(|path| !path.available));
+    }
+
+    #[test]
+    fn a_class_delete_names_every_include_it_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = BlobStore::new(dir.path().join("blobs"));
+        let main = blobs.put("CLASS zcl_sample DEFINITION.").unwrap();
+        let local = blobs.put("CLASS lhc_sample DEFINITION.").unwrap();
+        let entry = deletion("ZCL_SAMPLE", "CLAS", |stream| match stream {
+            Stream::Include(ClassInclude::Main) => ContentRef::Sha256(main.clone()),
+            Stream::Include(ClassInclude::Implementations) => ContentRef::Sha256(local.clone()),
+            _ => ContentRef::Absent,
+        });
+
+        let recipe = restore_recipe(&entry, &blobs).unwrap();
+        assert!(recipe.steps[1].contains(&main), "{:?}", recipe.steps);
+        assert!(
+            recipe
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("implementations") && warning.contains(&local)),
+            "{:?}",
+            recipe.warnings
+        );
+
+        let paths = content_paths(&entry, &blobs);
+        assert_eq!(paths.len(), 2);
+        assert!(
+            paths
+                .iter()
+                .any(|path| path.stream.as_deref() == Some("implementations"))
+        );
     }
 }

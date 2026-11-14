@@ -20,12 +20,14 @@
 //! Doing either by hand at each call site would work until someone forgot, so
 //! callers get [`Journal`] and never the two stores directly.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use super::JournalError;
 use super::blobs::BlobStore;
 use super::entry::{
-    ContentRef, EntryObject, EntryStatus, EntrySystem, JournalEntry, JournalOperation,
+    ActivationImages, ContentRef, EntryRecord, EntryStatus, EntrySystem, JournalEntry,
+    RecordedObject, RecordedRow, RowWrite, Stream, TableRef,
 };
 use super::paths;
 use super::store::EntryStore;
@@ -39,6 +41,21 @@ pub struct Journal {
     entries: EntryStore,
     system: EntrySystem,
 }
+
+/// What one stream held before an activation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ActivationBefore {
+    /// `None` when the stream had no active version.
+    pub active: Option<String>,
+    /// The pending work about to be published, or `None` when there was none.
+    pub inactive: Option<String>,
+}
+
+/// What each stream holds after an operation, as read back.
+///
+/// A stream missing from the map was not read and gets no after-image; a
+/// stream mapped to `None` was read and is absent.
+pub type AfterImages = BTreeMap<Stream, Option<String>>;
 
 impl Journal {
     /// Opens the journal for a profile's system.
@@ -84,66 +101,147 @@ impl Journal {
         &self.entries
     }
 
-    /// Stores the before-images and writes the entry as `pending`.
+    /// Records an activation about to run, as `pending`, with every stream's
+    /// before-images.
     ///
     /// Called before the operation runs: the before-image can only be had
     /// beforehand, and a crash after this leaves a `pending` entry holding it.
-    ///
-    /// Blobs are stored before the entry so that a crash in between leaves an
-    /// orphan rather than a dangling reference; the confirming put afterwards
-    /// is what a concurrent sweep respects.
     ///
     /// # Errors
     ///
     /// Returns [`JournalError`] when a blob or the entry cannot be written. The
     /// caller must treat that as fatal: an operation with no before-image has
     /// no recovery at all.
-    pub fn begin(
+    pub fn begin_activation(
         &self,
-        object: EntryObject,
-        operation: JournalOperation,
+        object: RecordedObject<ActivationBefore>,
         transport: Option<String>,
-        active_before: Option<&str>,
-        inactive_before: Option<&str>,
     ) -> Result<JournalEntry, JournalError> {
-        let stored_active = self.store(active_before)?;
-        let stored_inactive = match inactive_before {
-            Some(content) => Some(self.store(Some(content))?),
-            None => None,
-        };
-
-        let entry = self.entries.create(JournalEntry {
-            id: String::new(),
-            recorded_at: String::new(),
-            status: EntryStatus::Pending,
-            system: self.system.clone(),
-            object,
-            operation,
+        let contents = object
+            .streams()
+            .into_iter()
+            .flat_map(|(_, before)| [before.active.clone(), before.inactive.clone()])
+            .flatten()
+            .collect::<Vec<_>>();
+        let mut stored = Ok(());
+        let object = object.map(|_, before| {
+            let active_before = self.store_or(&mut stored, before.active.as_deref());
+            let inactive_before = before
+                .inactive
+                .as_deref()
+                .map(|content| self.store_or(&mut stored, Some(content)));
+            ActivationImages {
+                active_before,
+                inactive_before,
+                active_after: None,
+            }
+        });
+        stored?;
+        self.create(
             transport,
-            active_before: stored_active,
-            inactive_before: stored_inactive,
-            active_after: None,
-            etag_after: None,
-        })?;
+            EntryRecord::Activate {
+                object,
+                undo_progress: None,
+            },
+            &contents,
+        )
+    }
 
-        self.confirm([active_before, inactive_before])?;
-        Ok(entry)
+    /// Records a delete about to run, with what it is about to destroy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JournalError`] when a blob or the entry cannot be written.
+    pub fn begin_delete(
+        &self,
+        object: RecordedObject<Option<String>>,
+        package: Option<String>,
+        description: Option<String>,
+        transport: Option<String>,
+    ) -> Result<JournalEntry, JournalError> {
+        let contents = object
+            .streams()
+            .into_iter()
+            .filter_map(|(_, content)| content.clone())
+            .collect::<Vec<_>>();
+        let mut stored = Ok(());
+        let object = object.map(|_, content| self.store_or(&mut stored, content.as_deref()));
+        stored?;
+        self.create(
+            transport,
+            EntryRecord::Delete {
+                object,
+                package,
+                description,
+            },
+            &contents,
+        )
+    }
+
+    /// Records row writes about to run, each with the row as read beforehand.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JournalError`] when a blob or the entry cannot be written.
+    pub fn begin_table_write(
+        &self,
+        table: TableRef,
+        rows: Vec<(RowWrite, Option<String>)>,
+        transport: Option<String>,
+    ) -> Result<JournalEntry, JournalError> {
+        let contents = rows
+            .iter()
+            .filter_map(|(_, before)| before.clone())
+            .collect::<Vec<_>>();
+        let mut recorded = Vec::with_capacity(rows.len());
+        for (write, before) in rows {
+            recorded.push(RecordedRow {
+                write,
+                before: self.store(before.as_deref())?,
+                after: None,
+            });
+        }
+        self.create(
+            transport,
+            EntryRecord::TableWrite {
+                table,
+                rows: recorded,
+            },
+            &contents,
+        )
+    }
+
+    /// Records that a table write landed, with each row re-read after it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JournalError`] when a blob or the entry cannot be written.
+    pub fn table_write_succeeded(
+        &self,
+        mut entry: JournalEntry,
+        after: &[Option<String>],
+    ) -> Result<JournalEntry, JournalError> {
+        if let EntryRecord::TableWrite { rows, .. } = &mut entry.record {
+            for (row, after) in rows.iter_mut().zip(after) {
+                row.after = Some(self.store(after.as_deref())?);
+            }
+        }
+        entry.status = EntryStatus::Succeeded;
+        let contents = after.iter().flatten().cloned().collect::<Vec<_>>();
+        self.resolve(entry, &contents)
     }
 
     /// Records that the operation worked, with what SAP holds now.
     ///
     /// # Errors
     ///
-    /// Returns [`JournalError`] when the blob or the entry cannot be written.
+    /// Returns [`JournalError`] when a blob or the entry cannot be written.
     pub fn succeeded(
         &self,
-        mut entry: JournalEntry,
-        active_after: Option<&str>,
-        etag_after: Option<String>,
+        entry: JournalEntry,
+        after: &AfterImages,
     ) -> Result<JournalEntry, JournalError> {
-        let after = self.store(active_after)?;
-        entry.succeeded(after, etag_after);
-        self.resolve(entry, active_after)
+        self.with_after(entry, EntryStatus::Succeeded, after)
     }
 
     /// Records that SAP refused the operation. Nothing changed, so there is no
@@ -154,7 +252,7 @@ impl Journal {
     /// Returns [`JournalError`] when the entry cannot be written.
     pub fn failed(&self, mut entry: JournalEntry) -> Result<JournalEntry, JournalError> {
         entry.failed();
-        self.resolve(entry, None)
+        self.resolve(entry, &[])
     }
 
     /// Records that SAP accepted the operation and the read-back could not
@@ -165,27 +263,61 @@ impl Journal {
     /// Returns [`JournalError`] when a blob or the entry cannot be written.
     pub fn unverified(
         &self,
-        mut entry: JournalEntry,
-        active_after: Option<&str>,
+        entry: JournalEntry,
+        after: &AfterImages,
     ) -> Result<JournalEntry, JournalError> {
-        let after = match active_after {
-            Some(content) => Some(self.store(Some(content))?),
-            None => None,
-        };
-        entry.unverified(after);
-        self.resolve(entry, active_after)
+        self.with_after(entry, EntryStatus::Unverified, after)
+    }
+
+    /// Sets the status and, for an activation, each stream's after-image.
+    /// A delete has no after-image to set: the object is gone.
+    fn with_after(
+        &self,
+        mut entry: JournalEntry,
+        status: EntryStatus,
+        after: &AfterImages,
+    ) -> Result<JournalEntry, JournalError> {
+        if let EntryRecord::Activate { object, .. } = &mut entry.record {
+            for (stream, images) in object.streams_mut() {
+                if let Some(content) = after.get(&stream) {
+                    images.active_after = Some(self.store(content.as_deref())?);
+                }
+            }
+        }
+        entry.status = status;
+        let contents = after.values().flatten().cloned().collect::<Vec<_>>();
+        self.resolve(entry, &contents)
+    }
+
+    /// Writes a new entry, then confirms the content it references.
+    fn create(
+        &self,
+        transport: Option<String>,
+        record: EntryRecord,
+        contents: &[String],
+    ) -> Result<JournalEntry, JournalError> {
+        let entry = self.entries.create(JournalEntry {
+            id: String::new(),
+            recorded_at: String::new(),
+            status: EntryStatus::Pending,
+            system: self.system.clone(),
+            transport,
+            record,
+        })?;
+        self.confirm(contents)?;
+        Ok(entry)
     }
 
     /// Writes the updated entry, then confirms the content it now references.
     fn resolve(
         &self,
         entry: JournalEntry,
-        new_content: Option<&str>,
+        new_contents: &[String],
     ) -> Result<JournalEntry, JournalError> {
         self.entries.update(&entry)?;
         // Only the newly referenced content needs confirming: everything else
-        // has been referenced by an entry on disk since `begin`.
-        self.confirm([new_content])?;
+        // has been referenced by an entry on disk since it began.
+        self.confirm(new_contents)?;
         Ok(entry)
     }
 
@@ -197,15 +329,28 @@ impl Journal {
         }
     }
 
+    /// [`Self::store`] inside a closure that cannot return early: the first
+    /// failure is kept and the placeholder it returns is never written.
+    fn store_or(
+        &self,
+        failure: &mut Result<(), JournalError>,
+        content: Option<&str>,
+    ) -> ContentRef {
+        if failure.is_err() {
+            return ContentRef::Absent;
+        }
+        self.store(content).unwrap_or_else(|error| {
+            *failure = Err(error);
+            ContentRef::Absent
+        })
+    }
+
     /// Re-stores content now that an entry references it.
     ///
     /// This is the put that matters for concurrency: it touches the blob so a
     /// sweep leaves it alone, and rewrites it if a sweep already took it.
-    fn confirm<'a>(
-        &self,
-        contents: impl IntoIterator<Item = Option<&'a str>>,
-    ) -> Result<(), JournalError> {
-        for content in contents.into_iter().flatten() {
+    fn confirm(&self, contents: &[String]) -> Result<(), JournalError> {
+        for content in contents {
             self.blobs.put(content)?;
         }
         Ok(())
@@ -215,15 +360,14 @@ impl Journal {
 /// How an operation ended, from the journal's point of view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resolution<'a> {
-    /// The operation landed. The content is what SAP holds now, or `None` when
-    /// the object is gone — which is not the same as holding nothing.
-    Succeeded(Option<&'a str>),
+    /// The operation landed, with what each stream holds now.
+    Succeeded(&'a AfterImages),
     /// SAP refused it, so nothing was published and the before-image is still
     /// true.
     Failed,
     /// SAP accepted it and the read-back could not confirm the result — the
-    /// case where the before-image matters most.
-    Unverified(Option<&'a str>),
+    /// case where the before-image matters most. Holds whatever was read.
+    Unverified(&'a AfterImages),
 }
 
 /// Resolves an entry, naming one that could not be completed.
@@ -249,9 +393,9 @@ pub fn resolve(
     };
     let id = entry.id.clone();
     match resolution {
-        Resolution::Succeeded(content) => journal.succeeded(entry, content, None),
+        Resolution::Succeeded(after) => journal.succeeded(entry, after),
         Resolution::Failed => journal.failed(entry),
-        Resolution::Unverified(content) => journal.unverified(entry, content),
+        Resolution::Unverified(after) => journal.unverified(entry, after),
     }
     .err()
     .map(|_| id)
@@ -260,6 +404,7 @@ pub fn resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sap::class_include::ClassInclude;
     use crate::sap::object_family::AdtObjectFamily;
     use crate::source_change::source_sha256;
 
@@ -280,37 +425,80 @@ mod tests {
 
     const BEFORE: &str = "REPORT zsample. \" before";
     const PENDING: &str = "REPORT zsample. \" pending";
+    const AFTER: &str = "REPORT zsample. \" after";
 
-    fn object() -> EntryObject {
-        EntryObject {
-            object_type: AdtObjectFamily::parse("PROG").unwrap(),
-            name: "ZSAMPLE".to_owned(),
-            uri: "/sap/bc/adt/programs/programs/zsample".to_owned(),
-            source_part: None,
+    fn program(before: ActivationBefore) -> RecordedObject<ActivationBefore> {
+        RecordedObject::for_family(
+            AdtObjectFamily::parse("PROG").unwrap(),
+            "ZSAMPLE".to_owned(),
+            "/sap/bc/adt/programs/programs/zsample".to_owned(),
+            |_| before.clone(),
+        )
+    }
+
+    fn before(active: Option<&str>, inactive: Option<&str>) -> ActivationBefore {
+        ActivationBefore {
+            active: active.map(str::to_owned),
+            inactive: inactive.map(str::to_owned),
         }
+    }
+
+    fn whole(after: Option<&str>) -> AfterImages {
+        AfterImages::from([(Stream::Whole, after.map(str::to_owned))])
+    }
+
+    fn images(entry: &JournalEntry, stream: Stream) -> ActivationImages {
+        let EntryRecord::Activate { object, .. } = &entry.record else {
+            panic!("not an activation");
+        };
+        object.stream(stream).unwrap().clone()
     }
 
     #[test]
     fn begin_stores_the_before_images_and_a_pending_entry() {
         let (journal, _dir) = journal();
         let entry = journal
-            .begin(
-                object(),
-                JournalOperation::activate(),
-                None,
-                Some(BEFORE),
-                Some(PENDING),
-            )
+            .begin_activation(program(before(Some(BEFORE), Some(PENDING))), None)
             .unwrap();
 
         assert_eq!(entry.status, EntryStatus::Pending);
+        let images = images(&entry, Stream::Whole);
         assert_eq!(
-            entry.active_before,
+            images.active_before,
             ContentRef::Sha256(source_sha256(BEFORE))
         );
-        assert!(entry.active_after.is_none());
+        assert!(images.active_after.is_none());
         for hash in entry.referenced_blobs() {
             assert!(journal.blobs().contains(hash), "blob {hash} missing");
+        }
+    }
+
+    #[test]
+    fn a_class_stores_every_include() {
+        let (journal, _dir) = journal();
+        let object = RecordedObject::for_family(
+            AdtObjectFamily::parse("CLAS").unwrap(),
+            "ZCL_SAMPLE".to_owned(),
+            "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
+            |stream| match stream {
+                Stream::Include(ClassInclude::Testclasses) => before(None, None),
+                Stream::Include(include) => before(Some(include.as_str()), None),
+                Stream::Whole => unreachable!(),
+            },
+        );
+        let entry = journal.begin_activation(object, None).unwrap();
+
+        for include in ClassInclude::ALL {
+            let images = images(&entry, Stream::Include(include));
+            if include == ClassInclude::Testclasses {
+                assert_eq!(images.active_before, ContentRef::Absent);
+            } else {
+                assert!(
+                    journal
+                        .blobs()
+                        .contains(images.active_before.sha256().unwrap())
+                );
+            }
         }
     }
 
@@ -318,33 +506,23 @@ mod tests {
     fn no_pending_work_is_recorded_as_no_field_at_all() {
         let (journal, _dir) = journal();
         let entry = journal
-            .begin(
-                object(),
-                JournalOperation::activate(),
-                None,
-                Some(BEFORE),
-                None,
-            )
+            .begin_activation(program(before(Some(BEFORE), None)), None)
             .unwrap();
 
-        assert_eq!(entry.inactive_before, None);
+        assert_eq!(images(&entry, Stream::Whole).inactive_before, None);
     }
 
     #[test]
     fn an_object_with_no_active_version_records_an_absence() {
         let (journal, _dir) = journal();
         let entry = journal
-            .begin(
-                object(),
-                JournalOperation::activate(),
-                None,
-                None,
-                Some(PENDING),
-            )
+            .begin_activation(program(before(None, Some(PENDING))), None)
             .unwrap();
 
-        // Not the hash of an empty document.
-        assert_eq!(entry.active_before, ContentRef::Absent);
+        assert_eq!(
+            images(&entry, Stream::Whole).active_before,
+            ContentRef::Absent
+        );
         assert!(!journal.blobs().contains(&source_sha256("")));
     }
 
@@ -352,24 +530,15 @@ mod tests {
     fn succeeding_stores_the_after_image_and_resolves() {
         let (journal, _dir) = journal();
         let entry = journal
-            .begin(
-                object(),
-                JournalOperation::activate(),
-                None,
-                Some(BEFORE),
-                Some(PENDING),
-            )
+            .begin_activation(program(before(Some(BEFORE), Some(PENDING))), None)
             .unwrap();
-        let resolved = journal
-            .succeeded(
-                entry,
-                Some("REPORT zsample. \" after"),
-                Some("etag".to_owned()),
-            )
-            .unwrap();
+        let resolved = journal.succeeded(entry, &whole(Some(AFTER))).unwrap();
 
         assert_eq!(resolved.status, EntryStatus::Succeeded);
-        assert_eq!(resolved.etag_after.as_deref(), Some("etag"));
+        assert_eq!(
+            images(&resolved, Stream::Whole).active_after,
+            Some(ContentRef::Sha256(source_sha256(AFTER)))
+        );
         assert_eq!(
             journal.entries().find(&resolved.id).unwrap().status,
             EntryStatus::Succeeded
@@ -380,37 +549,70 @@ mod tests {
     fn a_refused_operation_keeps_its_before_image_and_gains_no_after() {
         let (journal, _dir) = journal();
         let entry = journal
-            .begin(
-                object(),
-                JournalOperation::activate(),
-                None,
-                Some(BEFORE),
-                Some(PENDING),
-            )
+            .begin_activation(program(before(Some(BEFORE), Some(PENDING))), None)
             .unwrap();
-        let before = entry.active_before.clone();
+        let before = images(&entry, Stream::Whole);
         let resolved = journal.failed(entry).unwrap();
 
         assert_eq!(resolved.status, EntryStatus::Failed);
-        assert_eq!(resolved.active_after, None);
-        assert_eq!(resolved.active_before, before);
+        assert_eq!(images(&resolved, Stream::Whole), before);
     }
 
     #[test]
-    fn a_delete_records_the_object_as_gone() {
+    fn a_delete_records_what_it_destroyed_and_no_after() {
         let (journal, _dir) = journal();
+        let object = RecordedObject::for_family(
+            AdtObjectFamily::parse("PROG").unwrap(),
+            "ZSAMPLE".to_owned(),
+            "/sap/bc/adt/programs/programs/zsample".to_owned(),
+            |_| Some(BEFORE.to_owned()),
+        );
+        let entry = journal.begin_delete(object, None, None, None).unwrap();
+        let resolved = journal.succeeded(entry, &AfterImages::new()).unwrap();
+
+        assert_eq!(resolved.status, EntryStatus::Succeeded);
+        assert_eq!(resolved.referenced_blobs(), vec![source_sha256(BEFORE)]);
+    }
+
+    #[test]
+    fn a_table_write_records_each_row_on_both_sides() {
+        let (journal, _dir) = journal();
+        let row = |key: &str| RowWrite {
+            operation: crate::journal::entry::RowOperation::Update,
+            key: BTreeMap::from([("ID".to_owned(), key.to_owned())]),
+            changes: vec![],
+        };
         let entry = journal
-            .begin(
-                object(),
-                JournalOperation::delete(None, None),
-                None,
-                Some(BEFORE),
+            .begin_table_write(
+                TableRef {
+                    name: "ZSAMPLE_T".to_owned(),
+                    uri: "/sap/bc/adt/ddic/tables/zsample_t".to_owned(),
+                },
+                vec![
+                    (row("1"), Some("{\"ID\":\"1\"}".to_owned())),
+                    (row("2"), None),
+                ],
                 None,
             )
             .unwrap();
-        let resolved = journal.succeeded(entry, None, None).unwrap();
+        let resolved = journal
+            .table_write_succeeded(
+                entry,
+                &[Some("{\"ID\":\"1\",\"V\":\"x\"}".to_owned()), None],
+            )
+            .unwrap();
 
-        assert_eq!(resolved.active_after, Some(ContentRef::Absent));
+        let EntryRecord::TableWrite { rows, .. } = &resolved.record else {
+            panic!("not a table write");
+        };
+        assert!(
+            rows[0]
+                .after
+                .as_ref()
+                .is_some_and(|after| after.sha256().is_some())
+        );
+        assert_eq!(rows[1].before, ContentRef::Absent);
+        assert_eq!(rows[1].after, Some(ContentRef::Absent));
     }
 
     #[test]
@@ -418,20 +620,10 @@ mod tests {
         // The ordering the double `put` exists for, as an invariant a test can
         // check. Touching only *before* the entry write is unsound: a sweep can
         // start in between, see an untouched blob and no entry, and delete it.
-        //
-        // It applies per entry write, to the blobs that write newly references.
-        // The before-images stay older than a later resolution, which is fine:
-        // an on-disk entry has referenced them since `begin`.
         let (journal, _dir) = journal();
 
         let entry = journal
-            .begin(
-                object(),
-                JournalOperation::activate(),
-                None,
-                Some(BEFORE),
-                Some(PENDING),
-            )
+            .begin_activation(program(before(Some(BEFORE), Some(PENDING))), None)
             .unwrap();
         let began_at = entry_written_at(&journal, &entry);
         for hash in entry.referenced_blobs() {
@@ -441,13 +633,11 @@ mod tests {
             );
         }
 
-        let entry = journal
-            .succeeded(entry, Some("REPORT zsample. \" after"), None)
-            .unwrap();
+        let entry = journal.succeeded(entry, &whole(Some(AFTER))).unwrap();
         let resolved_at = entry_written_at(&journal, &entry);
-        let after = entry.active_after.as_ref().unwrap().sha256().unwrap();
+        let after = source_sha256(AFTER);
         assert!(
-            journal.blobs().modified_at(after).unwrap() >= resolved_at,
+            journal.blobs().modified_at(&after).unwrap() >= resolved_at,
             "the after-image was touched before the entry that references it"
         );
     }
@@ -455,36 +645,23 @@ mod tests {
     fn entry_written_at(journal: &Journal, entry: &JournalEntry) -> std::time::SystemTime {
         journal
             .entries()
-            .modified_at(
-                &crate::journal::paths::object_key(&entry.object.uri),
-                &entry.id,
-            )
+            .modified_at(&paths::object_key(entry.object_uri()), &entry.id)
             .expect("entry exists")
     }
 
     #[test]
     fn resolving_names_an_entry_it_could_not_complete_rather_than_failing() {
-        // The contract every mutating command depends on: by the time this runs
-        // the operation has landed, so it reports which entry is stuck and
-        // never turns completed work into an error.
         let (journal, dir) = journal();
         let entry = journal
-            .begin(
-                object(),
-                JournalOperation::activate(),
-                None,
-                Some(BEFORE),
-                None,
-            )
+            .begin_activation(program(before(Some(BEFORE), None)), None)
             .unwrap();
         let id = entry.id.clone();
-        // Remove the whole store, so the resolution has nowhere to write.
         std::fs::remove_dir_all(dir.path().join("journal")).unwrap();
 
         let stuck = resolve(
             Some(&journal),
             Some(entry),
-            Resolution::Succeeded(Some("after")),
+            Resolution::Succeeded(&whole(Some("after"))),
         );
 
         assert_eq!(stuck, Some(id));
@@ -494,46 +671,29 @@ mod tests {
     fn resolving_reports_nothing_when_it_worked_or_when_there_is_no_journal() {
         let (journal, _dir) = journal();
         let entry = journal
-            .begin(
-                object(),
-                JournalOperation::activate(),
-                None,
-                Some(BEFORE),
-                None,
-            )
+            .begin_activation(program(before(Some(BEFORE), None)), None)
             .unwrap();
 
         assert_eq!(
-            resolve(Some(&journal), Some(entry), Resolution::Succeeded(None)),
+            resolve(
+                Some(&journal),
+                Some(entry),
+                Resolution::Succeeded(&whole(None))
+            ),
             None
         );
-        // `--no-journal`, and an operation that failed before recording.
         assert_eq!(resolve(None, None, Resolution::Failed), None);
     }
 
     #[test]
     fn confirming_rewrites_content_a_sweep_already_took() {
-        // The other half: if the sweep won the race, the confirming `put` puts
-        // the content back rather than leaving a dangling reference.
         let (journal, _dir) = journal();
         let entry = journal
-            .begin(
-                object(),
-                JournalOperation::activate(),
-                None,
-                Some(BEFORE),
-                Some(PENDING),
-            )
+            .begin_activation(program(before(Some(BEFORE), Some(PENDING))), None)
             .unwrap();
-        let hash = entry.active_before.sha256().unwrap().to_owned();
-        std::fs::remove_file(journal.blobs().path_of(&hash)).unwrap();
+        std::fs::remove_file(journal.blobs().path_of(&source_sha256(AFTER))).ok();
 
-        journal
-            .succeeded(entry, Some("REPORT zsample. \" after"), None)
-            .unwrap();
-        // `begin`'s content is gone for good here, but a later confirm of the
-        // same content restores it: prove the mechanism on the after-image.
-        let restored = journal.blobs().put("REPORT zsample. \" after").unwrap();
-        assert!(journal.blobs().contains(&restored));
+        journal.succeeded(entry, &whole(Some(AFTER))).unwrap();
+        assert!(journal.blobs().contains(&source_sha256(AFTER)));
     }
 }

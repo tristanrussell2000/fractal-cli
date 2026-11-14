@@ -5,7 +5,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::sap::object_family::AdtObjectFamily;
+use crate::sap::{
+    class_include::ClassInclude, editable_source::EditableAdtObjectType,
+    metadata_object::MetadataAdtObjectType, object_family::AdtObjectFamily,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -53,128 +56,6 @@ impl EntryStatus {
     }
 }
 
-/// What the operation was, carrying what only that operation needs.
-///
-/// An activation needs how far an undo of it got; a delete needs what
-/// recreating the object will take. Neither means anything for the other, and
-/// as fields beside the operation either could be filled in against the wrong
-/// one with nothing to object — a delete recording `activated`, an activation
-/// recording a package. Here that is unrepresentable.
-///
-/// Undoing a delete is a different sequence entirely (create, write, activate).
-/// If it is ever automated, its progress belongs in this variant rather than
-/// sharing the activation's steps.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum JournalOperation {
-    Activate {
-        /// How far an interrupted undo got, so a rerun resumes rather than
-        /// restarts. Absent until an undo starts.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        undo_progress: Option<ActivationUndoStep>,
-    },
-    /// One command's worth of row changes, against one table.
-    ///
-    /// `rows` is a list from the start although a write currently changes one
-    /// row. The unit of undo is the entry, so a command that ever changes
-    /// several rows has to record them together — an entry covering part of a
-    /// change would report a successful undo having reversed only some of it.
-    TableWrite { rows: Vec<RowWrite> },
-    /// Restoring one is create, write and activate, and is not automated. See
-    /// `journal show` for the recipe, which needs these two beyond the content.
-    Delete {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        package: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        description: Option<String>,
-    },
-}
-
-impl JournalOperation {
-    /// A recorded deletion, with what recreating the object will need.
-    #[must_use]
-    pub const fn delete(package: Option<String>, description: Option<String>) -> Self {
-        Self::Delete {
-            package,
-            description,
-        }
-    }
-
-    /// Row changes against one table.
-    #[must_use]
-    pub const fn table_write(rows: Vec<RowWrite>) -> Self {
-        Self::TableWrite { rows }
-    }
-
-    /// The rows this operation changed, if it is a table write.
-    #[must_use]
-    pub fn table_write_rows(&self) -> Option<&[RowWrite]> {
-        match self {
-            Self::TableWrite { rows } => Some(rows),
-            Self::Activate { .. } | Self::Delete { .. } => None,
-        }
-    }
-
-    /// A freshly recorded activation, before any undo of it.
-    #[must_use]
-    pub const fn activate() -> Self {
-        Self::Activate {
-            undo_progress: None,
-        }
-    }
-
-    /// The stable spelling for output, independent of the payload.
-    #[must_use]
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Activate { .. } => "activate",
-            Self::TableWrite { .. } => "table_write",
-            Self::Delete { .. } => "delete",
-        }
-    }
-
-    #[must_use]
-    pub const fn is_activation(&self) -> bool {
-        matches!(self, Self::Activate { .. })
-    }
-
-    /// What recreating a deleted object needs beyond its content.
-    #[must_use]
-    pub const fn deletion_recipe(&self) -> Option<(Option<&String>, Option<&String>)> {
-        match self {
-            Self::Delete {
-                package,
-                description,
-            } => Some((package.as_ref(), description.as_ref())),
-            Self::Activate { .. } | Self::TableWrite { .. } => None,
-        }
-    }
-
-    /// How far an undo of this activation got. `None` for a delete, which has
-    /// no automated undo to be part way through.
-    #[must_use]
-    pub const fn activation_progress(&self) -> Option<ActivationUndoStep> {
-        match self {
-            Self::Activate { undo_progress } => *undo_progress,
-            Self::TableWrite { .. } | Self::Delete { .. } => None,
-        }
-    }
-}
-
-/// What the stored blobs hold, and so which code path an undo takes.
-///
-/// A function of the operation first and the object's family second. For a
-/// repository object the family decides it — a source object's blob is source
-/// and a metadata object's is XML. A table write is the exception: its object
-/// is the table, a source object, but its blobs hold rows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContentKind {
-    Source,
-    Xml,
-    /// One table row as canonical JSON: field name to value, sorted.
-    Row,
-}
-
 /// A reference to stored content, or the fact that there was none.
 ///
 /// `Absent` is not `sha256("")`: an object holding an empty document is not the
@@ -206,24 +87,10 @@ pub struct EntrySystem {
     pub user: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EntryObject {
-    #[serde(rename = "type")]
-    pub object_type: AdtObjectFamily,
-    pub name: String,
-    pub uri: String,
-    /// Which part of a class's source this content is: `main`, `definitions`,
-    /// `implementations`, `macros` or `testclasses`. Absent for objects with a
-    /// single source, and for metadata objects.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_part: Option<String>,
-}
-
 /// One row a table write changed, and what it changed about it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RowWrite {
     /// What was done to the row.
-    #[serde(default)]
     pub operation: RowOperation,
     /// The complete primary key that addressed the row. The client is not here:
     /// it is the session's, and `EntrySystem` already records it.
@@ -233,9 +100,6 @@ pub struct RowWrite {
 }
 
 /// What a table write did to one row.
-///
-/// `#[serde(default)]` on the field that holds it, so entries written before
-/// insert and delete existed still read back — they are all updates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RowOperation {
@@ -283,6 +147,7 @@ pub enum ActivationUndoStep {
     RestoredInactive,
 }
 
+/// One journal entry: the system it belongs to, and what was recorded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JournalEntry {
     /// The file name, without its extension.
@@ -290,63 +155,466 @@ pub struct JournalEntry {
     pub recorded_at: String,
     pub status: EntryStatus,
     pub system: EntrySystem,
-    pub object: EntryObject,
-    pub operation: JournalOperation,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transport: Option<String>,
+    pub record: EntryRecord,
+}
+
+/// The operation, the object it acted on, and the content it recorded.
+///
+/// One type because the three decide each other: the object decides how many
+/// text streams there are, and the operation decides what each stream records.
+/// A delete has no after-image, a table write records rows rather than source,
+/// and a class records every include — none of which can be stated wrongly
+/// here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case")]
+pub enum EntryRecord {
+    Activate {
+        object: RecordedObject<ActivationImages>,
+        /// How far an interrupted undo got, so a rerun resumes rather than
+        /// restarts. Absent until an undo starts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        undo_progress: Option<ActivationUndoStep>,
+    },
+    /// Restoring one is create, write and activate, and is not automated. See
+    /// `journal show` for the recipe, which needs these two beyond the content.
+    Delete {
+        /// What the delete destroyed, per stream.
+        object: RecordedObject<ContentRef>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        package: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
+    /// One command's worth of row changes, against one table.
+    ///
+    /// The unit of undo is the entry, so a command that changes several rows
+    /// records them together — an entry covering part of a change would report
+    /// a successful undo having reversed only some of it.
+    TableWrite {
+        table: TableRef,
+        rows: Vec<RecordedRow>,
+    },
+}
+
+/// A repository object, and one `T` per text stream it has.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RecordedObject<T> {
+    /// An object with one source stream.
+    Source {
+        object_type: SingleSourceType,
+        name: String,
+        uri: String,
+        content: T,
+    },
+    /// A class: one stream per include, each recorded.
+    Class {
+        name: String,
+        uri: String,
+        content: ClassStreams<T>,
+    },
+    /// An object whose XML document is the object.
+    Metadata {
+        object_type: MetadataAdtObjectType,
+        name: String,
+        uri: String,
+        content: T,
+    },
+}
+
+/// Which stream of a recorded object something is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Stream {
+    /// The only stream of a single-source or metadata object.
+    Whole,
+    Include(ClassInclude),
+}
+
+impl Stream {
+    /// `None` for an object with one stream.
+    #[must_use]
+    pub const fn include(self) -> Option<ClassInclude> {
+        match self {
+            Self::Whole => None,
+            Self::Include(include) => Some(include),
+        }
+    }
+
+    /// A class include's name, or `content` for a single stream.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Whole => "content",
+            Self::Include(include) => include.as_str(),
+        }
+    }
+}
+
+impl<T> RecordedObject<T> {
+    /// Builds the record for an object from its edit identity, one `T` per
+    /// stream. The one place that decides class or not, so a class can only
+    /// ever be recorded with every include.
+    pub fn for_family(
+        family: AdtObjectFamily,
+        name: String,
+        uri: String,
+        mut content: impl FnMut(Stream) -> T,
+    ) -> Self {
+        match family {
+            AdtObjectFamily::Source(EditableAdtObjectType::Class) => Self::Class {
+                name,
+                uri,
+                content: ClassStreams::from_fn(|include| content(Stream::Include(include))),
+            },
+            AdtObjectFamily::Source(object_type) => Self::Source {
+                object_type: SingleSourceType(object_type),
+                name,
+                uri,
+                content: content(Stream::Whole),
+            },
+            AdtObjectFamily::Metadata(object_type) => Self::Metadata {
+                object_type,
+                name,
+                uri,
+                content: content(Stream::Whole),
+            },
+        }
+    }
+
+    #[must_use]
+    pub const fn family(&self) -> AdtObjectFamily {
+        match self {
+            Self::Source { object_type, .. } => AdtObjectFamily::Source(object_type.0),
+            Self::Class { .. } => AdtObjectFamily::Source(EditableAdtObjectType::Class),
+            Self::Metadata { object_type, .. } => AdtObjectFamily::Metadata(*object_type),
+        }
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Source { name, .. } | Self::Class { name, .. } | Self::Metadata { name, .. } => {
+                name
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn uri(&self) -> &str {
+        match self {
+            Self::Source { uri, .. } | Self::Class { uri, .. } | Self::Metadata { uri, .. } => uri,
+        }
+    }
+
+    /// Every stream and what was recorded for it, `main` first for a class.
+    #[must_use]
+    pub fn streams(&self) -> Vec<(Stream, &T)> {
+        match self {
+            Self::Source { content, .. } | Self::Metadata { content, .. } => {
+                vec![(Stream::Whole, content)]
+            }
+            Self::Class { content, .. } => content
+                .iter()
+                .map(|(include, value)| (Stream::Include(include), value))
+                .collect(),
+        }
+    }
+
+    pub fn streams_mut(&mut self) -> Vec<(Stream, &mut T)> {
+        match self {
+            Self::Source { content, .. } | Self::Metadata { content, .. } => {
+                vec![(Stream::Whole, content)]
+            }
+            Self::Class { content, .. } => content
+                .iter_mut()
+                .map(|(include, value)| (Stream::Include(include), value))
+                .collect(),
+        }
+    }
+
+    /// The same object with each stream's value replaced.
+    pub fn map<U>(self, mut f: impl FnMut(Stream, T) -> U) -> RecordedObject<U> {
+        match self {
+            Self::Source {
+                object_type,
+                name,
+                uri,
+                content,
+            } => RecordedObject::Source {
+                object_type,
+                name,
+                uri,
+                content: f(Stream::Whole, content),
+            },
+            Self::Class { name, uri, content } => RecordedObject::Class {
+                name,
+                uri,
+                content: content.map(|include, value| f(Stream::Include(include), value)),
+            },
+            Self::Metadata {
+                object_type,
+                name,
+                uri,
+                content,
+            } => RecordedObject::Metadata {
+                object_type,
+                name,
+                uri,
+                content: f(Stream::Whole, content),
+            },
+        }
+    }
+
+    /// The value for one stream, if the object has it.
+    #[must_use]
+    pub const fn stream(&self, stream: Stream) -> Option<&T> {
+        match (self, stream) {
+            (Self::Source { content, .. } | Self::Metadata { content, .. }, Stream::Whole) => {
+                Some(content)
+            }
+            (Self::Class { content, .. }, Stream::Include(include)) => Some(content.get(include)),
+            _ => None,
+        }
+    }
+}
+
+/// One value per class include. A struct rather than a map, so recording a
+/// class without one of them does not compile.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClassStreams<T> {
+    pub main: T,
+    pub definitions: T,
+    pub implementations: T,
+    pub macros: T,
+    pub testclasses: T,
+}
+
+impl<T> ClassStreams<T> {
+    pub fn from_fn(mut f: impl FnMut(ClassInclude) -> T) -> Self {
+        Self {
+            main: f(ClassInclude::Main),
+            definitions: f(ClassInclude::Definitions),
+            implementations: f(ClassInclude::Implementations),
+            macros: f(ClassInclude::Macros),
+            testclasses: f(ClassInclude::Testclasses),
+        }
+    }
+
+    #[must_use]
+    pub const fn get(&self, include: ClassInclude) -> &T {
+        match include {
+            ClassInclude::Main => &self.main,
+            ClassInclude::Definitions => &self.definitions,
+            ClassInclude::Implementations => &self.implementations,
+            ClassInclude::Macros => &self.macros,
+            ClassInclude::Testclasses => &self.testclasses,
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (ClassInclude, &T)> {
+        [
+            (ClassInclude::Main, &self.main),
+            (ClassInclude::Definitions, &self.definitions),
+            (ClassInclude::Implementations, &self.implementations),
+            (ClassInclude::Macros, &self.macros),
+            (ClassInclude::Testclasses, &self.testclasses),
+        ]
+        .into_iter()
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (ClassInclude, &mut T)> {
+        [
+            (ClassInclude::Main, &mut self.main),
+            (ClassInclude::Definitions, &mut self.definitions),
+            (ClassInclude::Implementations, &mut self.implementations),
+            (ClassInclude::Macros, &mut self.macros),
+            (ClassInclude::Testclasses, &mut self.testclasses),
+        ]
+        .into_iter()
+    }
+
+    pub fn map<U>(self, mut f: impl FnMut(ClassInclude, T) -> U) -> ClassStreams<U> {
+        ClassStreams {
+            main: f(ClassInclude::Main, self.main),
+            definitions: f(ClassInclude::Definitions, self.definitions),
+            implementations: f(ClassInclude::Implementations, self.implementations),
+            macros: f(ClassInclude::Macros, self.macros),
+            testclasses: f(ClassInclude::Testclasses, self.testclasses),
+        }
+    }
+}
+
+/// What one stream looked like around an activation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivationImages {
     pub active_before: ContentRef,
-    /// Absent when the caller had no pending work, which is different from
-    /// having had empty pending work.
+    /// The pending work the activation published. Absent when there was none
+    /// in this stream, which is different from pending work that was empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inactive_before: Option<ContentRef>,
     /// Unset until the operation resolves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_after: Option<ContentRef>,
-    /// Opaque and verbatim; some SAP `ETag` values embed the media type.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub etag_after: Option<String>,
 }
 
-impl JournalEntry {
-    /// What this entry's blobs hold.
+/// The table a row write addressed. Not a [`RecordedObject`]: its content is
+/// rows, not the table's definition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TableRef {
+    pub name: String,
+    pub uri: String,
+}
+
+/// One row write, and the row on either side of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordedRow {
+    #[serde(flatten)]
+    pub write: RowWrite,
+    /// The row as read before the write, as canonical JSON. Absent for an
+    /// insert.
+    pub before: ContentRef,
+    /// The row re-read after the commit. Unset until resolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<ContentRef>,
+}
+
+/// An editable source type that has exactly one stream: anything but a class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SingleSourceType(EditableAdtObjectType);
+
+impl SingleSourceType {
     #[must_use]
-    pub const fn content_kind(&self) -> ContentKind {
-        match self.operation {
-            JournalOperation::TableWrite { .. } => ContentKind::Row,
-            _ => match self.object.object_type {
-                AdtObjectFamily::Source(_) => ContentKind::Source,
-                AdtObjectFamily::Metadata(_) => ContentKind::Xml,
-            },
+    pub const fn get(self) -> EditableAdtObjectType {
+        self.0
+    }
+
+    /// `None` for a class, which is recorded per include instead.
+    #[must_use]
+    pub fn new(object_type: EditableAdtObjectType) -> Option<Self> {
+        (object_type != EditableAdtObjectType::Class).then_some(Self(object_type))
+    }
+}
+
+impl Serialize for SingleSourceType {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.0.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for SingleSourceType {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        let object_type = EditableAdtObjectType::parse(&value).map_err(serde::de::Error::custom)?;
+        Self::new(object_type)
+            .ok_or_else(|| serde::de::Error::custom("a class is recorded per include"))
+    }
+}
+
+impl EntryRecord {
+    /// The stable spelling for output.
+    #[must_use]
+    pub const fn operation(&self) -> &'static str {
+        match self {
+            Self::Activate { .. } => "activate",
+            Self::Delete { .. } => "delete",
+            Self::TableWrite { .. } => "table_write",
         }
     }
 
-    /// Every blob this entry references, for the mark-and-sweep.
-    pub fn referenced_blobs(&self) -> impl Iterator<Item = &str> {
-        [
-            Some(&self.active_before),
-            self.inactive_before.as_ref(),
-            self.active_after.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        .filter_map(ContentRef::sha256)
+    /// The object's ADT URI, which keys the entry's directory.
+    #[must_use]
+    pub fn object_uri(&self) -> &str {
+        match self {
+            Self::Activate { object, .. } => object.uri(),
+            Self::Delete { object, .. } => object.uri(),
+            Self::TableWrite { table, .. } => &table.uri,
+        }
     }
 
-    /// Records a successful operation.
-    pub fn succeeded(&mut self, active_after: ContentRef, etag_after: Option<String>) {
-        self.status = EntryStatus::Succeeded;
-        self.active_after = Some(active_after);
-        self.etag_after = etag_after;
+    #[must_use]
+    pub fn object_name(&self) -> &str {
+        match self {
+            Self::Activate { object, .. } => object.name(),
+            Self::Delete { object, .. } => object.name(),
+            Self::TableWrite { table, .. } => &table.name,
+        }
+    }
+
+    /// The logical type name, as `journal list --type` matches it.
+    #[must_use]
+    pub const fn object_type(&self) -> &'static str {
+        match self {
+            Self::Activate { object, .. } => object.family().as_str(),
+            Self::Delete { object, .. } => object.family().as_str(),
+            Self::TableWrite { .. } => "TABL",
+        }
+    }
+
+    /// Every blob this record references, for the mark-and-sweep.
+    #[must_use]
+    pub fn referenced_blobs(&self) -> Vec<&str> {
+        let refs: Vec<&ContentRef> = match self {
+            Self::Activate { object, .. } => object
+                .streams()
+                .into_iter()
+                .flat_map(|(_, images)| {
+                    [
+                        Some(&images.active_before),
+                        images.inactive_before.as_ref(),
+                        images.active_after.as_ref(),
+                    ]
+                })
+                .flatten()
+                .collect(),
+            Self::Delete { object, .. } => object
+                .streams()
+                .into_iter()
+                .map(|(_, content)| content)
+                .collect(),
+            Self::TableWrite { rows, .. } => rows
+                .iter()
+                .flat_map(|row| [Some(&row.before), row.after.as_ref()])
+                .flatten()
+                .collect(),
+        };
+        refs.into_iter().filter_map(ContentRef::sha256).collect()
+    }
+}
+
+impl JournalEntry {
+    #[must_use]
+    pub fn object_uri(&self) -> &str {
+        self.record.object_uri()
+    }
+
+    /// Every blob this entry references, for the mark-and-sweep.
+    #[must_use]
+    pub fn referenced_blobs(&self) -> Vec<&str> {
+        self.record.referenced_blobs()
+    }
+
+    /// One stream's images, if this records an activation.
+    #[must_use]
+    pub const fn activation_images(&self, stream: Stream) -> Option<&ActivationImages> {
+        match &self.record {
+            EntryRecord::Activate { object, .. } => object.stream(stream),
+            EntryRecord::Delete { .. } | EntryRecord::TableWrite { .. } => None,
+        }
+    }
+
+    /// What a delete destroyed in one stream, if this records a delete.
+    #[must_use]
+    pub const fn deleted_content(&self, stream: Stream) -> Option<&ContentRef> {
+        match &self.record {
+            EntryRecord::Delete { object, .. } => object.stream(stream),
+            EntryRecord::Activate { .. } | EntryRecord::TableWrite { .. } => None,
+        }
     }
 
     pub const fn failed(&mut self) {
         self.status = EntryStatus::Failed;
-    }
-
-    /// SAP accepted the operation and the read-back could not confirm it.
-    pub fn unverified(&mut self, active_after: Option<ContentRef>) {
-        self.status = EntryStatus::Unverified;
-        self.active_after = active_after;
     }
 
     /// An undo reversed this operation.
@@ -359,7 +627,7 @@ impl JournalEntry {
     /// Does nothing for an operation with no automated undo, so a step from one
     /// sequence can never be recorded against another.
     pub const fn record_undo_step(&mut self, step: ActivationUndoStep) {
-        if let JournalOperation::Activate { undo_progress } = &mut self.operation {
+        if let EntryRecord::Activate { undo_progress, .. } = &mut self.record {
             *undo_progress = Some(step);
         }
     }
@@ -367,7 +635,42 @@ impl JournalEntry {
     /// How far an undo of this entry has got.
     #[must_use]
     pub const fn undo_progress(&self) -> Option<ActivationUndoStep> {
-        self.operation.activation_progress()
+        match &self.record {
+            EntryRecord::Activate { undo_progress, .. } => *undo_progress,
+            EntryRecord::Delete { .. } | EntryRecord::TableWrite { .. } => None,
+        }
+    }
+}
+
+/// A single-source activation entry over one blob, for tests elsewhere in
+/// the crate that care about the journal's mechanics and not its shapes.
+#[cfg(test)]
+#[must_use]
+pub fn sample_activation(uri: &str, active_before: ContentRef) -> JournalEntry {
+    JournalEntry {
+        id: String::new(),
+        recorded_at: String::new(),
+        status: EntryStatus::Pending,
+        system: EntrySystem {
+            base_url: "https://sap.example:8001".to_owned(),
+            profile: "dev".to_owned(),
+            client: "100".to_owned(),
+            user: "developer".to_owned(),
+        },
+        transport: None,
+        record: EntryRecord::Activate {
+            object: RecordedObject::Source {
+                object_type: SingleSourceType(EditableAdtObjectType::Program),
+                name: "ZSAMPLE".to_owned(),
+                uri: uri.to_owned(),
+                content: ActivationImages {
+                    active_before,
+                    inactive_before: None,
+                    active_after: None,
+                },
+            },
+            undo_progress: None,
+        },
     }
 }
 
@@ -375,30 +678,72 @@ impl JournalEntry {
 mod tests {
     use super::*;
 
-    fn entry() -> JournalEntry {
+    fn system() -> EntrySystem {
+        EntrySystem {
+            base_url: "https://sap.example:8001".to_owned(),
+            profile: "dev".to_owned(),
+            client: "100".to_owned(),
+            user: "developer".to_owned(),
+        }
+    }
+
+    fn sha(byte: char) -> ContentRef {
+        ContentRef::Sha256(byte.to_string().repeat(64))
+    }
+
+    fn images(before: char) -> ActivationImages {
+        ActivationImages {
+            active_before: sha(before),
+            inactive_before: None,
+            active_after: None,
+        }
+    }
+
+    fn entry(record: EntryRecord) -> JournalEntry {
         JournalEntry {
             id: "20260905T221503.412Z".to_owned(),
             recorded_at: "2026-09-05T22:15:03.412Z".to_owned(),
             status: EntryStatus::Pending,
-            system: EntrySystem {
-                base_url: "https://sap.example:8001".to_owned(),
-                profile: "dev".to_owned(),
-                client: "100".to_owned(),
-                user: "developer".to_owned(),
-            },
-            object: EntryObject {
-                object_type: AdtObjectFamily::parse("CLAS").unwrap(),
-                name: "ZCL_SAMPLE".to_owned(),
-                uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
-                source_part: Some("main".to_owned()),
-            },
-            operation: JournalOperation::activate(),
+            system: system(),
             transport: None,
-            active_before: ContentRef::Sha256("a".repeat(64)),
-            inactive_before: None,
-            active_after: None,
-            etag_after: None,
+            record,
         }
+    }
+
+    fn class_activation() -> JournalEntry {
+        entry(EntryRecord::Activate {
+            object: RecordedObject::for_family(
+                AdtObjectFamily::parse("CLAS").unwrap(),
+                "ZCL_SAMPLE".to_owned(),
+                "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
+                |stream| match stream {
+                    Stream::Include(ClassInclude::Testclasses) => ActivationImages {
+                        active_before: ContentRef::Absent,
+                        inactive_before: None,
+                        active_after: None,
+                    },
+                    Stream::Include(ClassInclude::Implementations) => ActivationImages {
+                        active_before: sha('b'),
+                        inactive_before: Some(sha('c')),
+                        active_after: Some(sha('d')),
+                    },
+                    _ => images('a'),
+                },
+            ),
+            undo_progress: None,
+        })
+    }
+
+    fn program_activation() -> JournalEntry {
+        entry(EntryRecord::Activate {
+            object: RecordedObject::for_family(
+                AdtObjectFamily::parse("PROG").unwrap(),
+                "ZSAMPLE".to_owned(),
+                "/sap/bc/adt/programs/programs/zsample".to_owned(),
+                |_| images('a'),
+            ),
+            undo_progress: None,
+        })
     }
 
     fn json(entry: &JournalEntry) -> serde_json::Value {
@@ -406,15 +751,95 @@ mod tests {
     }
 
     #[test]
-    fn round_trips() {
-        let mut original = entry();
-        original.succeeded(ContentRef::Sha256("b".repeat(64)), Some("etag".to_owned()));
-        let text = serde_json::to_string(&original).unwrap();
+    fn every_shape_round_trips() {
+        let delete = entry(EntryRecord::Delete {
+            object: RecordedObject::for_family(
+                AdtObjectFamily::parse("DTEL").unwrap(),
+                "ZSAMPLE_DE".to_owned(),
+                "/sap/bc/adt/ddic/dataelements/zsample_de".to_owned(),
+                |_| sha('e'),
+            ),
+            package: Some("ZPKG".to_owned()),
+            description: None,
+        });
+        let rows = entry(EntryRecord::TableWrite {
+            table: TableRef {
+                name: "ZSAMPLE_T".to_owned(),
+                uri: "/sap/bc/adt/ddic/tables/zsample_t".to_owned(),
+            },
+            rows: vec![RecordedRow {
+                write: RowWrite {
+                    operation: RowOperation::Update,
+                    key: BTreeMap::from([("ID".to_owned(), "1".to_owned())]),
+                    changes: vec![],
+                },
+                before: sha('f'),
+                after: Some(sha('0')),
+            }],
+        });
+        for original in [class_activation(), program_activation(), delete, rows] {
+            let text = serde_json::to_string(&original).unwrap();
+            assert_eq!(
+                serde_json::from_str::<JournalEntry>(&text).unwrap(),
+                original
+            );
+        }
+    }
 
-        assert_eq!(
-            serde_json::from_str::<JournalEntry>(&text).unwrap(),
-            original
-        );
+    #[test]
+    fn a_class_is_recorded_with_every_include() {
+        let value = json(&class_activation());
+        let content = &value["record"]["object"]["content"];
+        for include in ClassInclude::ALL {
+            assert!(
+                content.get(include.as_str()).is_some(),
+                "{} missing",
+                include.as_str()
+            );
+        }
+        assert_eq!(value["record"]["object"]["kind"], "class");
+        assert_eq!(value["record"]["operation"], "activate");
+    }
+
+    #[test]
+    fn a_class_cannot_be_read_back_as_a_single_source() {
+        let mut value = json(&program_activation());
+        value["record"]["object"]["object_type"] = serde_json::json!("CLAS");
+        assert!(serde_json::from_value::<JournalEntry>(value).is_err());
+    }
+
+    #[test]
+    fn referenced_blobs_walk_every_include_and_skip_absences() {
+        let entry = class_activation();
+        let mut blobs = entry.referenced_blobs();
+        blobs.sort_unstable();
+        blobs.dedup();
+        let expected: Vec<String> = ['a', 'b', 'c', 'd']
+            .into_iter()
+            .map(|byte| byte.to_string().repeat(64))
+            .collect();
+        assert_eq!(blobs, expected);
+    }
+
+    #[test]
+    fn referenced_blobs_walk_every_row() {
+        let row = |before: char, after: Option<char>| RecordedRow {
+            write: RowWrite {
+                operation: RowOperation::Update,
+                key: BTreeMap::new(),
+                changes: vec![],
+            },
+            before: sha(before),
+            after: after.map(sha),
+        };
+        let entry = entry(EntryRecord::TableWrite {
+            table: TableRef {
+                name: "ZSAMPLE_T".to_owned(),
+                uri: "/sap/bc/adt/ddic/tables/zsample_t".to_owned(),
+            },
+            rows: vec![row('1', Some('2')), row('3', None)],
+        });
+        assert_eq!(entry.referenced_blobs().len(), 3);
     }
 
     #[test]
@@ -422,9 +847,6 @@ mod tests {
         let empty = ContentRef::Sha256(crate::source_change::source_sha256(""));
         assert_ne!(ContentRef::Absent, empty);
         assert_eq!(ContentRef::Absent.sha256(), None);
-
-        // And they serialize differently, so a delete is never read back as an
-        // object that held an empty document.
         assert_ne!(
             serde_json::to_value(&ContentRef::Absent).unwrap(),
             serde_json::to_value(&empty).unwrap()
@@ -432,59 +854,42 @@ mod tests {
     }
 
     #[test]
-    fn a_hash_reference_serializes_as_the_plan_says() {
-        let value = json(&entry());
-        assert_eq!(
-            value["active_before"]["sha256"],
-            serde_json::json!("a".repeat(64))
-        );
-    }
-
-    #[test]
-    fn an_operation_carries_its_own_undo_progress() {
-        let mut entry = entry();
+    fn an_activation_carries_its_own_undo_progress() {
+        let mut entry = program_activation();
         assert_eq!(entry.undo_progress(), None);
 
         entry.record_undo_step(ActivationUndoStep::Activated);
         assert_eq!(entry.undo_progress(), Some(ActivationUndoStep::Activated));
-        assert_eq!(
-            json(&entry)["operation"],
-            serde_json::json!({"kind": "activate", "undo_progress": "activated"})
-        );
+        assert_eq!(json(&entry)["record"]["undo_progress"], "activated");
     }
 
     #[test]
     fn a_delete_cannot_record_a_step_from_the_activation_sequence() {
-        // The reason the progress lives inside the operation: as a field beside
-        // it, this would record `activated` against a delete and nothing would
-        // object. Undoing a delete is create, write and activate, a different
-        // sequence that will carry its own payload here.
-        let mut entry = entry();
-        entry.operation = JournalOperation::delete(None, None);
+        let mut entry = entry(EntryRecord::Delete {
+            object: RecordedObject::for_family(
+                AdtObjectFamily::parse("PROG").unwrap(),
+                "ZSAMPLE".to_owned(),
+                "/sap/bc/adt/programs/programs/zsample".to_owned(),
+                |_| sha('a'),
+            ),
+            package: None,
+            description: None,
+        });
 
         entry.record_undo_step(ActivationUndoStep::Activated);
 
         assert_eq!(entry.undo_progress(), None);
-        assert_eq!(
-            json(&entry)["operation"],
-            serde_json::json!({"kind": "delete"})
-        );
+        assert!(json(&entry)["record"].get("undo_progress").is_none());
     }
 
     #[test]
     fn unset_fields_are_omitted_rather_than_null() {
-        let value = json(&entry());
-        for absent in ["transport", "inactive_before", "active_after", "etag_after"] {
-            assert!(value.get(absent).is_none(), "{absent} should be omitted");
+        let value = json(&program_activation());
+        assert!(value.get("transport").is_none());
+        let content = &value["record"]["object"]["content"];
+        for absent in ["inactive_before", "active_after"] {
+            assert!(content.get(absent).is_none(), "{absent} should be omitted");
         }
-    }
-
-    #[test]
-    fn no_pending_work_round_trips_as_none_not_as_empty() {
-        let text = serde_json::to_string(&entry()).unwrap();
-        let read: JournalEntry = serde_json::from_str(&text).unwrap();
-
-        assert_eq!(read.inactive_before, None);
     }
 
     #[test]
@@ -492,65 +897,13 @@ mod tests {
         assert!(!EntryStatus::Pending.is_undoable());
         assert!(!EntryStatus::Failed.is_undoable());
         assert!(EntryStatus::Succeeded.is_undoable());
-        // SAP accepted it, so the object may well have changed.
         assert!(EntryStatus::Unverified.is_undoable());
-        // Already reversed. Putting it back is a redo, not another undo.
         assert!(!EntryStatus::Undone.is_undoable());
     }
 
     #[test]
-    fn an_undone_entry_keeps_everything_it_recorded() {
-        let mut entry = entry();
-        entry.succeeded(ContentRef::Sha256("b".repeat(64)), None);
-        let after = entry.active_after.clone();
-        entry.undone();
-
-        assert_eq!(entry.status, EntryStatus::Undone);
-        // The after-image is what was active before the undo, so it is still
-        // the record of what the operation did.
-        assert_eq!(entry.active_after, after);
-        assert_eq!(json(&entry)["status"], serde_json::json!("undone"));
-    }
-
-    #[test]
-    fn resolving_sets_the_after_image_and_the_status() {
-        let mut succeeded = entry();
-        succeeded.succeeded(ContentRef::Absent, None);
-        assert_eq!(succeeded.status, EntryStatus::Succeeded);
-        assert_eq!(succeeded.active_after, Some(ContentRef::Absent));
-
-        let mut failed = entry();
-        failed.failed();
-        assert_eq!(failed.status, EntryStatus::Failed);
-        // A refused operation changed nothing, so there is no after-image.
-        assert_eq!(failed.active_after, None);
-    }
-
-    #[test]
-    fn referenced_blobs_lists_every_hash_and_no_absences() {
-        let mut entry = entry();
-        entry.inactive_before = Some(ContentRef::Sha256("c".repeat(64)));
-        entry.succeeded(ContentRef::Absent, None);
-
-        let blobs: Vec<_> = entry.referenced_blobs().collect();
-        assert_eq!(blobs, vec!["a".repeat(64), "c".repeat(64)]);
-    }
-
-    #[test]
-    fn the_object_type_is_the_shared_family_enum() {
-        // Stored as the same type name every other command takes, so an undo
-        // can route on it without reparsing a free-form string.
-        assert_eq!(json(&entry())["object"]["type"], serde_json::json!("CLAS"));
-        assert_eq!(entry().content_kind(), ContentKind::Source);
-    }
-
-    #[test]
-    fn a_metadata_object_holds_xml_without_being_told() {
-        let mut entry = entry();
-        entry.object.object_type = AdtObjectFamily::parse("DTEL").unwrap();
-
-        // Derived, not stored: a `kind` field could disagree with the type.
-        assert_eq!(entry.content_kind(), ContentKind::Xml);
-        assert!(json(&entry).get("kind").is_none());
+    fn the_object_type_reads_as_the_type_every_command_takes() {
+        assert_eq!(class_activation().record.object_type(), "CLAS");
+        assert_eq!(program_activation().record.object_type(), "PROG");
     }
 }

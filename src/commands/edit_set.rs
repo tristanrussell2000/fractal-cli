@@ -72,6 +72,8 @@ pub async fn edit_source_set(
         expected_sha256: args.expected_sha256.clone(),
         transport: args.transport.clone(),
         staged_edits: staged_edit_policy(args.force, &profile.username),
+        include: None,
+        blank_allowed: false,
     };
 
     if args.dry_run {

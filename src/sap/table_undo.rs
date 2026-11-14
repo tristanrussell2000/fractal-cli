@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use crate::config::EditPolicy;
 use crate::journal::JournalError;
 use crate::journal::blobs::BlobStore;
-use crate::journal::entry::{JournalEntry, RowOperation, RowWrite};
+use crate::journal::entry::{EntryRecord, JournalEntry, RecordedRow, RowOperation, RowWrite};
 use crate::journal::recorder::Journal;
 use crate::reportable_error::ReportableError;
 
@@ -183,13 +183,13 @@ pub fn plan_table_undo(entry: &JournalEntry) -> Result<TableUndoPlan, TableUndoE
             },
         });
     }
-    let Some(rows) = entry.operation.table_write_rows() else {
+    let EntryRecord::TableWrite { table, rows } = &entry.record else {
         return Err(TableUndoError::NotATableWrite {
             id: entry.id.clone(),
         });
     };
 
-    let [row] = rows else {
+    let [row] = rows.as_slice() else {
         return Err(TableUndoError::NotOneRow {
             id: entry.id.clone(),
             rows: rows.len(),
@@ -198,8 +198,8 @@ pub fn plan_table_undo(entry: &JournalEntry) -> Result<TableUndoPlan, TableUndoE
 
     Ok(TableUndoPlan {
         entry_id: entry.id.clone(),
-        table: entry.object.name.clone(),
-        row: reverse_row(row),
+        table: table.name.clone(),
+        row: reverse_row(&row.write),
     })
 }
 
@@ -220,11 +220,7 @@ fn undo_request(
     row: &TableUndoRow,
     blobs: &BlobStore,
 ) -> Result<TableWriteRequest, TableUndoError> {
-    let recorded = entry
-        .operation
-        .table_write_rows()
-        .and_then(<[RowWrite]>::first)
-        .map_or(RowOperation::Update, |row| row.operation);
+    let recorded = recorded_row(entry).map_or(RowOperation::Update, |row| row.write.operation);
     let table = plan.table.clone();
     // An undo of a customizing change takes an entry in the same request the
     // write used; the journal kept it.
@@ -268,9 +264,8 @@ fn row_from_blob(
     entry: &JournalEntry,
     blobs: &BlobStore,
 ) -> Result<Vec<FieldValue>, TableUndoError> {
-    let sha256 = entry
-        .active_before
-        .sha256()
+    let sha256 = recorded_row(entry)
+        .and_then(|row| row.before.sha256())
         .ok_or_else(|| TableUndoError::NoBeforeImage {
             id: entry.id.clone(),
         })?;
@@ -284,6 +279,14 @@ fn row_from_blob(
         .into_iter()
         .map(|(field, value)| FieldValue { field, value })
         .collect())
+}
+
+/// The one row an undoable table write recorded.
+fn recorded_row(entry: &JournalEntry) -> Option<&RecordedRow> {
+    match &entry.record {
+        EntryRecord::TableWrite { rows, .. } => rows.first(),
+        EntryRecord::Activate { .. } | EntryRecord::Delete { .. } => None,
+    }
 }
 
 /// One recorded row write, read backwards.
@@ -372,13 +375,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::journal::entry::{
-        EntryObject, EntryStatus, EntrySystem, FieldChange, JournalOperation,
-    };
-    use crate::sap::editable_source::EditableAdtObjectType;
-    use crate::sap::object_family::AdtObjectFamily;
+    use crate::journal::entry::{ContentRef, EntryStatus, EntrySystem, FieldChange, TableRef};
 
-    fn entry(status: EntryStatus, operation: JournalOperation) -> JournalEntry {
+    fn entry(status: EntryStatus, record: EntryRecord) -> JournalEntry {
         JournalEntry {
             id: "0001".to_owned(),
             recorded_at: "2026-01-01T00:00:00Z".to_owned(),
@@ -389,23 +388,30 @@ mod tests {
                 client: "100".to_owned(),
                 user: "developer".to_owned(),
             },
-            object: EntryObject {
-                object_type: AdtObjectFamily::Source(EditableAdtObjectType::Table),
-                name: "ZSAMPLE_RECORD".to_owned(),
-                uri: "/sap/bc/adt/ddic/tables/zsample_record".to_owned(),
-                source_part: None,
-            },
-            operation,
             transport: None,
-            active_before: crate::journal::entry::ContentRef::Absent,
-            inactive_before: None,
-            active_after: None,
-            etag_after: None,
+            record,
         }
     }
 
-    fn write() -> JournalOperation {
-        JournalOperation::table_write(vec![RowWrite {
+    fn rows(writes: Vec<RowWrite>) -> EntryRecord {
+        EntryRecord::TableWrite {
+            table: TableRef {
+                name: "ZSAMPLE_RECORD".to_owned(),
+                uri: "/sap/bc/adt/ddic/tables/zsample_record".to_owned(),
+            },
+            rows: writes
+                .into_iter()
+                .map(|write| RecordedRow {
+                    write,
+                    before: ContentRef::Absent,
+                    after: None,
+                })
+                .collect(),
+        }
+    }
+
+    fn write() -> EntryRecord {
+        rows(vec![RowWrite {
             operation: RowOperation::Update,
             key: BTreeMap::from([("ID".to_owned(), "R1".to_owned())]),
             changes: vec![
@@ -440,7 +446,7 @@ mod tests {
 
     #[test]
     fn refuses_an_entry_holding_more_than_one_row() {
-        let many = JournalOperation::table_write(vec![
+        let many = rows(vec![
             RowWrite {
                 operation: RowOperation::Update,
                 key: BTreeMap::from([("ID".to_owned(), "R1".to_owned())]),
@@ -466,15 +472,18 @@ mod tests {
 
     #[test]
     fn refuses_an_entry_holding_no_rows() {
-        let none = JournalOperation::table_write(Vec::new());
+        let none = rows(Vec::new());
         let error = plan_table_undo(&entry(EntryStatus::Succeeded, none)).unwrap_err();
         assert_eq!(error.code(), "undo_row_count_unsupported");
     }
 
     #[test]
     fn refuses_an_entry_that_is_not_a_table_write() {
-        let error = plan_table_undo(&entry(EntryStatus::Succeeded, JournalOperation::activate()))
-            .unwrap_err();
+        let activation = crate::journal::entry::sample_activation(
+            "/sap/bc/adt/programs/programs/zsample",
+            ContentRef::Absent,
+        );
+        let error = plan_table_undo(&entry(EntryStatus::Succeeded, activation.record)).unwrap_err();
         assert_eq!(error.code(), "undo_not_a_table_write");
     }
 
@@ -488,13 +497,5 @@ mod tests {
     fn refuses_a_write_that_never_resolved() {
         let error = plan_table_undo(&entry(EntryStatus::Pending, write())).unwrap_err();
         assert_eq!(error.code(), "undo_entry_unresolved");
-    }
-
-    #[test]
-    fn a_row_write_stores_rows_not_source() {
-        assert_eq!(
-            entry(EntryStatus::Succeeded, write()).content_kind(),
-            crate::journal::entry::ContentKind::Row
-        );
     }
 }

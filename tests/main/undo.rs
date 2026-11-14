@@ -8,13 +8,14 @@
 
 use fractal::config::{EditPolicy, Profile};
 use fractal::journal::entry::{
-    ActivationUndoStep, EntryObject, EntryStatus, EntrySystem, JournalEntry, JournalOperation,
+    ActivationUndoStep, EntryStatus, EntrySystem, JournalEntry, RecordedObject, Stream,
 };
-use fractal::journal::recorder::Journal;
+use fractal::journal::recorder::{ActivationBefore, AfterImages, Journal};
 use fractal::reportable_error::ReportableError;
+use fractal::sap::class_include::ClassInclude;
 use fractal::sap::client::SapClient;
 use fractal::sap::object_family::AdtObjectFamily;
-use fractal::sap::undo::{UndoError, UndoPlan, plan_activation_undo, undo_activation};
+use fractal::sap::undo::{StreamUndo, UndoError, UndoPlan, plan_activation_undo, undo_activation};
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{method, path, query_param},
@@ -54,21 +55,86 @@ fn journal(dir: &tempfile::TempDir) -> Journal {
     )
 }
 
-fn class() -> EntryObject {
-    EntryObject {
-        object_type: AdtObjectFamily::parse("CLAS").unwrap(),
+/// What a test records an entry against.
+#[derive(Clone)]
+struct Target {
+    object_type: &'static str,
+    name: String,
+    uri: String,
+}
+
+fn class() -> Target {
+    Target {
+        object_type: "CLAS",
         name: "ZCL_SAMPLE".to_owned(),
         uri: CLASS_URI.to_owned(),
-        source_part: None,
     }
 }
 
-fn data_element() -> EntryObject {
-    EntryObject {
-        object_type: AdtObjectFamily::parse("DTEL").unwrap(),
+fn data_element() -> Target {
+    Target {
+        object_type: "DTEL",
         name: "ZSAMPLE_DE".to_owned(),
         uri: DTEL_URI.to_owned(),
-        source_part: None,
+    }
+}
+
+/// The stream these tests record content in: the only one, or a class's
+/// `main`. A class's other includes are recorded as never having existed.
+fn primary(target: &Target) -> Stream {
+    if target.object_type == "CLAS" {
+        Stream::Include(ClassInclude::Main)
+    } else {
+        Stream::Whole
+    }
+}
+
+fn object<T>(target: &Target, mut content: impl FnMut(Stream) -> Option<T>) -> RecordedObject<T>
+where
+    T: Default,
+{
+    RecordedObject::for_family(
+        AdtObjectFamily::parse(target.object_type).unwrap(),
+        target.name.clone(),
+        target.uri.clone(),
+        |stream| content(stream).unwrap_or_default(),
+    )
+}
+
+/// An activation recorded as `pending`, before it resolved.
+fn begun(
+    journal: &Journal,
+    target: &Target,
+    active_before: Option<&str>,
+    inactive_before: Option<&str>,
+) -> JournalEntry {
+    let primary = primary(target);
+    journal
+        .begin_activation(
+            object(target, |stream| {
+                (stream == primary).then(|| ActivationBefore {
+                    active: active_before.map(str::to_owned),
+                    inactive: inactive_before.map(str::to_owned),
+                })
+            }),
+            None,
+        )
+        .unwrap()
+}
+
+/// What every stream held after the activation: the primary one `after`, a
+/// class's other includes still absent.
+fn after_images(target: &Target, after: &str) -> AfterImages {
+    let primary = primary(target);
+    match primary {
+        Stream::Whole => AfterImages::from([(Stream::Whole, Some(after.to_owned()))]),
+        Stream::Include(_) => ClassInclude::ALL
+            .into_iter()
+            .map(|include| {
+                let stream = Stream::Include(include);
+                (stream, (stream == primary).then(|| after.to_owned()))
+            })
+            .collect(),
     }
 }
 
@@ -76,21 +142,34 @@ fn data_element() -> EntryObject {
 /// `inactive_before`, and left `active_after` in place.
 fn recorded(
     journal: &Journal,
-    object: EntryObject,
+    target: Target,
     active_before: Option<&str>,
     inactive_before: Option<&str>,
     active_after: &str,
 ) -> JournalEntry {
-    let entry = journal
-        .begin(
-            object,
-            JournalOperation::activate(),
-            None,
-            active_before,
-            inactive_before,
-        )
-        .unwrap();
-    journal.succeeded(entry, Some(active_after), None).unwrap()
+    let entry = begun(journal, &target, active_before, inactive_before);
+    journal
+        .succeeded(entry, &after_images(&target, active_after))
+        .unwrap()
+}
+
+/// The stream a plan for a [`class`] or [`data_element`] entry is about.
+fn primary_undo(plan: &UndoPlan) -> &StreamUndo {
+    plan.streams
+        .iter()
+        .find(|stream| {
+            matches!(
+                stream.stream,
+                Stream::Whole | Stream::Include(ClassInclude::Main)
+            )
+        })
+        .expect("a primary stream")
+}
+
+/// How the worklist lists a class whose `main` the caller has staged: by
+/// section, never by the bare class URI alone.
+fn staged_main() -> String {
+    format!("{CLASS_SOURCE_URI}#type=CLAS%2FOSU;name=ZCL_SAMPLE")
 }
 
 /// Every method that could change something, mounted to fail the test if it is
@@ -196,8 +275,14 @@ async fn an_unchanged_object_can_be_undone_and_the_plan_says_what_it_would_do() 
     assert!(plan.matches_recorded_state());
     // Step 1 restores the previous active version, step 3 puts back the pending
     // work the activation consumed. Undoing only the first would discard it.
-    assert_eq!(plan.restore, PREVIOUS_ACTIVE);
-    assert_eq!(plan.restore_inactive.as_deref(), Some(PENDING));
+    assert_eq!(
+        primary_undo(&plan).restore.as_deref(),
+        Some(PREVIOUS_ACTIVE)
+    );
+    assert_eq!(
+        primary_undo(&plan).restore_inactive.as_deref(),
+        Some(PENDING)
+    );
     assert!(plan.overridden.is_empty());
     server.verify().await;
 }
@@ -216,7 +301,7 @@ async fn an_entry_with_no_pending_work_leaves_the_inactive_layer_alone() {
 
     // "I had none" is different from "there was empty pending work": step 3
     // must do nothing rather than write an empty version.
-    assert_eq!(plan.restore_inactive, None);
+    assert_eq!(primary_undo(&plan).restore_inactive, None);
     server.verify().await;
 }
 
@@ -306,16 +391,19 @@ async fn a_delete_entry_is_not_something_undo_reverses() {
     forbid_writes(&server).await;
     let dir = tempfile::tempdir().unwrap();
     let journal = journal(&dir);
+    let target = class();
+    let primary = primary(&target);
     let entry = journal
-        .begin(
-            class(),
-            JournalOperation::delete(None, None),
+        .begin_delete(
+            object(&target, |stream| {
+                (stream == primary).then(|| Some(PREVIOUS_ACTIVE.to_owned()))
+            }),
             None,
-            Some(PREVIOUS_ACTIVE),
+            None,
             None,
         )
         .unwrap();
-    let entry = journal.succeeded(entry, None, None).unwrap();
+    let entry = journal.succeeded(entry, &AfterImages::new()).unwrap();
 
     let error = plan(&server, &journal, entry, true).await.unwrap_err();
 
@@ -329,15 +417,7 @@ async fn a_refused_operation_left_nothing_to_undo() {
     forbid_writes(&server).await;
     let dir = tempfile::tempdir().unwrap();
     let journal = journal(&dir);
-    let entry = journal
-        .begin(
-            class(),
-            JournalOperation::activate(),
-            None,
-            Some(PREVIOUS_ACTIVE),
-            Some(PENDING),
-        )
-        .unwrap();
+    let entry = begun(&journal, &class(), Some(PREVIOUS_ACTIVE), Some(PENDING));
     let entry = journal.failed(entry).unwrap();
 
     let error = plan(&server, &journal, entry, false).await.unwrap_err();
@@ -355,15 +435,7 @@ async fn an_unresolved_entry_can_be_forced_because_its_before_image_is_genuine()
     let dir = tempfile::tempdir().unwrap();
     let journal = journal(&dir);
     // A crash between the two journal writes leaves exactly this.
-    let entry = journal
-        .begin(
-            class(),
-            JournalOperation::activate(),
-            None,
-            Some(PREVIOUS_ACTIVE),
-            Some(PENDING),
-        )
-        .unwrap();
+    let entry = begun(&journal, &class(), Some(PREVIOUS_ACTIVE), Some(PENDING));
 
     let plan = plan(&server, &journal, entry, true).await.unwrap();
 
@@ -376,7 +448,10 @@ async fn an_unresolved_entry_can_be_forced_because_its_before_image_is_genuine()
             .collect::<Vec<_>>(),
         vec!["entry_unresolved", "no_after_image"]
     );
-    assert_eq!(plan.restore, PREVIOUS_ACTIVE);
+    assert_eq!(
+        primary_undo(&plan).restore.as_deref(),
+        Some(PREVIOUS_ACTIVE)
+    );
     server.verify().await;
 }
 
@@ -393,7 +468,11 @@ async fn content_the_sweep_removed_is_refused_rather_than_half_restored() {
         Some(PENDING),
         ACTIVATED,
     );
-    let hash = entry.active_before.sha256().unwrap().to_owned();
+    let hash = entry
+        .activation_images(primary(&class()))
+        .and_then(|images| images.active_before.sha256())
+        .unwrap()
+        .to_owned();
     std::fs::remove_file(journal.blobs().path_of(&hash)).unwrap();
 
     let error = plan(&server, &journal, entry, true).await.unwrap_err();
@@ -462,7 +541,7 @@ async fn an_object_outside_the_customer_namespaces_is_refused_before_reading() {
     let journal = journal(&dir);
     let entry = recorded(
         &journal,
-        EntryObject {
+        Target {
             name: "SAPSAMPLE".to_owned(),
             uri: "/sap/bc/adt/oo/classes/sapsample".to_owned(),
             ..class()
@@ -631,7 +710,7 @@ async fn undoing_restores_the_previous_active_version_and_the_pending_work() {
         vec![PREVIOUS_ACTIVE, PENDING]
     );
     assert_eq!(outcome.steps_run.len(), 3);
-    assert!(outcome.inactive_restored);
+    assert_eq!(outcome.inactive_restored, vec![primary(&class())]);
     assert!(!outcome.still_locked);
 
     // The entry records how far it got, so an interrupted rerun resumes, and
@@ -648,7 +727,10 @@ async fn undoing_restores_the_previous_active_version_and_the_pending_work() {
     // before the undo, so nothing is lost by not writing one.
     assert_eq!(journal.entries().list().unwrap().len(), 1);
     assert_eq!(
-        entry.active_after.as_ref().unwrap().sha256(),
+        entry
+            .activation_images(primary(&class()))
+            .and_then(|images| images.active_after.as_ref())
+            .and_then(|after| after.sha256()),
         Some(fractal::source_change::source_sha256(ACTIVATED).as_str())
     );
     server.verify().await;
@@ -750,7 +832,7 @@ async fn pending_work_that_the_undo_would_publish_or_restore_is_not_a_refusal() 
     let server = MockServer::start().await;
     forbid_writes(&server).await;
     mount_active_source(&server, ACTIVATED).await;
-    mount_pending_work(&server, CLASS_URI).await;
+    mount_pending_work(&server, &staged_main()).await;
     Mock::given(method("GET"))
         .and(path(CLASS_SOURCE_URI))
         .and(query_param("version", "inactive"))
@@ -781,7 +863,7 @@ async fn pending_work_the_undo_is_about_to_activate_is_not_a_refusal() {
     let server = MockServer::start().await;
     forbid_writes(&server).await;
     mount_active_source(&server, ACTIVATED).await;
-    mount_pending_work(&server, CLASS_URI).await;
+    mount_pending_work(&server, &staged_main()).await;
     Mock::given(method("GET"))
         .and(path(CLASS_SOURCE_URI))
         .and(query_param("version", "inactive"))
@@ -811,7 +893,7 @@ async fn pending_work_staged_since_the_activation_is_not_written_over() {
     mount_active_source(&server, ACTIVATED).await;
     // Somebody has staged an edit since, and it is not the version this entry
     // recorded: step 1 would write over it and step 3 would put theirs back.
-    mount_pending_work(&server, CLASS_URI).await;
+    mount_pending_work(&server, &staged_main()).await;
     Mock::given(method("GET"))
         .and(path(CLASS_SOURCE_URI))
         .and(query_param("version", "inactive"))
@@ -949,5 +1031,186 @@ async fn undoing_a_metadata_activation_restores_the_document_and_the_pending_one
     let entry = journal.entries().find(&entry_id).unwrap();
     assert_eq!(entry.status, EntryStatus::Undone);
     assert_eq!(journal.entries().list().unwrap().len(), 1);
+    server.verify().await;
+}
+
+// --- Classes: one entry, every include --------------------------------------
+
+const LOCAL_TYPES_URI: &str = "/sap/bc/adt/oo/classes/zcl_sample/includes/implementations";
+const LOCAL_BEFORE: &str = "CLASS lhc_sample DEFINITION.\n\" before\nENDCLASS.\n";
+const LOCAL_STAGED: &str = "CLASS lhc_sample DEFINITION.\n\" staged\nENDCLASS.\n";
+
+/// A class activation that changed only its local types: `main` stayed as it
+/// was, `implementations` went from `LOCAL_BEFORE` to `LOCAL_STAGED`.
+fn local_types_activation(journal: &Journal) -> JournalEntry {
+    let target = class();
+    let entry = journal
+        .begin_activation(
+            object(&target, |stream| match stream {
+                Stream::Include(ClassInclude::Main) => Some(ActivationBefore {
+                    active: Some(PREVIOUS_ACTIVE.to_owned()),
+                    inactive: None,
+                }),
+                Stream::Include(ClassInclude::Implementations) => Some(ActivationBefore {
+                    active: Some(LOCAL_BEFORE.to_owned()),
+                    inactive: Some(LOCAL_STAGED.to_owned()),
+                }),
+                _ => None,
+            }),
+            None,
+        )
+        .unwrap();
+    let after: AfterImages = ClassInclude::ALL
+        .into_iter()
+        .map(|include| {
+            let content = match include {
+                ClassInclude::Main => Some(PREVIOUS_ACTIVE.to_owned()),
+                ClassInclude::Implementations => Some(LOCAL_STAGED.to_owned()),
+                _ => None,
+            };
+            (Stream::Include(include), content)
+        })
+        .collect();
+    journal.succeeded(entry, &after).unwrap()
+}
+
+async fn mount_local_types(server: &MockServer, version: &str, bodies: &[&str]) {
+    Mock::given(method("GET"))
+        .and(path(LOCAL_TYPES_URI))
+        .and(query_param("version", version))
+        .respond_with(crate::adt_edit_mock::SequentialResponses::sources(bodies))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn undoing_a_class_activation_restores_the_include_it_published() {
+    let server = MockServer::start().await;
+    let session = session();
+    session.mount_csrf_session(&server).await;
+    // `main` in step 1, then the include in steps 1 and 3.
+    session
+        .lock_request(None)
+        .respond_with(ResponseTemplate::new(200).set_body_string(session.lock_result_body()))
+        .expect(3)
+        .mount(&server)
+        .await;
+    session
+        .unlock_request()
+        .respond_with(ResponseTemplate::new(200))
+        .expect(3)
+        .mount(&server)
+        .await;
+    // `main` already holds what it held before, so nothing is written to it.
+    session
+        .source_write(None)
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(LOCAL_TYPES_URI))
+        .and(query_param("lockHandle", session.lock_handle))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/checkruns"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<checkMessageList/>"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/activation"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<activationResult/>"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    mount_sequence(&server, "active", &[PREVIOUS_ACTIVE]).await;
+    mount_sequence(&server, "inactive", &[PREVIOUS_ACTIVE]).await;
+    mount_local_types(&server, "active", &[LOCAL_STAGED]).await;
+    // Under step 1's lock, what it stored, under step 3's lock, what it stored.
+    mount_local_types(
+        &server,
+        "inactive",
+        &[LOCAL_STAGED, LOCAL_BEFORE, LOCAL_BEFORE, LOCAL_STAGED],
+    )
+    .await;
+    mount_inactive_list_sequence(&server, &[false, true, false]).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let journal = journal(&dir);
+    let entry = local_types_activation(&journal);
+    let plan = plan(&server, &journal, entry, false).await.unwrap();
+    let outcome = undo(&server, &journal, &plan).await.unwrap();
+
+    assert_eq!(
+        written_bodies(&server).await,
+        vec![LOCAL_BEFORE, LOCAL_STAGED]
+    );
+    assert_eq!(
+        outcome.inactive_restored,
+        vec![Stream::Include(ClassInclude::Implementations)]
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn a_class_whose_local_types_moved_since_is_stale() {
+    let server = MockServer::start().await;
+    forbid_writes(&server).await;
+    mount_sequence(&server, "active", &[PREVIOUS_ACTIVE]).await;
+    mount_local_types(
+        &server,
+        "active",
+        &["CLASS lhc_sample DEFINITION.\n\" theirs\nENDCLASS.\n"],
+    )
+    .await;
+    mount_no_pending_work(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let journal = journal(&dir);
+    let entry = local_types_activation(&journal);
+
+    let error = plan(&server, &journal, entry, false).await.unwrap_err();
+
+    assert_eq!(error.code(), "undo_stale");
+    assert!(
+        error.hint().unwrap().contains("changed: implementations"),
+        "{:?}",
+        error.hint()
+    );
+    server.verify().await;
+}
+
+/// Step 2 activates the class, which publishes every include the caller has
+/// staged. Pending work in an include the undo never touches would be
+/// published along with it, so it is a refusal like any other.
+#[tokio::test]
+async fn pending_work_in_an_include_the_undo_does_not_touch_is_at_risk() {
+    let server = MockServer::start().await;
+    forbid_writes(&server).await;
+    mount_sequence(&server, "active", &[PREVIOUS_ACTIVE]).await;
+    mount_local_types(&server, "active", &[LOCAL_STAGED]).await;
+    mount_pending_work(
+        &server,
+        "/sap/bc/adt/oo/classes/zcl_sample/includes/definitions",
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/sap/bc/adt/oo/classes/zcl_sample/includes/definitions",
+        ))
+        .and(query_param("version", "inactive"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("TYPES ty_half_done TYPE i."))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let journal = journal(&dir);
+    let entry = local_types_activation(&journal);
+
+    let error = plan(&server, &journal, entry, false).await.unwrap_err();
+
+    assert_eq!(error.code(), "undo_pending_work");
     server.verify().await;
 }

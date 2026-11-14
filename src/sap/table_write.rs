@@ -7,7 +7,6 @@ use super::{
     client::SapClient,
     editable_source::EditableAdtObjectType,
     exec_class::{ExecClassError, executor_class_name, rerun_executor, run_generated_source},
-    object_family::AdtObjectFamily,
     table::{
         QueryOptions, TableError, TableFieldMetadata, TableMetadata, TableMetadataOptions,
         get_table_metadata, run_query,
@@ -16,9 +15,7 @@ use super::{
 };
 use crate::config::EditPolicy;
 use crate::journal::JournalError;
-use crate::journal::entry::{
-    EntryObject, FieldChange as JournalFieldChange, JournalOperation, RowOperation, RowWrite,
-};
+use crate::journal::entry::{FieldChange as JournalFieldChange, RowOperation, RowWrite, TableRef};
 use crate::journal::recorder::Journal;
 use crate::pattern::glob_matches;
 use crate::reportable_error::ReportableError;
@@ -1142,9 +1139,9 @@ pub async fn write_table_row(
     // never written has no recovery at all. A dry run changes nothing and so
     // records nothing.
     let entry = match (journal, mode) {
-        (Some(journal), WriteMode::Execute) => Some(journal.begin(
+        (Some(journal), WriteMode::Execute) => Some(journal.begin_table_write(
             entry_object(&validated.table),
-            JournalOperation::table_write(vec![RowWrite {
+            vec![(RowWrite {
                 operation: validated.operation,
                 key: validated
                     .keys
@@ -1160,10 +1157,8 @@ pub async fn write_table_row(
                         after: change.after.clone(),
                     })
                     .collect(),
-            }]),
+            }, Some(row_json(&validated.before)))],
             request.transport().map(str::to_owned),
-            Some(&row_json(&validated.before)),
-            None,
         )?),
         _ => None,
     };
@@ -1186,7 +1181,7 @@ pub async fn write_table_row(
     if let (Some(journal), Some(entry)) = (journal, entry) {
         if row_changed(&envelope.status) {
             let after = read_row(sap, &validated.table, &validated.keys).await?;
-            journal.succeeded(entry, Some(&row_json(&after)), None)?;
+            journal.table_write_succeeded(entry, &[Some(row_json(&after))])?;
         } else {
             journal.failed(entry)?;
         }
@@ -1321,16 +1316,14 @@ async fn read_row(
 ///
 /// A table is a real ADT object with a real URI, so the entry needs no new kind
 /// of target: what is new is the operation, and the row's key lives in it.
-fn entry_object(table: &str) -> EntryObject {
-    EntryObject {
-        object_type: AdtObjectFamily::Source(EditableAdtObjectType::Table),
+fn entry_object(table: &str) -> TableRef {
+    TableRef {
         name: table.to_owned(),
         uri: format!(
             "{}/{}",
             EditableAdtObjectType::Table.collection_path(),
             table.to_ascii_lowercase()
         ),
-        source_part: None,
     }
 }
 

@@ -7,7 +7,7 @@
 
 use crate::adt_edit_mock::AdtEditSession;
 use fractal::config::{EditPolicy, Profile};
-use fractal::journal::entry::EntrySystem;
+use fractal::journal::entry::{EntrySystem, Stream};
 use fractal::journal::recorder::Journal;
 use fractal::reportable_error::ReportableError;
 use fractal::sap::{
@@ -503,8 +503,13 @@ async fn an_inactive_write_does_not_move_the_recorded_active_hash() {
     let entries = journal.entries().list().unwrap();
     assert_eq!(entries.len(), 2);
     assert_eq!(
-        entries[0].active_after.as_ref().unwrap().sha256(),
-        entries[1].active_before.sha256(),
+        entries[0]
+            .activation_images(Stream::Whole)
+            .and_then(|images| images.active_after.as_ref())
+            .and_then(|after| after.sha256()),
+        entries[1]
+            .activation_images(Stream::Whole)
+            .and_then(|images| images.active_before.sha256()),
         "the active document was recorded as having changed when it had not"
     );
     server.verify().await;

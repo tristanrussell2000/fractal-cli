@@ -50,7 +50,7 @@ impl EntryStore {
     /// [`JournalError::IdExhausted`] when too many entries claim one
     /// millisecond.
     pub fn create(&self, mut entry: JournalEntry) -> Result<JournalEntry, JournalError> {
-        let directory = self.object_dir(&paths::object_key(&entry.object.uri));
+        let directory = self.object_dir(&paths::object_key(entry.object_uri()));
         create_private_dir(&directory)?;
         let now = OffsetDateTime::now_utc();
         entry.recorded_at = format(now, RECORDED_AT_FORMAT);
@@ -103,7 +103,7 @@ impl EntryStore {
     /// Returns [`JournalError::EntryMissing`] when there is no such entry, or
     /// [`JournalError::Write`] when it cannot be replaced.
     pub fn update(&self, entry: &JournalEntry) -> Result<(), JournalError> {
-        let directory = self.object_dir(&paths::object_key(&entry.object.uri));
+        let directory = self.object_dir(&paths::object_key(entry.object_uri()));
         let path = directory.join(format!("{}.{EXTENSION}", entry.id));
         if !path.is_file() {
             return Err(JournalError::EntryMissing {
@@ -175,10 +175,34 @@ impl EntryStore {
             .collect())
     }
 
+    /// Entries that exist on disk but cannot be read, as `(object key, id)`.
+    ///
+    /// [`Self::list`] skips them so one damaged file cannot hide every other
+    /// recovery option; this is how they are still reported rather than
+    /// silently vanishing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JournalError::Read`] when a directory cannot be listed.
+    pub fn unreadable(&self) -> Result<Vec<(String, String)>, JournalError> {
+        let mut unreadable = Vec::new();
+        for object_key in self.object_keys()? {
+            let mut ids = self.ids_for(&object_key)?;
+            ids.sort();
+            for id in ids {
+                if self.read(&object_key, &id).is_err() {
+                    unreadable.push((object_key.clone(), id));
+                }
+            }
+        }
+        Ok(unreadable)
+    }
+
     /// Every entry for this system, oldest first.
     ///
     /// An entry that cannot be parsed is skipped rather than failing the whole
     /// listing: one damaged file must not hide every other recovery option.
+    /// [`Self::unreadable`] names them.
     ///
     /// # Errors
     ///
@@ -332,32 +356,7 @@ mod tests {
     }
 
     fn entry(uri: &str) -> JournalEntry {
-        use crate::journal::entry::{EntryObject, EntrySystem, JournalOperation};
-        use crate::sap::object_family::AdtObjectFamily;
-
-        JournalEntry {
-            id: String::new(),
-            recorded_at: String::new(),
-            status: EntryStatus::Pending,
-            system: EntrySystem {
-                base_url: "https://sap.example:8001".to_owned(),
-                profile: "dev".to_owned(),
-                client: "100".to_owned(),
-                user: "developer".to_owned(),
-            },
-            object: EntryObject {
-                object_type: AdtObjectFamily::parse("PROG").unwrap(),
-                name: "ZSAMPLE".to_owned(),
-                uri: uri.to_owned(),
-                source_part: None,
-            },
-            operation: JournalOperation::activate(),
-            transport: None,
-            active_before: ContentRef::Sha256("a".repeat(64)),
-            inactive_before: None,
-            active_after: None,
-            etag_after: None,
-        }
+        crate::journal::entry::sample_activation(uri, ContentRef::Sha256("a".repeat(64)))
     }
 
     fn key(uri: &str) -> String {
@@ -427,15 +426,35 @@ mod tests {
     }
 
     #[test]
+    fn an_entry_that_cannot_be_read_is_reported_not_hidden() {
+        let (store, _dir) = store();
+        let good = store.create(entry(PROGRAM)).unwrap();
+        std::fs::write(
+            store
+                .root()
+                .join(key(PROGRAM))
+                .join("20260101T000000.000Z.json"),
+            "{\"not\": \"an entry\"}",
+        )
+        .unwrap();
+
+        assert_eq!(store.list().unwrap().len(), 1);
+        assert_eq!(
+            store.unreadable().unwrap(),
+            vec![(key(PROGRAM), "20260101T000000.000Z".to_owned())]
+        );
+        assert!(store.read(&key(PROGRAM), &good.id).is_ok());
+    }
+
+    #[test]
     fn resolving_an_entry_replaces_it_in_place() {
         let (store, _dir) = store();
         let mut written = store.create(entry(PROGRAM)).unwrap();
-        written.succeeded(ContentRef::Sha256("b".repeat(64)), Some("etag".to_owned()));
+        written.status = EntryStatus::Succeeded;
         store.update(&written).unwrap();
 
         let read = store.read(&key(PROGRAM), &written.id).unwrap();
         assert_eq!(read.status, EntryStatus::Succeeded);
-        assert_eq!(read.etag_after.as_deref(), Some("etag"));
         assert_eq!(store.ids_for(&key(PROGRAM)).unwrap().len(), 1);
     }
 

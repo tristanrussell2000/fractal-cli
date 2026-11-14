@@ -16,14 +16,17 @@ use crate::{
     reported::Reported,
 };
 use fractal::journal::blobs::BlobStore;
-use fractal::journal::entry::{ActivationUndoStep, JournalEntry};
+use fractal::journal::entry::{ActivationUndoStep, EntryRecord, JournalEntry};
 use fractal::journal::paths;
 use fractal::journal::recorder::Journal;
 use fractal::journal::store::EntryStore;
 use fractal::reportable_error::ReportableError;
 use fractal::sap::client::SapClient;
+use fractal::sap::object_family::AdtObjectFamily;
 use fractal::sap::table_undo::{plan_table_undo, undo_table_write};
-use fractal::sap::undo::{UndoOutcome, UndoPlan, plan_activation_undo, undo_activation};
+use fractal::sap::undo::{
+    StreamUndo, UndoOutcome, UndoPlan, plan_activation_undo, undo_activation,
+};
 
 /// What one `fractal undo` produced.
 ///
@@ -74,18 +77,8 @@ pub struct ActivationUndoOutput {
     object_type: String,
     name: String,
     object_uri: String,
-    /// What step 1 would write back as the inactive version.
-    restore_sha256: String,
-    restore_bytes: usize,
-    /// What step 3 would put back afterwards, without activating it. Absent
-    /// when the caller had no pending work at the time.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    restore_inactive_sha256: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    expected_active_sha256: Option<String>,
-    /// What the object holds now. Absent when it has no active version.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    current_active_sha256: Option<String>,
+    /// One per stream: the object's only one, or each of a class's includes.
+    streams: Vec<StreamUndoOutput>,
     matches_recorded_state: bool,
     forced: bool,
     /// Which refusals `--force` proceeded past, so an override is never silent.
@@ -113,8 +106,35 @@ pub struct ActivationUndoOutput {
     content: Vec<UndoContentPath>,
 }
 
+/// What the undo does to one stream.
+#[derive(Debug, Serialize)]
+struct StreamUndoOutput {
+    /// The class include. Absent for an object with one stream.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    include: Option<&'static str>,
+    /// What step 1 writes back as the inactive version. Absent when the stream
+    /// had no active version, which step 1 writes back empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    restore_sha256: Option<String>,
+    restore_bytes: usize,
+    /// What step 3 puts back afterwards, without activating it. Absent when
+    /// there was no pending work in this stream.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    restore_inactive_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expected_active_sha256: Option<String>,
+    /// What the stream holds now. Absent when it has no active version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current_active_sha256: Option<String>,
+    matches_recorded_state: bool,
+    /// Whether step 1 writes it.
+    written: bool,
+}
+
 #[derive(Debug, Serialize)]
 struct UndoContentPath {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    include: Option<&'static str>,
     field: &'static str,
     sha256: String,
     path: String,
@@ -138,7 +158,7 @@ pub async fn object_undo(
 
     // A table write is reversed by its own path: one guarded statement, not
     // three steps over content blobs.
-    if entry.operation.table_write_rows().is_some() {
+    if matches!(entry.record, EntryRecord::TableWrite { .. }) {
         return undo_table_row(
             &mut client,
             RowUndo {
@@ -267,12 +287,8 @@ fn select_entry(entries: &EntryStore, args: &UndoArgs) -> Result<JournalEntry, R
     // resolving a URI: the entry already holds the canonical name, and the two
     // must agree about what "this object" means.
     let mut matching = entries.list()?.into_iter().filter(|entry| {
-        entry
-            .object
-            .object_type
-            .as_str()
-            .eq_ignore_ascii_case(object_type)
-            && entry.object.name.eq_ignore_ascii_case(name)
+        entry.record.object_type().eq_ignore_ascii_case(object_type)
+            && entry.record.object_name().eq_ignore_ascii_case(name)
     });
     // The list is oldest first, so the last match is the most recent.
     matching.next_back().ok_or_else(|| {
@@ -362,14 +378,10 @@ fn report(
         profile,
         dry_run: args.dry_run,
         entry_id: plan.entry.id.clone(),
-        object_type: plan.entry.object.object_type.as_str().to_owned(),
-        name: plan.entry.object.name.clone(),
+        object_type: plan.entry.record.object_type().to_owned(),
+        name: plan.entry.record.object_name().to_owned(),
         object_uri: plan.object_uri.clone(),
-        restore_sha256: plan.restore_sha256.clone(),
-        restore_bytes: plan.restore.len(),
-        restore_inactive_sha256: plan.restore_inactive_sha256.clone(),
-        expected_active_sha256: plan.expected_active_sha256.clone(),
-        current_active_sha256: plan.current_active_sha256.clone(),
+        streams: plan.streams.iter().map(stream_output).collect(),
         matches_recorded_state: plan.matches_recorded_state(),
         forced: args.force,
         overridden: plan
@@ -389,33 +401,79 @@ fn report(
     }
 }
 
+fn stream_output(stream: &StreamUndo) -> StreamUndoOutput {
+    StreamUndoOutput {
+        include: stream
+            .stream
+            .include()
+            .map(fractal::sap::class_include::ClassInclude::as_str),
+        restore_sha256: stream.restore_sha256.clone(),
+        restore_bytes: stream.restore.as_ref().map_or(0, String::len),
+        restore_inactive_sha256: stream.restore_inactive_sha256.clone(),
+        expected_active_sha256: stream
+            .expected_active
+            .as_ref()
+            .and_then(|expected| expected.sha256())
+            .map(str::to_owned),
+        current_active_sha256: stream.current_active_sha256.clone(),
+        matches_recorded_state: stream.matches_recorded_state(),
+        written: stream.written(),
+    }
+}
+
 /// The three steps, spelled out. Step 3 is the one worth naming explicitly:
 /// without it an undo silently discards whatever pending work the activation
 /// consumed.
 fn steps(plan: &UndoPlan) -> Vec<String> {
-    let write = match plan.entry.content_kind() {
-        fractal::journal::entry::ContentKind::Source => "source",
-        fractal::journal::entry::ContentKind::Xml => "document",
-        // Unreachable: a table write is undone by its own path, which has one
-        // step rather than these three.
-        fractal::journal::entry::ContentKind::Row => "row",
+    let write = match plan.entry.record {
+        EntryRecord::Activate { ref object, .. } => match object.family() {
+            AdtObjectFamily::Source(_) => "source",
+            AdtObjectFamily::Metadata(_) => "document",
+        },
+        // Unreachable: only an activation gets this far.
+        EntryRecord::Delete { .. } | EntryRecord::TableWrite { .. } => "content",
     };
-    vec![
-        format!(
-            "write the previous active {write} ({}) as the inactive version",
-            &plan.restore_sha256[..12]
-        ),
-        "activate it".to_owned(),
-        plan.restore_inactive_sha256.as_ref().map_or_else(
-            || "leave the inactive layer empty, as it was before the activation".to_owned(),
-            |sha256| {
-                format!(
-                    "restore the pending {write} ({}) without activating it",
-                    &sha256[..12]
-                )
-            },
-        ),
-    ]
+    let short = |sha256: Option<&String>| {
+        sha256.map_or_else(|| "empty".to_owned(), |sha256| sha256[..12].to_owned())
+    };
+    let named = |stream: &StreamUndo| {
+        stream
+            .stream
+            .include()
+            .map_or_else(String::new, |include| format!("{} ", include.as_str()))
+    };
+
+    // Only the streams whose content changes. The others are written too,
+    // but what they get back is what they already hold.
+    let mut steps = Vec::new();
+    for stream in plan
+        .streams
+        .iter()
+        .filter(|stream| stream.written() && stream.restore_sha256 != stream.current_active_sha256)
+    {
+        steps.push(format!(
+            "write the previous active {}{write} ({}) as the inactive version",
+            named(stream),
+            short(stream.restore_sha256.as_ref())
+        ));
+    }
+    steps.push("activate it".to_owned());
+    let pending: Vec<&StreamUndo> = plan
+        .streams
+        .iter()
+        .filter(|stream| stream.restore_inactive_sha256.is_some())
+        .collect();
+    if pending.is_empty() {
+        steps.push("leave the inactive layer empty, as it was before the activation".to_owned());
+    }
+    for stream in pending {
+        steps.push(format!(
+            "restore the pending {}{write} ({}) without activating it",
+            named(stream),
+            short(stream.restore_inactive_sha256.as_ref())
+        ));
+    }
+    steps
 }
 
 /// The JSON spelling of a step, which is what a caller reading the output sees.
@@ -428,20 +486,29 @@ const fn step_name(step: ActivationUndoStep) -> &'static str {
 }
 
 fn content_paths(plan: &UndoPlan, blobs: &BlobStore) -> Vec<UndoContentPath> {
-    [
-        ("restore", Some(&plan.restore_sha256)),
-        ("restore_inactive", plan.restore_inactive_sha256.as_ref()),
-    ]
-    .into_iter()
-    .filter_map(|(field, sha256)| {
-        let sha256 = sha256?;
-        Some(UndoContentPath {
-            field,
-            sha256: sha256.clone(),
-            path: blobs.path_of(sha256).display().to_string(),
+    plan.streams
+        .iter()
+        .flat_map(|stream| {
+            let include = stream
+                .stream
+                .include()
+                .map(fractal::sap::class_include::ClassInclude::as_str);
+            [
+                ("restore", stream.restore_sha256.as_ref()),
+                ("restore_inactive", stream.restore_inactive_sha256.as_ref()),
+            ]
+            .into_iter()
+            .filter_map(move |(field, sha256)| {
+                let sha256 = sha256?;
+                Some(UndoContentPath {
+                    include,
+                    field,
+                    sha256: sha256.clone(),
+                    path: blobs.path_of(sha256).display().to_string(),
+                })
+            })
         })
-    })
-    .collect()
+        .collect()
 }
 
 pub fn print_object_undo(result: &UndoOutput, output: OutputFormat) {
@@ -517,7 +584,10 @@ fn print_activation_undo(result: &ActivationUndoOutput) {
         );
     }
     for content in &result.content {
-        let _ = writeln!(rendered, "{}: {}", content.field, content.path);
+        let include = content
+            .include
+            .map_or_else(String::new, |include| format!("{include} "));
+        let _ = writeln!(rendered, "{include}{}: {}", content.field, content.path);
     }
     print!("{rendered}");
 }

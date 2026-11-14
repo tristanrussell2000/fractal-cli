@@ -20,13 +20,15 @@ use super::{
     adt_object_identity::AdtObjectIdentity,
     adt_response::parse_adt_document,
     adt_version::AdtVersion,
+    class_include::ClassInclude,
     client::{SapClient, SapClientError},
     edit_session::{
         AdtEditSessionError, acquire_adt_object_lock, release_adt_object_lock,
         stateful_session_headers,
     },
     editable_source::{
-        AdtEditTargetValidationError, read_adt_source_for_edit, validate_adt_edit_target,
+        AdtEditTargetValidationError, AdtSourceReadError, EditableAdtObjectType,
+        read_adt_include_source_for_edit, read_adt_source_for_edit, validate_adt_edit_target,
     },
     find_non_empty_attribute,
     metadata_document::strip_navigation_links,
@@ -35,8 +37,8 @@ use super::{
     package_authorization::package_of_object_xml,
 };
 use crate::journal::JournalError;
-use crate::journal::entry::{EntryObject, JournalEntry, JournalOperation};
-use crate::journal::recorder::{Journal, Resolution, resolve};
+use crate::journal::entry::{JournalEntry, RecordedObject, Stream};
+use crate::journal::recorder::{AfterImages, Journal, Resolution, resolve};
 use crate::{
     reportable_error::{ReportableError, sap_http_status},
     suggested_command,
@@ -381,13 +383,12 @@ pub async fn delete_validated_adt_object(
     let gone = verify_object_is_gone(sap, &identity).await;
     // The object is gone either way the read-back landed, so the entry is
     // resolved before the result is reported.
-    // `Succeeded(None)` is an absence, which is what a deleted object is — not
-    // an object that held nothing.
+    let nothing_after = AfterImages::new();
     let journal_entry_incomplete = resolve(
         journal,
         entry,
         if gone.is_ok() {
-            Resolution::Succeeded(None)
+            Resolution::Succeeded(&nothing_after)
         } else {
             Resolution::Failed
         },
@@ -416,21 +417,66 @@ async fn record_deletion(
 ) -> Result<JournalEntry, AdtObjectDeletionError> {
     let (content, metadata) = deletion_content(sap, identity).await?;
     let (package, description) = describe(&metadata);
+    let includes = class_include_content(sap, identity).await?;
 
-    Ok(journal.begin(
-        EntryObject {
-            object_type: identity.object_type,
-            name: identity.name.clone(),
-            uri: identity.object_uri.clone(),
-            source_part: None,
-        },
-        JournalOperation::delete(package, description),
+    Ok(journal.begin_delete(
+        RecordedObject::for_family(
+            identity.object_type,
+            identity.name.clone(),
+            identity.object_uri.clone(),
+            |stream| match stream {
+                Stream::Whole | Stream::Include(ClassInclude::Main) => Some(content.clone()),
+                Stream::Include(include) => includes
+                    .iter()
+                    .find(|(candidate, _)| *candidate == include)
+                    .and_then(|(_, content)| content.clone()),
+            },
+        ),
+        package,
+        description,
         transport.map(str::to_owned),
-        Some(&content),
-        // A delete takes the object with both its layers, and the recipe
-        // restores one object. Pending work is not separately recoverable.
-        None,
     )?)
+}
+
+/// A class's includes other than `main`, as they stand: the local types a
+/// recreated class would otherwise silently lose. Empty for anything else.
+///
+/// An include the class does not have is recorded as absent; any other read
+/// failure stops the delete, because this is the only copy there will ever be.
+async fn class_include_content(
+    sap: &SapClient,
+    identity: &AdtObjectIdentity,
+) -> Result<Vec<(ClassInclude, Option<String>)>, AdtObjectDeletionError> {
+    let AdtObjectFamily::Source(object_type @ EditableAdtObjectType::Class) = identity.object_type
+    else {
+        return Ok(Vec::new());
+    };
+    let mut includes = Vec::new();
+    for include in ClassInclude::ALL {
+        if include == ClassInclude::Main {
+            continue;
+        }
+        let content = match read_adt_include_source_for_edit(
+            sap,
+            object_type,
+            &identity.name,
+            include,
+            AdtVersion::Active,
+        )
+        .await
+        {
+            Ok(read) => Some(read.snapshot.source),
+            Err(AdtSourceReadError::IncludeNotFound { .. }) => None,
+            Err(source) => {
+                return Err(AdtObjectDeletionError::SourceUnreadable {
+                    name: identity.name.clone(),
+                    source,
+                });
+            }
+        };
+        includes.push((include, content));
+    }
+    Ok(includes)
 }
 
 /// The content to keep, and the document to read the object's own fields from.

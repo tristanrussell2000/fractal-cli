@@ -139,7 +139,8 @@ pub(super) fn first_message_hint<'a>(
     fallback: &str,
 ) -> String {
     let summary = messages
-        .filter(|message| !message.trim().is_empty())
+        .map(|message| message.trim().trim_end_matches('.'))
+        .filter(|message| !message.is_empty())
         .take(3)
         .collect::<Vec<_>>()
         .join(" | ");

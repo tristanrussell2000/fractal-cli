@@ -287,8 +287,67 @@ pub(super) async fn probe_inactive_adt_source(
     sap: &SapClient,
     object_uri: &str,
 ) -> Result<bool, AdtInactiveSourceProbeError> {
-    let response = sap.get_text(INACTIVE_OBJECTS_PATH).await?;
-    inactive_object_response_contains_uri(&response, object_uri)
+    read_worklist(sap).await?.contains(object_uri)
+}
+
+/// The caller's inactive-object worklist, read once and asked several things.
+pub(super) struct Worklist(String);
+
+impl Worklist {
+    /// Whether the object itself is on the worklist.
+    pub(super) fn contains(&self, object_uri: &str) -> Result<bool, AdtInactiveSourceProbeError> {
+        inactive_object_response_contains_uri(&self.0, object_uri)
+    }
+
+    /// Which of a class's includes the caller has staged. See
+    /// [`staged_class_includes`].
+    pub(super) fn staged_includes(
+        &self,
+        class_uri: &str,
+    ) -> Result<Vec<ClassInclude>, AdtInactiveSourceProbeError> {
+        staged_includes_in(&self.0, class_uri)
+    }
+}
+
+pub(super) async fn read_worklist(
+    sap: &SapClient,
+) -> Result<Worklist, AdtInactiveSourceProbeError> {
+    Ok(Worklist(sap.get_text(INACTIVE_OBJECTS_PATH).await?))
+}
+
+/// Which of a class's includes the caller has staged: what activating the
+/// class will publish.
+///
+/// Read from the caller's own worklist, not from the class document, which
+/// also shows includes other users have staged and which an activation leaves
+/// alone. An include is listed under its own URI; `main` is listed by section
+/// or method, as `source/main#type=…`.
+///
+/// # Errors
+///
+/// Returns [`AdtInactiveSourceProbeError`] when the worklist cannot be read.
+pub(super) async fn staged_class_includes(
+    sap: &SapClient,
+    class_uri: &str,
+) -> Result<Vec<ClassInclude>, AdtInactiveSourceProbeError> {
+    read_worklist(sap).await?.staged_includes(class_uri)
+}
+
+fn staged_includes_in(
+    response: &str,
+    class_uri: &str,
+) -> Result<Vec<ClassInclude>, AdtInactiveSourceProbeError> {
+    let document = roxmltree::Document::parse(response)?;
+    let mut staged: Vec<ClassInclude> = document
+        .descendants()
+        .filter_map(|node| find_attribute_value(node, "uri"))
+        .filter_map(ClassInclude::split_source_uri)
+        .filter(|(class, _)| class.eq_ignore_ascii_case(class_uri))
+        .map(|(_, include)| include)
+        .collect();
+    staged.sort_unstable();
+    staged.dedup();
+    Ok(staged)
 }
 
 fn inactive_object_response_contains_uri(
@@ -430,6 +489,22 @@ mod tests {
         assert_eq!(parsed.messages[0].text, "Expected <identifier> & value");
         assert_eq!(parsed.messages[0].line, Some(12));
         assert_eq!(parsed.messages[2].line, None);
+    }
+
+    #[test]
+    fn reads_the_staged_includes_of_one_class_from_the_worklist() {
+        let response = r#"<ioc:inactiveObjects xmlns:ioc="http://www.sap.com/abapxml/inactiveCtsObjects" xmlns:adtcore="http://www.sap.com/adt/core">
+            <ioc:entry><ioc:object/><ioc:transport/></ioc:entry>
+            <ioc:entry><ioc:object><ioc:ref adtcore:uri="/sap/bc/adt/oo/classes/zcl_sample" adtcore:type="CLAS/OC"/></ioc:object></ioc:entry>
+            <ioc:entry><ioc:object><ioc:ref adtcore:uri="/sap/bc/adt/oo/classes/zcl_sample/source/main#type=CLAS%2FOSU;name=ZCL_SAMPLE" adtcore:type="CLAS/OSU"/></ioc:object></ioc:entry>
+            <ioc:entry><ioc:object><ioc:ref adtcore:uri="/sap/bc/adt/oo/classes/zcl_sample/includes/implementations" adtcore:type="CLAS/OCN/implementations" adtcore:parentUri="/sap/bc/adt/oo/classes/zcl_sample"/></ioc:object></ioc:entry>
+            <ioc:entry><ioc:object><ioc:ref adtcore:uri="/sap/bc/adt/oo/classes/zcl_sample2/includes/macros" adtcore:type="CLAS/OCN/macros"/></ioc:object></ioc:entry>
+        </ioc:inactiveObjects>"#;
+
+        assert_eq!(
+            staged_includes_in(response, "/sap/bc/adt/oo/classes/zcl_sample").unwrap(),
+            vec![ClassInclude::Main, ClassInclude::Implementations]
+        );
     }
 
     #[test]

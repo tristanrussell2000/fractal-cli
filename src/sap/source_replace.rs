@@ -5,19 +5,23 @@ use thiserror::Error;
 
 use super::{
     adt_version::AdtVersion,
+    class_include::ClassInclude,
     client::{SapClient, SapClientError},
     edit_session::AdtEditSessionError,
     editable_source::{
         AdtEditTargetValidationError, AdtSourceReadError, AdtSourceSnapshot, EditableAdtObjectType,
         EditableAdtSourceIdentity, ValidatedAdtEditTarget, read_adt_source_for_edit,
-        validate_adt_edit_target,
+        validate_adt_include_edit_target,
     },
     inactive_source_save::{
         InactiveSourceSaveError, PlannedInactiveSourceChange, save_inactive_source_atomically,
     },
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
-use crate::source_change::{SourceChangePlanError, SourceReplacementPlan, plan_source_replacement};
+use crate::source_change::{
+    SourceChangePlanError, SourceReplacementPlan, plan_source_replacement,
+    plan_source_replacement_allowing_blank,
+};
 use crate::suggested_command;
 
 /// One complete source replacement to preview or save as inactive source.
@@ -30,6 +34,12 @@ pub struct AdtSourceReplacementRequest {
     pub transport: Option<String>,
     /// What to do about an edit somebody else has staged here.
     pub staged_edits: StagedEditPolicy,
+    /// Which class stream to replace. `None` means the object's only stream,
+    /// or a class's `main`.
+    pub include: Option<ClassInclude>,
+    /// Accept a blank replacement. Only for a class's local include, where
+    /// empty is the state SAP creates it in and an include cannot be deleted.
+    pub blank_allowed: bool,
 }
 
 /// A non-mutating complete-source replacement plan based on source read from SAP.
@@ -291,7 +301,11 @@ pub async fn replace_adt_source_atomically(
     )
     .await?;
     let saved = save_inactive_source_atomically(sap, &target, |original| {
-        let plan = plan_source_replacement(
+        let plan = if request.blank_allowed {
+            plan_source_replacement_allowing_blank
+        } else {
+            plan_source_replacement
+        }(
             &original.source,
             &request.replacement_source,
             request.expected_sha256.as_deref(),
@@ -326,13 +340,14 @@ fn validate_replacement_request(
     policy: &EditPolicy,
     request: &AdtSourceReplacementRequest,
 ) -> Result<ValidatedAdtEditTarget, AdtSourceReplacementError> {
-    let target = validate_adt_edit_target(
+    let target = validate_adt_include_edit_target(
         request.object_type,
         &request.name,
+        request.include,
         policy,
         request.transport.as_deref(),
     )?;
-    if request.replacement_source.trim().is_empty() {
+    if !request.blank_allowed && request.replacement_source.trim().is_empty() {
         return Err(AdtSourceReplacementError::Replacement {
             identity: Box::new(target.identity),
             source: SourceChangePlanError::BlankReplacementSource,

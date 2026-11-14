@@ -289,35 +289,13 @@ fn is_older_than(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::entry::{
-        ContentRef, EntryObject, EntryStatus, EntrySystem, JournalOperation,
-    };
-    use crate::sap::object_family::AdtObjectFamily;
+    use crate::journal::entry::{ContentRef, EntryStatus};
 
     fn entry(uri: &str, blob: &str) -> JournalEntry {
-        JournalEntry {
-            id: String::new(),
-            recorded_at: String::new(),
-            status: EntryStatus::Succeeded,
-            system: EntrySystem {
-                base_url: "https://sap.example:8001".to_owned(),
-                profile: "dev".to_owned(),
-                client: "100".to_owned(),
-                user: "developer".to_owned(),
-            },
-            object: EntryObject {
-                object_type: AdtObjectFamily::parse("PROG").unwrap(),
-                name: "ZSAMPLE".to_owned(),
-                uri: uri.to_owned(),
-                source_part: None,
-            },
-            operation: JournalOperation::activate(),
-            transport: None,
-            active_before: ContentRef::Sha256(blob.to_owned()),
-            inactive_before: None,
-            active_after: None,
-            etag_after: None,
-        }
+        let mut entry =
+            crate::journal::entry::sample_activation(uri, ContentRef::Sha256(blob.to_owned()));
+        entry.status = EntryStatus::Succeeded;
+        entry
     }
 
     fn hash(byte: char) -> String {
@@ -574,16 +552,16 @@ mod tests {
             },
         );
         journal
-            .begin(
-                EntryObject {
-                    object_type: AdtObjectFamily::parse("PROG").unwrap(),
-                    name: "ZSAMPLE".to_owned(),
-                    uri: "/a".to_owned(),
-                    source_part: None,
-                },
-                JournalOperation::activate(),
-                None,
-                Some("about to be referenced"),
+            .begin_activation(
+                crate::journal::entry::RecordedObject::for_family(
+                    crate::sap::object_family::AdtObjectFamily::parse("PROG").unwrap(),
+                    "ZSAMPLE".to_owned(),
+                    "/a".to_owned(),
+                    |_| crate::journal::recorder::ActivationBefore {
+                        active: Some("about to be referenced".to_owned()),
+                        inactive: None,
+                    },
+                ),
                 None,
             )
             .unwrap();

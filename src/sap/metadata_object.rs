@@ -61,6 +61,20 @@ pub enum MetadataAdtObjectType {
     ServiceBinding,
 }
 
+/// Stored as the type name (`DTEL`), the same spelling every command takes.
+impl serde::Serialize for MetadataAdtObjectType {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for MetadataAdtObjectType {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value).map_err(serde::de::Error::custom)
+    }
+}
+
 impl MetadataAdtObjectType {
     /// Parses a logical type such as `DTEL`.
     ///

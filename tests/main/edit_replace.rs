@@ -45,6 +45,8 @@ fn replacement_request() -> AdtSourceReplacementRequest {
         expected_sha256: None,
         transport: None,
         staged_edits: StagedEditPolicy::Protect("developer".to_owned()),
+        include: None,
+        blank_allowed: false,
     }
 }
 

@@ -5,9 +5,10 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use fractal::config::EditPolicy;
-use fractal::journal::entry::{EntryStatus, EntrySystem};
+use fractal::journal::entry::{EntryStatus, EntrySystem, Stream};
 use fractal::journal::recorder::Journal;
 use fractal::reportable_error::ReportableError;
+use fractal::sap::class_include::ClassInclude;
 use fractal::{
     config::Profile,
     sap::{
@@ -740,12 +741,17 @@ async fn a_journalled_activation_records_the_previous_active_source() {
         .expect("an entry was written");
 
     assert_eq!(entry.status, EntryStatus::Succeeded);
-    assert!(entry.operation.is_activation());
+    let images = entry
+        .activation_images(Stream::Include(ClassInclude::Main))
+        .expect("an activation");
     // The before-image is what nothing read before this feature, and the only
     // thing an undo of this activation could restore.
-    let before = entry.active_before.sha256().expect("had an active version");
+    let before = images
+        .active_before
+        .sha256()
+        .expect("had an active version");
     assert_eq!(journal.blobs().read(before).unwrap(), PREVIOUS_ACTIVE);
-    let after = entry.active_after.as_ref().unwrap().sha256().unwrap();
+    let after = images.active_after.as_ref().unwrap().sha256().unwrap();
     assert_eq!(journal.blobs().read(after).unwrap(), SOURCE);
 }
 
@@ -791,8 +797,11 @@ async fn a_refused_activation_is_recorded_as_failed_with_its_before_image() {
     // Nothing was published, so there is no after-image — but the before-image
     // is still true and the entry is kept rather than deleted.
     assert_eq!(entry.status, EntryStatus::Failed);
-    assert_eq!(entry.active_after, None);
-    assert!(entry.active_before.sha256().is_some());
+    let images = entry
+        .activation_images(Stream::Include(ClassInclude::Main))
+        .expect("an activation");
+    assert_eq!(images.active_after, None);
+    assert!(images.active_before.sha256().is_some());
 }
 
 #[tokio::test]
@@ -973,7 +982,14 @@ async fn an_activation_that_landed_is_reported_as_success_even_if_its_entry_cann
     assert_eq!(
         journal
             .blobs()
-            .read(entry.active_before.sha256().unwrap())
+            .read(
+                entry
+                    .activation_images(Stream::Include(ClassInclude::Main))
+                    .unwrap()
+                    .active_before
+                    .sha256()
+                    .unwrap(),
+            )
             .unwrap(),
         PREVIOUS_ACTIVE
     );
@@ -1021,5 +1037,162 @@ async fn a_refused_activation_reports_the_sap_cause_not_the_journal_failure() {
     .unwrap_err();
 
     assert_eq!(error.code(), "edit_activation_refused");
+    server.verify().await;
+}
+
+const LOCAL_TYPES_URI: &str = "/sap/bc/adt/oo/classes/zcl_sample/includes/implementations";
+const LOCAL_TYPES_BEFORE: &str = "CLASS lhc_sample DEFINITION.\nENDCLASS.\n";
+const LOCAL_TYPES_STAGED: &str = "CLASS lhc_sample DEFINITION.\n\" staged\nENDCLASS.\n";
+
+/// The activation publishes what the caller's worklist holds, and a class's
+/// worklist names each staged include. Recording only `main` here is the
+/// silent partial undo this whole shape exists to prevent.
+#[tokio::test]
+async fn a_class_activation_records_the_include_it_publishes() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/activation/inactiveobjects"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            "<objects><object uri=\"{OBJECT_URI}\"/><object uri=\"{LOCAL_TYPES_URI}\"/></objects>"
+        )))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/activation/inactiveobjects"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<objects/>"))
+        .mount(&server)
+        .await;
+    mount_source_read(&server, "inactive", SOURCE).await;
+    mount_csrf_session(&server).await;
+    mount_checkrun(&server, "<checkMessageList/>").await;
+    mount_activation(
+        &server,
+        ResponseTemplate::new(200).set_body_string("<activationResult/>"),
+    )
+    .await;
+    mount_active_reads_before_and_after(&server).await;
+    Mock::given(method("GET"))
+        .and(path(LOCAL_TYPES_URI))
+        .and(query_param("version", "active"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(LOCAL_TYPES_BEFORE))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(LOCAL_TYPES_URI))
+        .and(query_param("version", "active"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(LOCAL_TYPES_STAGED))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(LOCAL_TYPES_URI))
+        .and(query_param("version", "inactive"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(LOCAL_TYPES_STAGED))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let journal = journal(&dir);
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    activate_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &activation_request(None),
+        Some(&journal),
+    )
+    .await
+    .unwrap();
+
+    let entry = journal.entries().latest_for(OBJECT_URI).unwrap().unwrap();
+    let read = |reference: &fractal::journal::entry::ContentRef| {
+        journal.blobs().read(reference.sha256().unwrap()).unwrap()
+    };
+
+    let local = entry
+        .activation_images(Stream::Include(ClassInclude::Implementations))
+        .unwrap();
+    assert_eq!(read(&local.active_before), LOCAL_TYPES_BEFORE);
+    assert_eq!(
+        read(local.inactive_before.as_ref().unwrap()),
+        LOCAL_TYPES_STAGED
+    );
+    assert_eq!(
+        read(local.active_after.as_ref().unwrap()),
+        LOCAL_TYPES_STAGED
+    );
+
+    // An include the class does not have is recorded as absent on both sides,
+    // and one it has but nobody staged has no pending work recorded.
+    let tests = entry
+        .activation_images(Stream::Include(ClassInclude::Testclasses))
+        .unwrap();
+    assert_eq!(
+        tests.active_before,
+        fractal::journal::entry::ContentRef::Absent
+    );
+    assert_eq!(
+        tests.active_after,
+        Some(fractal::journal::entry::ContentRef::Absent)
+    );
+    let main = entry
+        .activation_images(Stream::Include(ClassInclude::Main))
+        .unwrap();
+    assert_eq!(main.inactive_before, None);
+    server.verify().await;
+}
+
+/// Recording an include as absent because SAP failed to answer would let an
+/// undo write it back empty. A failed read stops the activation instead, before
+/// anything is published.
+#[tokio::test]
+async fn an_include_that_cannot_be_read_stops_a_journalled_activation() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/activation/inactiveobjects"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(format!("<objects><object uri=\"{OBJECT_URI}\"/></objects>")),
+        )
+        .mount(&server)
+        .await;
+    mount_source_read(&server, "inactive", SOURCE).await;
+    mount_csrf_session(&server).await;
+    mount_checkrun(&server, "<checkMessageList/>").await;
+    Mock::given(method("GET"))
+        .and(path(SOURCE_URI))
+        .and(query_param("version", "active"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(PREVIOUS_ACTIVE))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(LOCAL_TYPES_URI))
+        .and(query_param("version", "active"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/activation"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let journal = journal(&dir);
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let error = activate_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &activation_request(None),
+        Some(&journal),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), "edit_activation_before_image_unreadable");
+    assert!(journal.entries().list().unwrap().is_empty());
     server.verify().await;
 }

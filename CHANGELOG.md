@@ -10,8 +10,24 @@
   (`…/includes/implementations`). The version and author reported are that include's own, not the
   class's. Reading only; editing includes is not built yet.
 
+### Breaking
+
+- **The journal's entry format changed, and old entries are not read.** An entry is now one type
+  covering the operation, the object and its content, and a class records every include. Entries
+  written by earlier versions are listed under `unreadable` by `journal list`; delete the journal
+  directory to clear them.
+- `fractal undo --output json` reports per-stream fields under `streams` instead of top-level
+  `restore_sha256` and friends.
+
 ### Fixed
 
+- **Undoing a class activation restored only `main`.** An activation publishes every include the
+  caller has staged, local types included, and the journal recorded only `main`, so an undo
+  reported success with the other includes still changed. Activations and deletes of a class now
+  record every include, and undo restores each one.
+- **A class delete kept only `main`.** Its restore recipe now names each include's content.
+- A journal entry that could not be read vanished from `journal list` without a word. It is now
+  listed as unreadable.
 - **Syntax-check messages had no line number.** SAP gives a message's position only in its URI
   (`…#start=9,9`), and Fractal read a `line` attribute SAP does not send. Messages now carry
   `line`, `column`, `uri` and, for a class, the `include` they are in — so an error in local types

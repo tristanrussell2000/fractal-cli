@@ -5,8 +5,9 @@
 //! readable, are the two failures that would actually hurt someone.
 
 use fractal::config::EditPolicy;
-use fractal::journal::entry::{ContentRef, EntryStatus, EntrySystem, JournalOperation};
+use fractal::journal::entry::{EntryRecord, EntryStatus, EntrySystem, Stream};
 use fractal::journal::recorder::Journal;
+use fractal::sap::class_include::ClassInclude;
 use fractal::{
     config::Profile,
     reportable_error::ReportableError,
@@ -500,16 +501,23 @@ async fn a_journalled_delete_keeps_the_content_and_what_recreating_needs() {
         .expect("an entry was written");
 
     assert_eq!(entry.status, EntryStatus::Succeeded);
-    // The object is gone, which is not the same as having held nothing.
-    assert_eq!(entry.active_after, Some(ContentRef::Absent));
-    let before = entry.active_before.sha256().expect("kept the content");
+    let before = entry
+        .deleted_content(Stream::Whole)
+        .and_then(|content| content.sha256())
+        .expect("kept the content");
     assert_eq!(journal.blobs().read(before).unwrap(), SOURCE);
     // Package and description come from the object's own document: without
     // them the restore recipe cannot name where to put it back.
-    assert_eq!(
-        entry.operation,
-        JournalOperation::delete(Some("ZPKG".to_owned()), Some("Sample report".to_owned()))
-    );
+    let EntryRecord::Delete {
+        package,
+        description,
+        ..
+    } = &entry.record
+    else {
+        panic!("not a delete");
+    };
+    assert_eq!(package.as_deref(), Some("ZPKG"));
+    assert_eq!(description.as_deref(), Some("Sample report"));
 
     // Read under the lock, not before it. An unlocked read records what the
     // object looked like a moment before somebody else could have changed it,
@@ -691,9 +699,102 @@ async fn a_delete_that_landed_is_reported_as_success_even_if_its_entry_cannot_be
     assert_eq!(
         journal
             .blobs()
-            .read(entry.active_before.sha256().unwrap())
+            .read(
+                entry
+                    .deleted_content(Stream::Whole)
+                    .and_then(|content| content.sha256())
+                    .unwrap(),
+            )
             .unwrap(),
         SOURCE
     );
+    server.verify().await;
+}
+
+const CLASS_PATH: &str = "/sap/bc/adt/oo/classes/zcl_sample";
+const CLASS_MAIN: &str = "CLASS zcl_sample DEFINITION.\nENDCLASS.\n";
+const CLASS_LOCAL_TYPES: &str = "CLASS lhc_sample DEFINITION.\nENDCLASS.\n";
+
+/// A deleted class takes its local types with it. Recording only `main` would
+/// leave a recreate recipe that silently loses them.
+#[tokio::test]
+async fn a_journalled_class_delete_keeps_every_include() {
+    let server = MockServer::start().await;
+    mount_csrf_session(&server).await;
+    mount_usages(&server, no_usages()).await;
+    Mock::given(method("POST"))
+        .and(path(CLASS_PATH))
+        .and(query_param("_action", "LOCK"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            "<lockResult><LOCK_HANDLE>{LOCK_HANDLE}</LOCK_HANDLE></lockResult>"
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{CLASS_PATH}/source/main")))
+        .and(query_param("version", "active"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(CLASS_MAIN))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{CLASS_PATH}/includes/implementations")))
+        .and(query_param("version", "active"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(CLASS_LOCAL_TYPES))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // The class has no test classes; definitions and macros answer 404 too.
+    Mock::given(method("GET"))
+        .and(path(CLASS_PATH))
+        .and(query_param("version", "active"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"<class:abapClass xmlns:class="http://www.sap.com/adt/oo/classes" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="ZCL_SAMPLE" adtcore:description="Sample"><adtcore:packageRef adtcore:name="ZPKG"/></class:abapClass>"#,
+        ))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(CLASS_PATH))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(CLASS_PATH))
+        .respond_with(ResponseTemplate::new(404).set_body_string("<error/>"))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let journal = journal(&dir);
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    delete_adt_object(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &AdtObjectDeletionRequest {
+            object_type: EditableAdtObjectType::Class,
+            name: "zcl_sample".to_owned(),
+            transport: None,
+            force: false,
+        },
+        Some(&journal),
+    )
+    .await
+    .unwrap();
+
+    let entry = journal.entries().latest_for(CLASS_PATH).unwrap().unwrap();
+    let kept = |include| {
+        entry
+            .deleted_content(Stream::Include(include))
+            .and_then(|content| content.sha256())
+            .map(|sha256| journal.blobs().read(sha256).unwrap())
+    };
+    assert_eq!(kept(ClassInclude::Main).as_deref(), Some(CLASS_MAIN));
+    assert_eq!(
+        kept(ClassInclude::Implementations).as_deref(),
+        Some(CLASS_LOCAL_TYPES)
+    );
+    assert_eq!(kept(ClassInclude::Testclasses), None);
     server.verify().await;
 }

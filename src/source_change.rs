@@ -204,7 +204,22 @@ pub fn plan_source_replacement(
     if replacement_source.trim().is_empty() {
         return Err(SourceChangePlanError::BlankReplacementSource);
     }
+    plan_source_replacement_allowing_blank(current_source, replacement_source, expected_sha256)
+}
 
+/// [`plan_source_replacement`] without the blank-source refusal, for the one
+/// case where empty is the intended content: putting an include back to the
+/// empty state SAP creates it in.
+///
+/// # Errors
+///
+/// Returns [`SourceChangePlanError`] when the replacement is unchanged, or when
+/// the optional expected hash is invalid or stale.
+pub fn plan_source_replacement_allowing_blank(
+    current_source: &str,
+    replacement_source: &str,
+    expected_sha256: Option<&str>,
+) -> Result<SourceReplacementPlan, SourceChangePlanError> {
     let original_sha256 = source_sha256(current_source);
     if let Some(expected_sha256) = expected_sha256 {
         if !is_sha256(expected_sha256) {
@@ -397,6 +412,13 @@ mod tests {
             error,
             SourceChangePlanError::SourceHashMismatch { .. }
         ));
+    }
+
+    #[test]
+    fn blank_source_is_accepted_only_when_asked_for() {
+        assert!(plan_source_replacement(SOURCE, "", None).is_err());
+        let plan = plan_source_replacement_allowing_blank(SOURCE, "", None).unwrap();
+        assert_eq!(plan.replacement_bytes, 0);
     }
 
     #[test]

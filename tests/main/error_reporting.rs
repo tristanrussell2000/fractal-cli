@@ -184,6 +184,26 @@ fn contract() -> Vec<Expectation> {
             suggested_command: None,
         },
         Expectation {
+            error: Box::new(AdtSourceActivationError::BeforeImageUnreadable {
+                name: "ZCL_SAMPLE".to_owned(),
+                include: ClassInclude::Implementations,
+                source: AdtSourceReadError::Sap {
+                    object_type: "CLAS",
+                    name: "ZCL_SAMPLE".to_owned(),
+                    source: http(
+                        SapHttpErrorKind::ServerError,
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Internal error",
+                    ),
+                },
+            }),
+            code: "edit_activation_before_image_unreadable",
+            status: Some(500),
+            message_contains: "implementations include",
+            has_hint: true,
+            suggested_command: None,
+        },
+        Expectation {
             error: Box::new(ObjectSourceError::NoSourceForKind {
                 kind: "DOMA".to_owned(),
                 uri: "/sap/bc/adt/ddic/domains/zdomain".to_owned(),
