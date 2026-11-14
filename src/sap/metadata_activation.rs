@@ -40,7 +40,7 @@ use super::{
     metadata_document::{document_version, strip_navigation_links},
     metadata_object::{MetadataAdtObjectType, metadata_object_identity},
     package_authorization::{PackageAuthorizationError, authorize_object_package},
-    source_check::{AdtInactiveSourceProbeError, probe_inactive_adt_source},
+    worklist::{AdtInactiveSourceProbeError, probe_inactive_adt_source},
 };
 use crate::config::EditPolicy;
 use crate::journal::JournalError;

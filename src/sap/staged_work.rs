@@ -11,8 +11,9 @@ use thiserror::Error;
 use super::{
     adt_response::{AdtResponseParseError, parse_adt_document},
     adt_version::AdtVersion,
+    class_include::ClassInclude,
     client::{SapClient, SapClientError},
-    find_non_empty_attribute,
+    find_attribute_value, find_non_empty_attribute,
     metadata_document::declared_version,
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
@@ -127,6 +128,50 @@ pub async fn read_staged_work(
     Ok(find_non_empty_attribute(root, "changedBy").map(|author| StagedWork { author }))
 }
 
+/// A class include with unactivated content, and who left it there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedInclude {
+    pub include: ClassInclude,
+    pub author: Option<String>,
+}
+
+/// Which of a class's includes have unactivated content, whoever staged them.
+///
+/// Read from the class document, where each `class:include` carries its own
+/// `adtcore:version` and `adtcore:changedBy`. Object-scoped, so it shows other
+/// users' staged includes too. For what the caller alone has staged, which is
+/// what an activation publishes, see [`super::worklist`].
+///
+/// # Errors
+///
+/// Returns [`StagedWorkError`] when the document cannot be read or parsed.
+pub async fn read_staged_by_anyone(
+    sap: &SapClient,
+    class_uri: &str,
+) -> Result<Vec<StagedInclude>, StagedWorkError> {
+    let xml = sap
+        .get_text_with_query(class_uri, &[("version", AdtVersion::Inactive.as_str())])
+        .await?;
+    staged_by_anyone_in(&xml)
+}
+
+fn staged_by_anyone_in(xml: &str) -> Result<Vec<StagedInclude>, StagedWorkError> {
+    let document = parse_adt_document(xml)?;
+    Ok(document
+        .root_element()
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "include")
+        .filter(|node| declared_version(*node).as_deref() == Some("inactive"))
+        .filter_map(|node| {
+            let include = ClassInclude::parse(find_attribute_value(node, "includeType")?)?;
+            Some(StagedInclude {
+                include,
+                author: find_non_empty_attribute(node, "changedBy"),
+            })
+        })
+        .collect())
+}
+
 /// Refuses a whole-document write that would replace somebody else's staged edit.
 ///
 /// Reads nothing when the answer could not change the outcome, so the extra
@@ -166,4 +211,24 @@ pub async fn refuse_when_staged_by_another(
         name: name.to_owned(),
         author: staged.author,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lists_the_includes_still_staged_and_who_staged_them() {
+        let staged = staged_by_anyone_in(
+            r#"<class:abapClass xmlns:class="http://www.sap.com/adt/oo/classes" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:version="inactive"><class:include class:includeType="definitions" adtcore:version="active" adtcore:changedBy="DEVELOPER"/><class:include class:includeType="main" adtcore:version="inactive" adtcore:changedBy="COLLEAGUE"/></class:abapClass>"#,
+        )
+        .unwrap();
+        assert_eq!(
+            staged,
+            vec![StagedInclude {
+                include: ClassInclude::Main,
+                author: Some("COLLEAGUE".to_owned()),
+            }]
+        );
+    }
 }

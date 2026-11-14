@@ -85,6 +85,27 @@ pub struct SourceActivationDetails {
     inactive_bytes_before: usize,
     active_matches_inactive: bool,
     inactive_version_exists_after: bool,
+    /// For a class: each include this activation published, verified.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    published: Vec<PublishedIncludeOutput>,
+    /// For a class: includes other users still have staged, which this
+    /// activation left alone. Absent when it could not be read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    staged_by_others: Option<Vec<StagedIncludeOutput>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PublishedIncludeOutput {
+    include: &'static str,
+    inactive_sha256_before: String,
+    active_sha256_after: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StagedIncludeOutput {
+    include: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<String>,
 }
 
 pub async fn edit_object_activate(
@@ -163,6 +184,24 @@ fn map_source_activation_result(
             inactive_bytes_before: result.inactive.bytes,
             active_matches_inactive: true,
             inactive_version_exists_after: false,
+            published: result
+                .published
+                .into_iter()
+                .map(|published| PublishedIncludeOutput {
+                    include: published.include.as_str(),
+                    inactive_sha256_before: published.inactive.sha256,
+                    active_sha256_after: published.active.sha256,
+                })
+                .collect(),
+            staged_by_others: result.staged_by_others.map(|staged| {
+                staged
+                    .into_iter()
+                    .map(|staged| StagedIncludeOutput {
+                        include: staged.include.as_str(),
+                        user: staged.author,
+                    })
+                    .collect()
+            }),
         }),
         sap_reported_activation_executed: result.sap_reported_activation_executed,
         activation_response_parsed: result.activation_response_parsed,
@@ -262,9 +301,29 @@ fn render_activation_readable(result: &EditActivationOutput) -> String {
         "active SHA-256 after: {}",
         result.active_sha256_after
     );
-    if result.source_details.is_some() {
+    if let Some(details) = &result.source_details {
         let _ = writeln!(output, "active source matches inactive source: true");
         let _ = writeln!(output, "inactive version exists after: false");
+        if !details.published.is_empty() {
+            let names: Vec<&str> = details.published.iter().map(|p| p.include).collect();
+            let _ = writeln!(output, "published: {}", names.join(", "));
+        }
+        if let Some(staged) = details.staged_by_others.as_ref().filter(|s| !s.is_empty()) {
+            let names: Vec<String> = staged
+                .iter()
+                .map(|staged| {
+                    staged.user.as_ref().map_or_else(
+                        || staged.include.to_owned(),
+                        |user| format!("{} ({user})", staged.include),
+                    )
+                })
+                .collect();
+            let _ = writeln!(
+                output,
+                "still staged by others, not activated: {}",
+                names.join(", ")
+            );
+        }
     }
     let reported = result
         .sap_reported_activation_executed
@@ -411,6 +470,15 @@ mod tests {
                     line: None,
                     object_description: Some("Class ZCL_SAMPLE".to_owned()),
                 }],
+                published: vec![fractal::sap::source_activation::PublishedInclude {
+                    include: fractal::sap::class_include::ClassInclude::Implementations,
+                    inactive: AdtSourceSnapshot::from_parts("x".to_owned(), "e1a8".to_owned(), 1),
+                    active: AdtSourceSnapshot::from_parts("x".to_owned(), "e1a8".to_owned(), 1),
+                }],
+                staged_by_others: Some(vec![fractal::sap::staged_work::StagedInclude {
+                    include: fractal::sap::class_include::ClassInclude::Main,
+                    author: Some("COLLEAGUE".to_owned()),
+                }]),
             },
         );
 
@@ -420,9 +488,13 @@ mod tests {
         assert_eq!(json["verified"], true);
         assert_eq!(json["precheck_warnings"], 1);
         assert_eq!(json["sap_reported_activation_executed"], true);
+        assert_eq!(json["published"][0]["include"], "implementations");
+        assert_eq!(json["staged_by_others"][0]["user"], "COLLEAGUE");
         let readable = render_activation_readable(&output);
         assert!(readable.contains("status: activated and verified"));
         assert!(readable.contains("warning line 8: Obsolete statement"));
         assert!(readable.contains("info Class ZCL_SAMPLE: Activation completed"));
+        assert!(readable.contains("published: implementations"));
+        assert!(readable.contains("still staged by others, not activated: main (COLLEAGUE)"));
     }
 }

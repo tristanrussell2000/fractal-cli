@@ -17,7 +17,7 @@ use super::{
         validate_adt_edit_target,
     },
     source_activation::{AdtSourceActivationError, activate_validated_adt_source},
-    source_check::{AdtInactiveSourceProbeError, probe_inactive_adt_source},
+    worklist::{AdtInactiveSourceProbeError, probe_inactive_adt_source},
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
 

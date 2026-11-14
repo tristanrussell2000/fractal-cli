@@ -25,6 +25,11 @@
   caller has staged, local types included, and the journal recorded only `main`, so an undo
   reported success with the other includes still changed. Activations and deletes of a class now
   record every include, and undo restores each one.
+- **A class activation failed verification when someone else was editing the class.** Activation
+  publishes only the caller's staged includes, but verification always compared `main`, so a
+  colleague's staged `main` made a successful activation report
+  `edit_activation_verification_mismatch`. Each include the activation published is now verified
+  instead, and `edit activate` reports `published` and `staged_by_others` for a class.
 - **A class delete kept only `main`.** Its restore recipe now names each include's content.
 - A journal entry that could not be read vanished from `journal list` without a word. It is now
   listed as unreadable.

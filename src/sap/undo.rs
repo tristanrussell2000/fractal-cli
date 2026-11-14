@@ -44,11 +44,11 @@ use super::{
     source_activation::{
         AdtSourceActivationError, AdtSourceActivationRequest, activate_adt_source,
     },
-    source_check::{AdtInactiveSourceProbeError, probe_inactive_adt_source, staged_class_includes},
     source_replace::{
         AdtSourceReplacementError, AdtSourceReplacementRequest, replace_adt_source_atomically,
     },
     staged_work::StagedEditPolicy,
+    worklist::{AdtInactiveSourceProbeError, probe_inactive_adt_source, read_worklist},
 };
 use crate::config::EditPolicy;
 use crate::journal::JournalError;
@@ -585,8 +585,9 @@ async fn pending_work_at_risk(
     // twice over: step 2 activates the class, and that publishes every include
     // the caller has staged, including ones this undo never touches.
     let pending: Vec<Stream> = if is_class(identity) {
-        staged_class_includes(sap, &identity.object_uri)
+        read_worklist(sap)
             .await
+            .and_then(|worklist| worklist.staged_by_caller(&identity.object_uri))
             .map_err(probe_failed)?
             .into_iter()
             .map(Stream::Include)

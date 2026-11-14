@@ -23,10 +23,11 @@ use super::{
         read_adt_include_source_for_edit, read_adt_source_for_edit, validate_adt_edit_target,
     },
     source_check::{
-        AdtInactiveSourceProbeError, AdtSourceCheckError, AdtSourceCheckMessage,
-        AdtSourceCheckResult, Worklist, check_adt_source_by_identity, probe_inactive_adt_source,
-        read_worklist,
+        AdtSourceCheckError, AdtSourceCheckMessage, AdtSourceCheckResult,
+        check_adt_source_by_identity,
     },
+    staged_work::{StagedInclude, read_staged_by_anyone},
+    worklist::{AdtInactiveSourceProbeError, Worklist, probe_inactive_adt_source, read_worklist},
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
 
@@ -51,6 +52,21 @@ pub struct AdtSourceActivationResult {
     pub sap_reported_activation_executed: Option<bool>,
     pub activation_response_parsed: bool,
     pub activation_messages: Vec<AdtActivationMessage>,
+    /// For a class, every include this activation published, each verified.
+    /// Empty for anything else, whose one stream is `inactive` and `active`.
+    pub published: Vec<PublishedInclude>,
+    /// For a class, includes still staged after the activation: other users'
+    /// work, which an activation leaves alone. `None` for anything else, or
+    /// when the class document could not be read to tell.
+    pub staged_by_others: Option<Vec<StagedInclude>>,
+}
+
+/// One class include an activation published, and the proof that it did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishedInclude {
+    pub include: ClassInclude,
+    pub inactive: AdtSourceSnapshot,
+    pub active: AdtSourceSnapshot,
 }
 
 #[derive(Debug, Error)]
@@ -324,6 +340,7 @@ pub(super) async fn activate_validated_adt_source(
 
     let (inactive, precheck, worklist) =
         prepare_activation(sap, &identity, transport.as_deref()).await?;
+    let publishing = publishing_includes(sap, &identity, &worklist, &inactive.snapshot).await?;
 
     let entry = match journal {
         Some(journal) => {
@@ -332,7 +349,7 @@ pub(super) async fn activate_validated_adt_source(
             // includes this activation is about to publish. Costs requests, so
             // they are only made when they will be recorded.
             let before =
-                activation_before(sap, &identity, &worklist, &inactive.snapshot.source).await?;
+                activation_before(sap, &identity, &publishing, &inactive.snapshot.source).await?;
             Some(
                 journal
                     .begin_activation(before, transport.clone())
@@ -396,15 +413,22 @@ pub(super) async fn activate_validated_adt_source(
             });
         }
     };
-    if active.snapshot.sha256 != inactive.snapshot.sha256 {
-        // Deliberately ignored: a cleanup failure must not replace the cause.
-        let _ = resolve(journal, entry, Resolution::Unverified(&AfterImages::new()));
-        return Err(AdtSourceActivationError::VerificationMismatch {
-            identity: Box::new(identity),
-            inactive_sha256: inactive.snapshot.sha256,
-            active_sha256: active.snapshot.sha256,
-        });
-    }
+    let published = match verify_published(
+        sap,
+        &identity,
+        &publishing,
+        &inactive.snapshot,
+        &active.snapshot,
+    )
+    .await
+    {
+        Ok(published) => published,
+        Err(error) => {
+            // Deliberately ignored: a cleanup failure must not replace the cause.
+            let _ = resolve(journal, entry, Resolution::Unverified(&AfterImages::new()));
+            return Err(error);
+        }
+    };
     let journal_entry_incomplete = match journal {
         Some(_) => {
             let after = activation_after(sap, &identity, &active.snapshot.source).await;
@@ -412,6 +436,8 @@ pub(super) async fn activate_validated_adt_source(
         }
         None => None,
     };
+
+    let staged_by_others = staged_by_others(sap, &identity).await;
 
     // Post-state now proves success, so preserve malformed response XML as metadata.
     let (activation_response_parsed, parsed) = parsed_response.map_or_else(
@@ -428,13 +454,11 @@ pub(super) async fn activate_validated_adt_source(
         sap_reported_activation_executed: parsed.activation_executed,
         activation_response_parsed,
         activation_messages: parsed.messages,
+        published,
+        staged_by_others,
     })
 }
 
-/// Snapshots the inactive source and syntax-checks it concurrently.
-///
-/// Refuses before any mutation when the check reports errors: activation must
-/// never be attempted on source that will not compile.
 /// What every stream held before the activation, for the journal.
 ///
 /// For a class, the pending work recorded is exactly what the caller's
@@ -444,7 +468,7 @@ pub(super) async fn activate_validated_adt_source(
 async fn activation_before(
     sap: &SapClient,
     identity: &EditableAdtSourceIdentity,
-    worklist: &Worklist,
+    publishing: &[(ClassInclude, AdtSourceSnapshot)],
     main_inactive: &str,
 ) -> Result<RecordedObject<ActivationBefore>, AdtSourceActivationError> {
     let family = AdtObjectFamily::Source(identity.object_type);
@@ -461,9 +485,6 @@ async fn activation_before(
         ));
     }
 
-    let staged = worklist
-        .staged_includes(&identity.object_uri)
-        .map_err(AdtSourceActivationError::InactiveVersionProbe)?;
     let mut before = Vec::new();
     for include in ClassInclude::ALL {
         // Only a missing include is an absence. Any other failure stops the
@@ -488,25 +509,10 @@ async fn activation_before(
                 });
             }
         };
-        let inactive = if !staged.contains(&include) {
-            None
-        } else if include == ClassInclude::Main {
-            Some(main_inactive.to_owned())
-        } else {
-            Some(
-                read_adt_include_source_for_edit(
-                    sap,
-                    identity.object_type,
-                    &identity.name,
-                    include,
-                    AdtVersion::Inactive,
-                )
-                .await
-                .map_err(AdtSourceActivationError::InactiveSourceRead)?
-                .snapshot
-                .source,
-            )
-        };
+        let inactive = publishing
+            .iter()
+            .find(|(candidate, _)| *candidate == include)
+            .map(|(_, snapshot)| snapshot.source.clone());
         before.push((include, ActivationBefore { active, inactive }));
     }
     Ok(RecordedObject::for_family(
@@ -521,6 +527,138 @@ async fn activation_before(
                 .unwrap_or_default()
         },
     ))
+}
+
+/// The includes a class activation will publish, with their pending source.
+///
+/// Read from the caller's worklist: activation publishes what the caller has
+/// staged and leaves other users' staged includes alone. `main` reuses the read
+/// the pre-check already made. A worklist that names the class but none of its
+/// streams is taken to mean `main`, which is what activating it has always
+/// verified. Empty for anything but a class.
+async fn publishing_includes(
+    sap: &SapClient,
+    identity: &EditableAdtSourceIdentity,
+    worklist: &Worklist,
+    main_inactive: &AdtSourceSnapshot,
+) -> Result<Vec<(ClassInclude, AdtSourceSnapshot)>, AdtSourceActivationError> {
+    if identity.object_type != EditableAdtObjectType::Class {
+        return Ok(Vec::new());
+    }
+    let mut staged = worklist
+        .staged_by_caller(&identity.object_uri)
+        .map_err(AdtSourceActivationError::InactiveVersionProbe)?;
+    if staged.is_empty() {
+        staged.push(ClassInclude::Main);
+    }
+    let mut publishing = Vec::with_capacity(staged.len());
+    for include in staged {
+        let snapshot = if include == ClassInclude::Main {
+            main_inactive.clone()
+        } else {
+            read_adt_include_source_for_edit(
+                sap,
+                identity.object_type,
+                &identity.name,
+                include,
+                AdtVersion::Inactive,
+            )
+            .await
+            .map_err(AdtSourceActivationError::InactiveSourceRead)?
+            .snapshot
+        };
+        publishing.push((include, snapshot));
+    }
+    Ok(publishing)
+}
+
+/// For a class, the includes still staged after a verified activation: other
+/// users' work, which the activation left alone.
+///
+/// Informational, so a failed read is reported as not knowing, never as a
+/// failure of an activation that has already been verified.
+async fn staged_by_others(
+    sap: &SapClient,
+    identity: &EditableAdtSourceIdentity,
+) -> Option<Vec<StagedInclude>> {
+    if identity.object_type != EditableAdtObjectType::Class {
+        return None;
+    }
+    read_staged_by_anyone(sap, &identity.object_uri).await.ok()
+}
+
+/// Proves the activation published what was pending: the one stream of most
+/// objects, or each include a class published.
+async fn verify_published(
+    sap: &SapClient,
+    identity: &EditableAdtSourceIdentity,
+    publishing: &[(ClassInclude, AdtSourceSnapshot)],
+    inactive: &AdtSourceSnapshot,
+    active: &AdtSourceSnapshot,
+) -> Result<Vec<PublishedInclude>, AdtSourceActivationError> {
+    if identity.object_type == EditableAdtObjectType::Class {
+        return verify_published_includes(sap, identity, publishing, active).await;
+    }
+    if active.sha256 != inactive.sha256 {
+        return Err(AdtSourceActivationError::VerificationMismatch {
+            identity: Box::new(identity.clone()),
+            inactive_sha256: inactive.sha256.clone(),
+            active_sha256: active.sha256.clone(),
+        });
+    }
+    Ok(Vec::new())
+}
+
+/// Proves each published include is now active with the content it had
+/// pending.
+///
+/// Only the published ones: another user's staged include stays inactive, and
+/// comparing it would report a failure for an activation that worked.
+async fn verify_published_includes(
+    sap: &SapClient,
+    identity: &EditableAdtSourceIdentity,
+    publishing: &[(ClassInclude, AdtSourceSnapshot)],
+    main_active: &AdtSourceSnapshot,
+) -> Result<Vec<PublishedInclude>, AdtSourceActivationError> {
+    let mut published = Vec::with_capacity(publishing.len());
+    for (include, inactive) in publishing {
+        let include_identity = || {
+            let mut stream = identity.clone();
+            stream.source_uri = include.source_uri(&identity.object_uri);
+            stream.include = Some(*include);
+            Box::new(stream)
+        };
+        let active = if *include == ClassInclude::Main {
+            main_active.clone()
+        } else {
+            read_adt_include_source_for_edit(
+                sap,
+                identity.object_type,
+                &identity.name,
+                *include,
+                AdtVersion::Active,
+            )
+            .await
+            .map_err(|source| AdtSourceActivationError::ActiveSourceRead {
+                identity: include_identity(),
+                source,
+            })?
+            .snapshot
+        };
+        if active.sha256 != inactive.sha256 {
+            return Err(AdtSourceActivationError::VerificationMismatch {
+                identity: include_identity(),
+                inactive_sha256: inactive.sha256.clone(),
+                active_sha256: active.sha256,
+            });
+        }
+        published.push(PublishedInclude {
+            include: *include,
+            inactive: inactive.clone(),
+            active,
+        });
+    }
+    Ok(published)
 }
 
 /// What every stream holds after the activation, as read back.
@@ -624,6 +762,10 @@ async fn prepare_activation(
     Ok((inactive, precheck, worklist))
 }
 
+/// Snapshots the inactive source and syntax-checks it concurrently.
+///
+/// Refuses before any mutation when the check reports errors: activation must
+/// never be attempted on source that will not compile.
 async fn read_and_precheck_inactive_source(
     sap: &SapClient,
     identity: &EditableAdtSourceIdentity,

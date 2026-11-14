@@ -38,6 +38,7 @@ pub mod table_undo;
 pub mod table_write;
 pub mod transport;
 pub mod undo;
+pub mod worklist;
 
 /// Trims an XML attribute value and turns blank into `None`. Shared by every
 /// `sap` submodule's parser — SAP consistently uses empty-but-present

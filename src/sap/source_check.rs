@@ -13,11 +13,11 @@ use super::{
         editable_source_identity,
     },
     find_attribute_value,
+    worklist::probe_inactive_adt_source,
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
 
 const CHECKRUNS_PATH: &str = "/sap/bc/adt/checkruns";
-const INACTIVE_OBJECTS_PATH: &str = "/sap/bc/adt/activation/inactiveobjects";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdtSourceCheckMessage {
@@ -89,34 +89,6 @@ pub enum AdtSourceCheckError {
         #[source]
         source: roxmltree::Error,
     },
-}
-
-#[derive(Debug, Error)]
-pub enum AdtInactiveSourceProbeError {
-    #[error("SAP inactive-object lookup failed: {0}")]
-    Sap(#[from] SapClientError),
-    #[error("SAP returned malformed inactive-object XML: {0}")]
-    Parse(#[from] roxmltree::Error),
-}
-
-impl AdtInactiveSourceProbeError {
-    #[must_use]
-    pub const fn sap_error(&self) -> Option<&SapClientError> {
-        match self {
-            Self::Sap(error) => Some(error),
-            Self::Parse(_) => None,
-        }
-    }
-
-    #[must_use]
-    pub fn hint(&self) -> Option<String> {
-        match self {
-            Self::Sap(error) => error.hint(),
-            Self::Parse(_) => {
-                Some("The SAP inactive-object response did not contain valid ADT XML.".to_owned())
-            }
-        }
-    }
 }
 
 impl AdtSourceCheckError {
@@ -283,86 +255,6 @@ pub(super) async fn check_adt_source_by_identity(
     })
 }
 
-pub(super) async fn probe_inactive_adt_source(
-    sap: &SapClient,
-    object_uri: &str,
-) -> Result<bool, AdtInactiveSourceProbeError> {
-    read_worklist(sap).await?.contains(object_uri)
-}
-
-/// The caller's inactive-object worklist, read once and asked several things.
-pub(super) struct Worklist(String);
-
-impl Worklist {
-    /// Whether the object itself is on the worklist.
-    pub(super) fn contains(&self, object_uri: &str) -> Result<bool, AdtInactiveSourceProbeError> {
-        inactive_object_response_contains_uri(&self.0, object_uri)
-    }
-
-    /// Which of a class's includes the caller has staged. See
-    /// [`staged_class_includes`].
-    pub(super) fn staged_includes(
-        &self,
-        class_uri: &str,
-    ) -> Result<Vec<ClassInclude>, AdtInactiveSourceProbeError> {
-        staged_includes_in(&self.0, class_uri)
-    }
-}
-
-pub(super) async fn read_worklist(
-    sap: &SapClient,
-) -> Result<Worklist, AdtInactiveSourceProbeError> {
-    Ok(Worklist(sap.get_text(INACTIVE_OBJECTS_PATH).await?))
-}
-
-/// Which of a class's includes the caller has staged: what activating the
-/// class will publish.
-///
-/// Read from the caller's own worklist, not from the class document, which
-/// also shows includes other users have staged and which an activation leaves
-/// alone. An include is listed under its own URI; `main` is listed by section
-/// or method, as `source/main#type=…`.
-///
-/// # Errors
-///
-/// Returns [`AdtInactiveSourceProbeError`] when the worklist cannot be read.
-pub(super) async fn staged_class_includes(
-    sap: &SapClient,
-    class_uri: &str,
-) -> Result<Vec<ClassInclude>, AdtInactiveSourceProbeError> {
-    read_worklist(sap).await?.staged_includes(class_uri)
-}
-
-fn staged_includes_in(
-    response: &str,
-    class_uri: &str,
-) -> Result<Vec<ClassInclude>, AdtInactiveSourceProbeError> {
-    let document = roxmltree::Document::parse(response)?;
-    let mut staged: Vec<ClassInclude> = document
-        .descendants()
-        .filter_map(|node| find_attribute_value(node, "uri"))
-        .filter_map(ClassInclude::split_source_uri)
-        .filter(|(class, _)| class.eq_ignore_ascii_case(class_uri))
-        .map(|(_, include)| include)
-        .collect();
-    staged.sort_unstable();
-    staged.dedup();
-    Ok(staged)
-}
-
-fn inactive_object_response_contains_uri(
-    response: &str,
-    object_uri: &str,
-) -> Result<bool, AdtInactiveSourceProbeError> {
-    let document = roxmltree::Document::parse(response)?;
-    Ok(document.descendants().any(|node| {
-        node.attributes().any(|attribute| {
-            attribute.name().eq_ignore_ascii_case("uri")
-                && attribute.value().eq_ignore_ascii_case(object_uri)
-        })
-    }))
-}
-
 /// Where a check message points: `<source uri>#start=<line>,<column>`.
 ///
 /// SAP sends the position only in this fragment; there is no separate line
@@ -492,22 +384,6 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_staged_includes_of_one_class_from_the_worklist() {
-        let response = r#"<ioc:inactiveObjects xmlns:ioc="http://www.sap.com/abapxml/inactiveCtsObjects" xmlns:adtcore="http://www.sap.com/adt/core">
-            <ioc:entry><ioc:object/><ioc:transport/></ioc:entry>
-            <ioc:entry><ioc:object><ioc:ref adtcore:uri="/sap/bc/adt/oo/classes/zcl_sample" adtcore:type="CLAS/OC"/></ioc:object></ioc:entry>
-            <ioc:entry><ioc:object><ioc:ref adtcore:uri="/sap/bc/adt/oo/classes/zcl_sample/source/main#type=CLAS%2FOSU;name=ZCL_SAMPLE" adtcore:type="CLAS/OSU"/></ioc:object></ioc:entry>
-            <ioc:entry><ioc:object><ioc:ref adtcore:uri="/sap/bc/adt/oo/classes/zcl_sample/includes/implementations" adtcore:type="CLAS/OCN/implementations" adtcore:parentUri="/sap/bc/adt/oo/classes/zcl_sample"/></ioc:object></ioc:entry>
-            <ioc:entry><ioc:object><ioc:ref adtcore:uri="/sap/bc/adt/oo/classes/zcl_sample2/includes/macros" adtcore:type="CLAS/OCN/macros"/></ioc:object></ioc:entry>
-        </ioc:inactiveObjects>"#;
-
-        assert_eq!(
-            staged_includes_in(response, "/sap/bc/adt/oo/classes/zcl_sample").unwrap(),
-            vec![ClassInclude::Main, ClassInclude::Implementations]
-        );
-    }
-
-    #[test]
     fn locates_a_message_in_the_include_it_names() {
         // The shape SAP returns: the position lives only in the URI fragment.
         let parsed = parse_checkrun_response(
@@ -559,21 +435,5 @@ mod tests {
             parse_checkrun_response("<not-closed>", &sample_identity(), AdtVersion::Inactive,),
             Err(AdtSourceCheckError::Parse { .. })
         ));
-    }
-
-    #[test]
-    fn inactive_object_probe_matches_complete_uris_not_prefixes() {
-        let response = r#"<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
-            <adtcore:objectReference adtcore:uri="/sap/bc/adt/oo/classes/zcl_sample2"/>
-        </adtcore:objectReferences>"#;
-
-        assert!(
-            !inactive_object_response_contains_uri(response, "/sap/bc/adt/oo/classes/zcl_sample")
-                .unwrap()
-        );
-        assert!(
-            inactive_object_response_contains_uri(response, "/SAP/BC/ADT/OO/CLASSES/ZCL_SAMPLE2")
-                .unwrap()
-        );
     }
 }

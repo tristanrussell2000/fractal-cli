@@ -1196,3 +1196,109 @@ async fn an_include_that_cannot_be_read_stops_a_journalled_activation() {
     assert!(journal.entries().list().unwrap().is_empty());
     server.verify().await;
 }
+
+const COLLEAGUE_MAIN: &str =
+    "CLASS zcl_sample DEFINITION.\n\" colleague's half-done edit\nENDCLASS.\n";
+
+/// The cross-user case: a colleague has `main` staged and the caller has the
+/// local types staged. Activation publishes only the caller's include, so
+/// `main` stays inactive with the colleague's content. Comparing `main` would
+/// report a failure for an activation that worked; reproduced live with two
+/// logons before this was changed.
+async fn mount_cross_user_activation(server: &MockServer, local_after: &'static str) {
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/activation/inactiveobjects"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            "<objects><object uri=\"{OBJECT_URI}\"/><object uri=\"{LOCAL_TYPES_URI}\"/></objects>"
+        )))
+        .up_to_n_times(1)
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/activation/inactiveobjects"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<objects/>"))
+        .mount(server)
+        .await;
+    // `main`'s inactive layer is the colleague's, and its active is untouched.
+    mount_source_read(server, "inactive", COLLEAGUE_MAIN).await;
+    Mock::given(method("GET"))
+        .and(path(SOURCE_URI))
+        .and(query_param("version", "active"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(PREVIOUS_ACTIVE))
+        .mount(server)
+        .await;
+    mount_csrf_session(server).await;
+    mount_checkrun(server, "<checkMessageList/>").await;
+    mount_activation(
+        server,
+        ResponseTemplate::new(200).set_body_string("<activationResult/>"),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path(LOCAL_TYPES_URI))
+        .and(query_param("version", "inactive"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(LOCAL_TYPES_STAGED))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(LOCAL_TYPES_URI))
+        .and(query_param("version", "active"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(local_after))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(OBJECT_URI))
+        .and(query_param("version", "inactive"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"<class:abapClass xmlns:class="http://www.sap.com/adt/oo/classes" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="ZCL_SAMPLE" adtcore:version="inactive"><class:include class:includeType="implementations" adtcore:version="active" adtcore:changedBy="DEVELOPER"/><class:include class:includeType="main" adtcore:version="inactive" adtcore:changedBy="COLLEAGUE"/></class:abapClass>"#,
+        ))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn a_colleagues_staged_main_does_not_fail_the_callers_activation() {
+    let server = MockServer::start().await;
+    mount_cross_user_activation(&server, LOCAL_TYPES_STAGED).await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let result = activate_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &activation_request(None),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let published: Vec<ClassInclude> = result.published.iter().map(|p| p.include).collect();
+    assert_eq!(published, vec![ClassInclude::Implementations]);
+    let others = result
+        .staged_by_others
+        .expect("the class document was read");
+    assert_eq!(others.len(), 1);
+    assert_eq!(others[0].include, ClassInclude::Main);
+    assert_eq!(others[0].author.as_deref(), Some("COLLEAGUE"));
+}
+
+#[tokio::test]
+async fn an_include_that_did_not_publish_what_was_pending_is_a_mismatch() {
+    let server = MockServer::start().await;
+    mount_cross_user_activation(&server, LOCAL_TYPES_BEFORE).await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let error = activate_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &activation_request(None),
+        None,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), "edit_activation_verification_mismatch");
+    let AdtSourceActivationError::VerificationMismatch { identity, .. } = error else {
+        panic!("expected a mismatch");
+    };
+    assert_eq!(identity.include, Some(ClassInclude::Implementations));
+}
