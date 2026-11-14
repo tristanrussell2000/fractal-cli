@@ -17,6 +17,7 @@ use super::{
 };
 use crate::config::{EditPolicy, TEMPORARY_PACKAGE};
 use crate::reportable_error::{ReportableError, sap_http_status};
+use crate::source_change::same_source;
 
 const NAME_PREFIX: &str = "ZCL_FRACTAL_EXEC_";
 const MAX_CLASS_NAME: usize = 30;
@@ -230,31 +231,12 @@ async fn active_source_matches(
     )
     .await
     .map_err(|source| ExecClassError::ReadBack(Box::new(source)))?;
-    Ok(normalized(&active.content) == normalized(expected))
-}
-
-/// Source as SAP compares it, not as bytes.
-///
-/// What comes back is not what was sent: SAP stores CRLF line endings and adds
-/// a trailing newline. A byte comparison therefore never matches, which is what
-/// made the first version of this check useless.
-fn normalized(source: &str) -> String {
-    source.replace("\r\n", "\n").trim_end().to_owned()
+    Ok(same_source(&active.content, expected))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn compares_source_the_way_sap_stores_it() {
-        // SAP returns CRLF and a trailing newline, so the source that comes
-        // back is never byte-identical to the source that was sent.
-        let sent = "CLASS zcl_x DEFINITION.\nENDCLASS.";
-        let stored = "CLASS zcl_x DEFINITION.\r\nENDCLASS.\r\n";
-        assert_eq!(normalized(sent), normalized(stored));
-        assert_ne!(normalized(sent), normalized("CLASS zcl_y DEFINITION."));
-    }
 
     #[test]
     fn names_the_class_after_the_user() {

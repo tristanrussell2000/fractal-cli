@@ -246,6 +246,31 @@ pub fn plan_source_replacement_allowing_blank(
     })
 }
 
+/// Whether two sources are the same as SAP stores source, rather than as bytes.
+///
+/// What SAP stores is not byte-for-byte what was sent: it uses CRLF line
+/// endings, and has been seen both to add a trailing line break and to drop
+/// one. Any "is what is stored what I meant to store" check compares this way.
+#[must_use]
+pub fn same_source(left: &str, right: &str) -> bool {
+    normalized_source(left) == normalized_source(right)
+}
+
+/// Whether two sources differ in nothing but trailing whitespace.
+///
+/// Narrower than [`same_source`]: a line-ending change still counts. For
+/// checks that must preserve source exactly, where the one tolerated
+/// difference is SAP dropping a trailing line break on save, as it does when a
+/// class include's generated template is written back.
+#[must_use]
+pub fn same_except_trailing_whitespace(left: &str, right: &str) -> bool {
+    left.trim_end() == right.trim_end()
+}
+
+fn normalized_source(source: &str) -> String {
+    source.replace("\r\n", "\n").trim_end().to_owned()
+}
+
 fn is_sha256(value: &str) -> bool {
     value.len() == SHA256_HEX_LENGTH && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
@@ -411,6 +436,30 @@ mod tests {
         assert!(matches!(
             error,
             SourceChangePlanError::SourceHashMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn compares_source_the_way_sap_stores_it() {
+        let sent = "CLASS zcl_x DEFINITION.\nENDCLASS.";
+        let stored = "CLASS zcl_x DEFINITION.\r\nENDCLASS.\r\n";
+        assert!(same_source(sent, stored));
+        // A trailing line break dropped on save, seen on a class include.
+        assert!(same_source(stored, "CLASS zcl_x DEFINITION.\r\nENDCLASS."));
+        assert!(!same_source(sent, "CLASS zcl_y DEFINITION."));
+    }
+
+    #[test]
+    fn only_trailing_whitespace_is_tolerated_where_exactness_matters() {
+        let active = "*\"* template\r\n*\"* more\r\n";
+        assert!(same_except_trailing_whitespace(
+            active,
+            "*\"* template\r\n*\"* more"
+        ));
+        // A line-ending change is still a difference.
+        assert!(!same_except_trailing_whitespace(
+            active,
+            "*\"* template\n*\"* more\n"
         ));
     }
 

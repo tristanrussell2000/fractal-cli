@@ -12,6 +12,7 @@ use crate::{
     reported::Reported,
 };
 use fractal::sap::{
+    class_include::ClassInclude,
     editable_source::EditableAdtObjectType,
     source_discard::{
         AdtInactiveSourceDiscardRequest, AdtInactiveSourceDiscardResult,
@@ -35,14 +36,9 @@ pub struct EditSourceDiscardOutput {
     #[serde(flatten)]
     object: EditObjectIdentityOutput,
     transport: Option<String>,
-    discarded_sha256: String,
-    discarded_bytes: usize,
-    active_sha256_before: String,
-    active_bytes_before: usize,
-    restored_inactive_sha256: String,
-    restored_inactive_bytes: usize,
-    active_sha256_after: String,
-    active_bytes_after: usize,
+    /// Every stream whose pending work was discarded: the object's one, or
+    /// each include of a class you had staged.
+    streams: Vec<DiscardedStreamOutput>,
     active_source_unchanged: bool,
     inactive_version_exists_after: bool,
     activation_response_parsed: bool,
@@ -50,6 +46,18 @@ pub struct EditSourceDiscardOutput {
     /// Present when the change landed but its lock could not be released.
     #[serde(skip_serializing_if = "Option::is_none")]
     warning: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DiscardedStreamOutput {
+    /// The class include. Absent for an object with one stream.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    include: Option<&'static str>,
+    discarded_sha256: String,
+    discarded_bytes: usize,
+    active_sha256_before: String,
+    restored_inactive_sha256: String,
+    active_sha256_after: String,
 }
 
 pub async fn edit_source_discard(
@@ -88,14 +96,18 @@ fn map_source_discard_result(
         verified: true,
         object: result.identity.into(),
         transport: result.transport,
-        discarded_sha256: result.discarded.sha256,
-        discarded_bytes: result.discarded.bytes,
-        active_sha256_before: result.active_before.sha256,
-        active_bytes_before: result.active_before.bytes,
-        restored_inactive_sha256: result.restored_inactive.sha256,
-        restored_inactive_bytes: result.restored_inactive.bytes,
-        active_sha256_after: result.active_after.sha256,
-        active_bytes_after: result.active_after.bytes,
+        streams: result
+            .streams
+            .into_iter()
+            .map(|stream| DiscardedStreamOutput {
+                include: stream.include.map(ClassInclude::as_str),
+                discarded_sha256: stream.discarded.sha256,
+                discarded_bytes: stream.discarded.bytes,
+                active_sha256_before: stream.active_before.sha256,
+                restored_inactive_sha256: stream.restored_inactive.sha256,
+                active_sha256_after: stream.active_after.sha256,
+            })
+            .collect(),
         active_source_unchanged: true,
         inactive_version_exists_after: false,
         activation_response_parsed: result.activation_response_parsed,
@@ -120,37 +132,28 @@ fn render_source_discard_readable(result: &EditSourceDiscardOutput) -> String {
     if let Some(transport) = &result.transport {
         let _ = writeln!(output, "transport: {transport}");
     }
-    let _ = writeln!(
-        output,
-        "discarded inactive SHA-256: {}",
-        result.discarded_sha256
-    );
-    let _ = writeln!(
-        output,
-        "discarded inactive bytes: {}",
-        result.discarded_bytes
-    );
-    let _ = writeln!(
-        output,
-        "active SHA-256 before: {}",
-        result.active_sha256_before
-    );
-    let _ = writeln!(
-        output,
-        "restored inactive SHA-256: {}",
-        result.restored_inactive_sha256
-    );
-    let _ = writeln!(
-        output,
-        "active SHA-256 after: {}",
-        result.active_sha256_after
-    );
+    for stream in &result.streams {
+        let label = stream
+            .include
+            .map_or_else(String::new, |include| format!("{include}: "));
+        let _ = writeln!(
+            output,
+            "{label}discarded {} ({} bytes), active {} kept",
+            short(&stream.discarded_sha256),
+            stream.discarded_bytes,
+            short(&stream.active_sha256_after)
+        );
+    }
     let _ = writeln!(output, "active source unchanged: true");
     let _ = writeln!(output, "inactive version exists after: false");
     if let Some(warning) = &result.warning {
         let _ = writeln!(output, "warning: {warning}");
     }
     output
+}
+
+fn short(sha256: &str) -> &str {
+    sha256.get(..12).unwrap_or(sha256)
 }
 
 #[cfg(test)]
@@ -200,26 +203,29 @@ mod tests {
                     include: Some(fractal::sap::class_include::ClassInclude::Main),
                 },
                 transport: Some("AB1K900575".to_owned()),
-                discarded: AdtSourceSnapshot::from_parts(
-                    "edited source".to_owned(),
-                    "inactive-hash".to_owned(),
-                    45,
-                ),
-                active_before: AdtSourceSnapshot::from_parts(
-                    "live source".to_owned(),
-                    "active-hash".to_owned(),
-                    40,
-                ),
-                restored_inactive: AdtSourceSnapshot::from_parts(
-                    "live source".to_owned(),
-                    "active-hash".to_owned(),
-                    40,
-                ),
-                active_after: AdtSourceSnapshot::from_parts(
-                    "live source".to_owned(),
-                    "active-hash".to_owned(),
-                    40,
-                ),
+                streams: vec![fractal::sap::source_discard::DiscardedStream {
+                    include: Some(ClassInclude::Implementations),
+                    discarded: AdtSourceSnapshot::from_parts(
+                        "edited source".to_owned(),
+                        "inactive-hash".to_owned(),
+                        45,
+                    ),
+                    active_before: AdtSourceSnapshot::from_parts(
+                        "live source".to_owned(),
+                        "active-hash".to_owned(),
+                        40,
+                    ),
+                    restored_inactive: AdtSourceSnapshot::from_parts(
+                        "live source".to_owned(),
+                        "active-hash".to_owned(),
+                        40,
+                    ),
+                    active_after: AdtSourceSnapshot::from_parts(
+                        "live source".to_owned(),
+                        "active-hash".to_owned(),
+                        40,
+                    ),
+                }],
                 activation_response_parsed: true,
                 sap_reported_activation_executed: Some(true),
                 still_locked: false,
@@ -237,5 +243,13 @@ mod tests {
         assert!(readable.contains("restore active source, then activate"));
         assert!(readable.contains("active source unchanged: true"));
         assert!(readable.contains("inactive version exists after: false"));
+        assert!(
+            readable.contains(
+                "implementations: discarded inactive-has (45 bytes), active active-hash kept"
+            ),
+            "{readable}"
+        );
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["streams"][0]["include"], "implementations");
     }
 }

@@ -179,6 +179,20 @@ pub struct EditableAdtSourceIdentity {
     pub include: Option<ClassInclude>,
 }
 
+impl EditableAdtSourceIdentity {
+    /// The same class, addressing one of its includes. Locking, the worklist
+    /// and activation still go through the class; only the source moves.
+    #[must_use]
+    pub fn for_include(&self, include: ClassInclude) -> Self {
+        debug_assert_eq!(self.object_type, EditableAdtObjectType::Class);
+        Self {
+            source_uri: include.source_uri(&self.object_uri),
+            include: Some(include),
+            ..self.clone()
+        }
+    }
+}
+
 /// A syntactically valid source object type and name.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum EditableAdtSourceTargetError {

@@ -622,12 +622,7 @@ async fn verify_published_includes(
 ) -> Result<Vec<PublishedInclude>, AdtSourceActivationError> {
     let mut published = Vec::with_capacity(publishing.len());
     for (include, inactive) in publishing {
-        let include_identity = || {
-            let mut stream = identity.clone();
-            stream.source_uri = include.source_uri(&identity.object_uri);
-            stream.include = Some(*include);
-            Box::new(stream)
-        };
+        let include_identity = || Box::new(identity.for_include(*include));
         let active = if *include == ClassInclude::Main {
             main_active.clone()
         } else {

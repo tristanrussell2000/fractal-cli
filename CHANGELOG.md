@@ -18,6 +18,8 @@
   directory to clear them.
 - `fractal undo --output json` reports per-stream fields under `streams` instead of top-level
   `restore_sha256` and friends.
+- `edit discard --output json` reports per-stream fields under `streams` (with `include` for a
+  class) instead of top-level `discarded_sha256`, `active_sha256_before` and friends.
 
 ### Fixed
 
@@ -30,6 +32,11 @@
   colleague's staged `main` made a successful activation report
   `edit_activation_verification_mismatch`. Each include the activation published is now verified
   instead, and `edit activate` reports `published` and `staged_by_others` for a class.
+- **`edit discard` on a class published staged includes instead of discarding them.** It restored
+  only `main`, then activated the class, which publishes every include the caller has staged.
+  Every staged include is now restored first, and each is checked afterwards. Discard also no
+  longer refuses when SAP drops a trailing line break on the restore; a line-ending change still
+  refuses.
 - **A class delete kept only `main`.** Its restore recipe now names each include's content.
 - A journal entry that could not be read vanished from `journal list` without a word. It is now
   listed as unreadable.

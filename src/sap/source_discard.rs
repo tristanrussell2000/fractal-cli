@@ -6,6 +6,7 @@ use crate::suggested_command;
 
 use super::{
     adt_version::AdtVersion,
+    class_include::ClassInclude,
     client::{SapClient, SapClientError},
     edit_session::{
         AdtEditSessionError, AdtObjectLock, acquire_adt_object_lock,
@@ -16,10 +17,13 @@ use super::{
         EditableAdtObjectType, EditableAdtSourceIdentity, ValidatedAdtEditTarget,
         validate_adt_edit_target,
     },
-    source_activation::{AdtSourceActivationError, activate_validated_adt_source},
-    worklist::{AdtInactiveSourceProbeError, probe_inactive_adt_source},
+    source_activation::{
+        AdtSourceActivationError, AdtSourceActivationResult, activate_validated_adt_source,
+    },
+    worklist::{AdtInactiveSourceProbeError, read_worklist},
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
+use crate::source_change::same_except_trailing_whitespace;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdtInactiveSourceDiscardRequest {
@@ -32,10 +36,9 @@ pub struct AdtInactiveSourceDiscardRequest {
 pub struct AdtInactiveSourceDiscardResult {
     pub identity: EditableAdtSourceIdentity,
     pub transport: Option<String>,
-    pub discarded: AdtSourceSnapshot,
-    pub active_before: AdtSourceSnapshot,
-    pub restored_inactive: AdtSourceSnapshot,
-    pub active_after: AdtSourceSnapshot,
+    /// Every stream whose pending work was discarded: the object's one, or
+    /// each include of a class the caller had staged.
+    pub streams: Vec<DiscardedStream>,
     pub activation_response_parsed: bool,
     pub sap_reported_activation_executed: Option<bool>,
     /// The discard landed, but its lock could not be released.
@@ -45,6 +48,17 @@ pub struct AdtInactiveSourceDiscardResult {
     /// stuck lock. The caller still has to clear it, because it blocks the next
     /// edit of this object.
     pub still_locked: bool,
+}
+
+/// One stream a discard put back to its active version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscardedStream {
+    /// The class include, or `None` for an object with one stream.
+    pub include: Option<ClassInclude>,
+    pub discarded: AdtSourceSnapshot,
+    pub active_before: AdtSourceSnapshot,
+    pub restored_inactive: AdtSourceSnapshot,
+    pub active_after: AdtSourceSnapshot,
 }
 
 #[derive(Debug, Error)]
@@ -86,6 +100,17 @@ pub enum AdtInactiveSourceDiscardError {
         before_sha256: String,
         after_sha256: String,
     },
+    /// A class include was restored, but the activation did not report
+    /// publishing it, so whether its pending work is gone cannot be shown.
+    #[error(
+        "{} {}'s {} include was restored, but the activation did not publish it",
+        identity.object_type.as_str(),
+        identity.name,
+        identity.include.map_or("main", ClassInclude::as_str)
+    )]
+    RestoredStreamNotPublished {
+        identity: Box<EditableAdtSourceIdentity>,
+    },
     /// The operation failed and its lock could not be released. Wraps the
     /// cause, so the reported code, status, and message are unchanged.
     #[error(transparent)]
@@ -107,7 +132,8 @@ impl AdtInactiveSourceDiscardError {
             Self::Validation(_)
             | Self::NoInactiveVersion { .. }
             | Self::RestoreVerificationMismatch { .. }
-            | Self::ActiveSourceChanged { .. } => None,
+            | Self::ActiveSourceChanged { .. }
+            | Self::RestoredStreamNotPublished { .. } => None,
         }
     }
 }
@@ -134,6 +160,7 @@ impl ReportableError for AdtInactiveSourceDiscardError {
             Self::RestoreVerificationMismatch { .. } => "edit_discard_restore_mismatch",
             Self::RestoredSourceActivation(_) => "edit_discard_activation_failed",
             Self::ActiveSourceChanged { .. } => "edit_discard_active_source_changed",
+            Self::RestoredStreamNotPublished { .. } => "edit_discard_include_not_published",
         }
     }
 
@@ -173,6 +200,9 @@ impl ReportableError for AdtInactiveSourceDiscardError {
                 "The inactive source now contains the previous active source, but activation did not complete. {}",
                 error.hint().unwrap_or_default()
             ),
+            Self::RestoredStreamNotPublished { .. } => {
+                "The include's active version was written back as pending, then the class was activated without it. The class document shows which includes are still pending.".to_owned()
+            }
             Self::ActiveSourceChanged { identity, .. } => format!(
                 "Do not retry blindly: a discard must preserve active source exactly, so inspect the object history, starting with `{}`.",
                 suggested_command::edit_read(identity.object_type.as_str(), &identity.name, AdtVersion::Active.as_str())
@@ -201,6 +231,9 @@ impl ReportableError for AdtInactiveSourceDiscardError {
                 &identity.name,
                 AdtVersion::Active.as_str(),
             )),
+            Self::RestoredStreamNotPublished { identity } => {
+                Some(suggested_command::object_xml(&identity.object_uri))
+            }
             Self::ActiveSourceRead(error)
             | Self::InactiveSourceRead(error)
             | Self::RestoredSourceRead(error) => error.suggested_command(),
@@ -213,7 +246,9 @@ impl ReportableError for AdtInactiveSourceDiscardError {
     }
 }
 
-struct PreparedDiscard {
+/// One stream restored under the lock, before the activation.
+struct PreparedStream {
+    identity: EditableAdtSourceIdentity,
     inactive_before: AdtSourceReadResult,
     active_before: AdtSourceReadResult,
     restored_inactive: AdtSourceReadResult,
@@ -226,6 +261,11 @@ struct PreparedDiscard {
 /// inactive source. Fractal therefore locks the object, snapshots both source
 /// versions, writes the active bytes over the inactive version, verifies that
 /// write while still locked, unlocks, and activates the restored source.
+///
+/// For a class, every include the caller has staged is restored, not only
+/// `main`: the activation publishes the caller's whole worklist, so an include
+/// left out would be published rather than discarded. Other users' staged
+/// includes are not touched, and the activation leaves them alone.
 ///
 /// This workflow deliberately requires an active version. New objects that
 /// have never been activated cannot be safely discarded as source edits.
@@ -291,34 +331,76 @@ pub async fn discard_inactive_adt_source(
     .await
     .map_err(AdtInactiveSourceDiscardError::RestoredSourceActivation)?;
 
-    if activation.active.sha256 != prepared.active_before.snapshot.sha256 {
-        return Err(AdtInactiveSourceDiscardError::ActiveSourceChanged {
-            identity: Box::new(identity.clone()),
-            before_sha256: prepared.active_before.snapshot.sha256,
-            after_sha256: activation.active.sha256,
+    let mut streams = Vec::with_capacity(prepared.len());
+    for stream in prepared {
+        let Some(active_after) = active_after(&activation, &stream.identity) else {
+            return Err(AdtInactiveSourceDiscardError::RestoredStreamNotPublished {
+                identity: Box::new(stream.identity),
+            });
+        };
+        if !same_except_trailing_whitespace(
+            &active_after.source,
+            &stream.active_before.snapshot.source,
+        ) {
+            return Err(AdtInactiveSourceDiscardError::ActiveSourceChanged {
+                identity: Box::new(stream.identity),
+                before_sha256: stream.active_before.snapshot.sha256,
+                after_sha256: active_after.sha256,
+            });
+        }
+        streams.push(DiscardedStream {
+            include: stream.identity.include,
+            discarded: stream.inactive_before.snapshot,
+            active_before: stream.active_before.snapshot,
+            restored_inactive: stream.restored_inactive.snapshot,
+            active_after,
         });
     }
 
     Ok(AdtInactiveSourceDiscardResult {
         identity,
         transport,
-        discarded: prepared.inactive_before.snapshot,
-        active_before: prepared.active_before.snapshot,
-        restored_inactive: prepared.restored_inactive.snapshot,
-        active_after: activation.active,
+        streams,
         activation_response_parsed: activation.activation_response_parsed,
         sap_reported_activation_executed: activation.sap_reported_activation_executed,
         still_locked,
     })
 }
 
+/// What one discarded stream is active as now, taken from reads the activation
+/// already made rather than read again.
+///
+/// The activation reads two things back. `active` is always `source/main`: for
+/// a single-source object that is the whole object. `published` exists only
+/// for a class, with one after-read per include it published. A class stream
+/// comes from `published`, and is `None` if the activation did not publish it;
+/// falling back to `active` there would compare an include against `main`.
+fn active_after(
+    activation: &AdtSourceActivationResult,
+    stream: &EditableAdtSourceIdentity,
+) -> Option<AdtSourceSnapshot> {
+    stream.include.map_or_else(
+        || Some(activation.active.clone()),
+        |include| {
+            activation
+                .published
+                .iter()
+                .find(|published| published.include == include)
+                .map(|published| published.active.clone())
+        },
+    )
+}
+
 async fn prepare_discard_while_locked(
     sap: &mut SapClient,
     identity: &EditableAdtSourceIdentity,
     lock: &AdtObjectLock,
-) -> Result<PreparedDiscard, AdtInactiveSourceDiscardError> {
-    let inactive_exists = probe_inactive_adt_source(sap, &identity.object_uri)
+) -> Result<Vec<PreparedStream>, AdtInactiveSourceDiscardError> {
+    let worklist = read_worklist(sap)
         .await
+        .map_err(AdtInactiveSourceDiscardError::InactiveVersionProbe)?;
+    let inactive_exists = worklist
+        .contains(&identity.object_uri)
         .map_err(AdtInactiveSourceDiscardError::InactiveVersionProbe)?;
     if !inactive_exists {
         return Err(AdtInactiveSourceDiscardError::NoInactiveVersion {
@@ -327,30 +409,68 @@ async fn prepare_discard_while_locked(
         });
     }
 
-    let active_read = read_adt_source_in_stateful_session(sap, identity, AdtVersion::Active);
-    let inactive_read = read_adt_source_in_stateful_session(sap, identity, AdtVersion::Inactive);
+    // For a class, the streams the caller has staged. A worklist that names
+    // the class but none of its streams is taken to mean `main`, which is what
+    // a discard has always restored.
+    let streams = if identity.object_type == EditableAdtObjectType::Class {
+        let mut staged = worklist
+            .staged_by_caller(&identity.object_uri)
+            .map_err(AdtInactiveSourceDiscardError::InactiveVersionProbe)?;
+        if staged.is_empty() {
+            staged.push(ClassInclude::Main);
+        }
+        staged
+            .into_iter()
+            .map(|include| identity.for_include(include))
+            .collect()
+    } else {
+        vec![identity.clone()]
+    };
+
+    let mut prepared = Vec::with_capacity(streams.len());
+    for stream in streams {
+        prepared.push(restore_stream_while_locked(sap, stream, lock).await?);
+    }
+    Ok(prepared)
+}
+
+/// Writes one stream's active source over its inactive one, and proves it.
+async fn restore_stream_while_locked(
+    sap: &mut SapClient,
+    identity: EditableAdtSourceIdentity,
+    lock: &AdtObjectLock,
+) -> Result<PreparedStream, AdtInactiveSourceDiscardError> {
+    let active_read = read_adt_source_in_stateful_session(sap, &identity, AdtVersion::Active);
+    let inactive_read = read_adt_source_in_stateful_session(sap, &identity, AdtVersion::Inactive);
     let (active_before, inactive_before) = tokio::join!(active_read, inactive_read);
     let active_before = active_before.map_err(AdtInactiveSourceDiscardError::ActiveSourceRead)?;
     let inactive_before =
         inactive_before.map_err(AdtInactiveSourceDiscardError::InactiveSourceRead)?;
 
-    write_adt_source(sap, identity, lock, &active_before.snapshot.source)
+    write_adt_source(sap, &identity, lock, &active_before.snapshot.source)
         .await
         .map_err(AdtInactiveSourceDiscardError::Session)?;
     let restored_inactive =
-        read_adt_source_in_stateful_session(sap, identity, AdtVersion::Inactive)
+        read_adt_source_in_stateful_session(sap, &identity, AdtVersion::Inactive)
             .await
             .map_err(AdtInactiveSourceDiscardError::RestoredSourceRead)?;
 
-    if restored_inactive.snapshot.sha256 != active_before.snapshot.sha256 {
+    // Exact but for trailing whitespace: writing a class include's generated
+    // template back has been seen to drop its trailing line break. A
+    // line-ending change still refuses.
+    if !same_except_trailing_whitespace(
+        &restored_inactive.snapshot.source,
+        &active_before.snapshot.source,
+    ) {
         return Err(AdtInactiveSourceDiscardError::RestoreVerificationMismatch {
-            identity: Box::new(identity.clone()),
+            identity: Box::new(identity),
             active_sha256: active_before.snapshot.sha256,
             restored_sha256: restored_inactive.snapshot.sha256,
         });
     }
 
-    Ok(PreparedDiscard {
+    Ok(PreparedStream {
+        identity,
         inactive_before,
         active_before,
         restored_inactive,

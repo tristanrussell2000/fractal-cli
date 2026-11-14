@@ -204,6 +204,16 @@ fn contract() -> Vec<Expectation> {
             suggested_command: None,
         },
         Expectation {
+            error: Box::new(AdtInactiveSourceDiscardError::RestoredStreamNotPublished {
+                identity: Box::new(identity().for_include(ClassInclude::Implementations)),
+            }),
+            code: "edit_discard_include_not_published",
+            status: None,
+            message_contains: "implementations include was restored",
+            has_hint: true,
+            suggested_command: Some("fractal object xml /sap/bc/adt/oo/classes/zcl_sample"),
+        },
+        Expectation {
             error: Box::new(ObjectSourceError::NoSourceForKind {
                 kind: "DOMA".to_owned(),
                 uri: "/sap/bc/adt/ddic/domains/zdomain".to_owned(),

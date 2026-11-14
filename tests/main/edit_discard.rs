@@ -4,6 +4,7 @@ use fractal::reportable_error::ReportableError;
 use fractal::{
     config::Profile,
     sap::{
+        class_include::ClassInclude,
         client::SapClient,
         edit_session::AdtEditSessionError,
         editable_source::{AdtEditTargetValidationError, EditableAdtObjectType},
@@ -238,10 +239,15 @@ async fn restores_active_source_under_lock_then_activates_and_verifies_it() {
     .unwrap();
 
     assert_eq!(result.identity.name, "ZCL_SAMPLE");
-    assert_eq!(result.discarded.sha256, source_sha256(INACTIVE_SOURCE));
-    assert_eq!(result.active_before.sha256, source_sha256(ACTIVE_SOURCE));
-    assert_eq!(result.restored_inactive.sha256, result.active_before.sha256);
-    assert_eq!(result.active_after.sha256, result.active_before.sha256);
+    // A worklist naming only the class is a discard of `main`.
+    let [main] = result.streams.as_slice() else {
+        panic!("expected one stream, got {:?}", result.streams);
+    };
+    assert_eq!(main.include, Some(ClassInclude::Main));
+    assert_eq!(main.discarded.sha256, source_sha256(INACTIVE_SOURCE));
+    assert_eq!(main.active_before.sha256, source_sha256(ACTIVE_SOURCE));
+    assert_eq!(main.restored_inactive.sha256, main.active_before.sha256);
+    assert_eq!(main.active_after.sha256, main.active_before.sha256);
     assert!(result.activation_response_parsed);
     assert_eq!(result.sap_reported_activation_executed, Some(true));
 
@@ -497,4 +503,165 @@ fn request_position(requests: &[Request], request_path: &str, key: &str, value: 
                     })
         })
         .unwrap()
+}
+
+const LOCAL_TYPES_URI: &str = "/sap/bc/adt/oo/classes/zcl_sample/includes/implementations";
+const LOCAL_ACTIVE: &str = "CLASS lhc_sample DEFINITION.\nENDCLASS.\n";
+const LOCAL_STAGED: &str = "CLASS lhc_sample DEFINITION.\n\" half done\nENDCLASS.\n";
+
+/// The activation at the end of a discard publishes the caller's whole
+/// worklist. Restoring only `main` would publish a staged include rather than
+/// discard it, and the check on `main` would still call it a success.
+#[tokio::test]
+async fn discarding_a_class_restores_the_include_the_caller_staged() {
+    let server = MockServer::start().await;
+    mount_csrf_session(&server).await;
+    mount_lock(&server).await;
+    mount_unlock(&server, ResponseTemplate::new(200)).await;
+    let listed = format!(
+        "<objects><object uri=\"{OBJECT_URI}\"/><object uri=\"{LOCAL_TYPES_URI}\"/></objects>"
+    );
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/activation/inactiveobjects"))
+        .respond_with(SequentialResponses::new(vec![
+            ResponseTemplate::new(200).set_body_string(listed.clone()),
+            ResponseTemplate::new(200).set_body_string(listed),
+            ResponseTemplate::new(200).set_body_string("<objects/>"),
+        ]))
+        .expect(3)
+        .mount(&server)
+        .await;
+    // `main` is not staged, so it is never written.
+    SESSION
+        .source_write(None)
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(LOCAL_TYPES_URI))
+        .and(query_param("lockHandle", SESSION.lock_handle))
+        .and(body_string(LOCAL_ACTIVE))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(LOCAL_TYPES_URI))
+        .and(query_param("version", "active"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(LOCAL_ACTIVE))
+        .mount(&server)
+        .await;
+    // Under the lock, the restored re-read, and the activation's own read.
+    Mock::given(method("GET"))
+        .and(path(LOCAL_TYPES_URI))
+        .and(query_param("version", "inactive"))
+        .respond_with(SequentialResponses::sources(&[
+            LOCAL_STAGED,
+            LOCAL_ACTIVE,
+            LOCAL_ACTIVE,
+        ]))
+        .expect(3)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(SOURCE_URI))
+        .respond_with(ResponseTemplate::new(200).set_body_string(ACTIVE_SOURCE))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/checkruns"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<checkMessageList/>"))
+        .mount(&server)
+        .await;
+    mount_activation(
+        &server,
+        ResponseTemplate::new(200)
+            .set_body_string(r#"<activationResult activationExecuted="true"/>"#),
+    )
+    .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let result = discard_inactive_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &discard_request(None),
+    )
+    .await
+    .unwrap();
+
+    let [local] = result.streams.as_slice() else {
+        panic!("expected one stream, got {:?}", result.streams);
+    };
+    assert_eq!(local.include, Some(ClassInclude::Implementations));
+    assert_eq!(local.discarded.sha256, source_sha256(LOCAL_STAGED));
+    assert_eq!(local.active_after.sha256, source_sha256(LOCAL_ACTIVE));
+    server.verify().await;
+}
+
+/// Seen live: SAP drops the trailing line break when a class include's
+/// generated template is written back. That is not a reason to refuse.
+#[tokio::test]
+async fn a_dropped_trailing_line_break_is_not_a_restore_mismatch() {
+    const ACTIVE_WITH_BREAK: &str = "CLASS zcl_sample DEFINITION.\r\nENDCLASS.\r\n";
+    const STORED_WITHOUT: &str = "CLASS zcl_sample DEFINITION.\r\nENDCLASS.";
+    let server = MockServer::start().await;
+    mount_csrf_session(&server).await;
+    mount_lock(&server).await;
+    mount_unlock(&server, ResponseTemplate::new(200)).await;
+    mount_inactive_sequence(&server, 2, 3).await;
+    Mock::given(method("GET"))
+        .and(path(SOURCE_URI))
+        .and(query_param("version", "active"))
+        .and(header("x-sap-adt-sessiontype", "stateful"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(ACTIVE_WITH_BREAK))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(SOURCE_URI))
+        .and(query_param("version", "inactive"))
+        .and(header("x-sap-adt-sessiontype", "stateful"))
+        .respond_with(SequentialResponses::sources(&[
+            INACTIVE_SOURCE,
+            STORED_WITHOUT,
+        ]))
+        .mount(&server)
+        .await;
+    SESSION
+        .source_write(None)
+        .and(body_string(ACTIVE_WITH_BREAK))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // The activation reads what is pending and, afterwards, what is active:
+    // both are the stored form, without the break.
+    Mock::given(method("GET"))
+        .and(path(SOURCE_URI))
+        .respond_with(ResponseTemplate::new(200).set_body_string(STORED_WITHOUT))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/checkruns"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<checkMessageList/>"))
+        .mount(&server)
+        .await;
+    mount_activation(
+        &server,
+        ResponseTemplate::new(200)
+            .set_body_string(r#"<activationResult activationExecuted="true"/>"#),
+    )
+    .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let result = discard_inactive_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &discard_request(None),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.streams.len(), 1);
+    server.verify().await;
 }
