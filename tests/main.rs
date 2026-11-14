@@ -61,6 +61,8 @@ mod package_tree;
 mod query;
 #[path = "main/sap_client.rs"]
 mod sap_client;
+#[path = "main/service_binding.rs"]
+mod service_binding;
 #[path = "main/source.rs"]
 mod source;
 #[path = "main/table_data.rs"]

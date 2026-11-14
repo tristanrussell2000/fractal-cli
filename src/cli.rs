@@ -104,11 +104,61 @@ pub enum Command {
     /// A top-level verb for the same reason `delete` is one: it mutates, and a
     /// harness rule matches it by prefix.
     Undo(UndoArgs),
+    /// Show and publish OData service bindings.
+    ///
+    /// An activated binding is not yet a service: nothing answers at its URL
+    /// until it is published, which registers it with the gateway. Whether a
+    /// binding is OData V2 or V4 was fixed when it was created; it publishes
+    /// as what it is.
+    Binding {
+        #[command(subcommand)]
+        command: BindingCommand,
+    },
     /// Read and safely edit supported source-based repository objects.
     Edit {
         #[command(subcommand)]
         command: EditCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BindingCommand {
+    /// Show a binding's protocol and, for each service version, whether it is
+    /// published, its URL and its entity sets.
+    ///
+    /// Reports the binding's own `published` flag beside the registration's,
+    /// because the two can disagree; the registration is the one that holds.
+    Show(BindingShowArgs),
+    /// Publish one service version of an active binding, and confirm it.
+    ///
+    /// Sends nothing when the service is already published.
+    Publish(BindingPublishArgs),
+    /// Unpublish one service version of a binding, and confirm it.
+    ///
+    /// Sends nothing when the service is not published. A published binding
+    /// cannot be deleted, so this comes first.
+    Unpublish(BindingPublishArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct BindingShowArgs {
+    /// Service binding name.
+    #[arg(long)]
+    pub(crate) name: String,
+}
+
+#[derive(Debug, Args)]
+pub struct BindingPublishArgs {
+    /// Service binding name.
+    #[arg(long)]
+    pub(crate) name: String,
+    /// Service version to act on, such as 0001. Needed only when the binding
+    /// has more than one.
+    #[arg(long)]
+    pub(crate) service_version: Option<String>,
+    /// Read the current state and report the request without sending it.
+    #[arg(long, default_value_t = false)]
+    pub(crate) dry_run: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -957,6 +1007,13 @@ mod tests {
             suggested_command::object_search("INTF", "ZIF_SAMPLE"),
             suggested_command::object_xml("/sap/bc/adt/ddic/domains/zdomain"),
             suggested_command::table_metadata("ZDEMO_EVENT_LOG"),
+            suggested_command::edit_read_include(
+                "CLAS",
+                "ZCL_SAMPLE",
+                "implementations",
+                "inactive",
+            ),
+            suggested_command::binding_show("ZSAMPLE_UI_O4"),
         ];
 
         for command in commands {

@@ -295,6 +295,23 @@ mod tests {
     }
 
     #[test]
+    fn publishing_a_binding_is_asked_about_and_showing_it_is_not() {
+        for command in [
+            "fractal binding publish --name ZSAMPLE_UI_O4",
+            "fractal binding unpublish --name ZSAMPLE_UI_O4",
+        ] {
+            assert!(
+                matches!(decide(command, false), HookDecision::Ask(_)),
+                "{command}"
+            );
+        }
+        assert!(matches!(
+            decide("fractal binding show --name ZSAMPLE_UI_O4", false),
+            HookDecision::NoOpinion
+        ));
+    }
+
+    #[test]
     fn turning_the_journal_off_is_named_in_the_reason() {
         // The flag cannot change the verdict — every command that takes it is
         // already asked about or denied — but it changes what the person

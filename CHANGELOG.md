@@ -4,6 +4,18 @@
 
 ### Added
 
+- **`fractal binding show | publish | unpublish`** — publish a service binding, the last step to a
+  callable RAP service. OData V2 and V4 both work; the binding's own protocol decides which
+  endpoints are used. Success is proved by reading the registration back, never by SAP's answer,
+  which reports a refusal as HTTP 200. Publishing a published service, or unpublishing an
+  unpublished one, sends nothing. `show` reports the service URL and entity sets, and the binding's
+  own `published` flag beside the registration's, because the two have been seen to disagree.
+  Publishing is not journaled: it changes no content, and unpublish is its inverse. It needs no
+  transport, even for a binding in a transportable package; the gateway objects travel with the
+  binding's activation.
+  `guard install` asks before `binding publish` and `unpublish`.
+- **Deleting a published binding says to unpublish it first** (`edit_delete_binding_published`)
+  instead of a generic `edit_delete_request_failed`.
 - **`--include` reads a class's other source streams**: `definitions` (class-relevant local
   types), `implementations` (local types, where RAP handlers live), `macros` and `testclasses`.
   On `edit read`, and on `object source`, which also accepts an include's own URI

@@ -152,6 +152,7 @@ fractal table      data | metadata | set | insert | remove
 fractal query      <complete SELECT, or - for stdin>
 fractal transport  list | show | create
 fractal edit       create | read | patch | set | set-xml | check | activate | discard
+fractal binding    show | publish | unpublish
 fractal delete     <one destructive verb, kept out of `edit` on purpose>
 fractal journal    list | show | clear
 fractal undo       <reverse a recorded activation or table write>
@@ -179,6 +180,11 @@ verifies the result. It works for metadata objects too (`DTEL`, `DOMA`, `TTYP`, 
 `SRVB`), where there is no source to check and success is proved by reading the document
 back as active. `fractal delete` refuses when other objects still reference the target
 unless `--force` is given.
+
+An activated service binding is not yet a service. `fractal binding publish --name <SRVB>`
+registers it with the gateway, as OData V2 or V4 according to the binding, and confirms it by
+reading the registration back; `binding unpublish` reverses it, and `binding show` reports the
+service URL and entity sets. SAP refuses to delete a published binding, so unpublish first.
 
 `edit set-xml` replaces a whole DDIC document, and SAP keeps no retrievable version history for
 those objects, so pass `--expected-sha256` (from `fractal object xml`) to refuse the write if the
@@ -254,7 +260,8 @@ fractal guard install --dry-run          # show what would be written
 It denies the irreversible commands, asks for the ones that write, leaves read-only commands
 alone, and merges into an existing settings file without removing anything already there.
 `fractal undo` and `fractal journal clear` are on the ask list — the first publishes a version,
-the second destroys the only record of what was replaced.
+the second destroys the only record of what was replaced — and so are `fractal binding publish`
+and `unpublish`.
 
 One gap is worth stating rather than papering over: Claude Code's rules match a command
 **prefix**, so they cannot see a flag. Approving `fractal edit activate` also approves

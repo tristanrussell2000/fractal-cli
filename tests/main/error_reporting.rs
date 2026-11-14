@@ -25,6 +25,7 @@ use fractal::{
         object_info::ObjectInfoError,
         object_source::ObjectSourceError,
         package::PackageError,
+        service_binding::{PublishOperation, SapPublishMessage, ServiceBindingError},
         source_activation::AdtSourceActivationError,
         source_check::AdtSourceCheckError,
         source_discard::AdtInactiveSourceDiscardError,
@@ -384,6 +385,56 @@ fn contract() -> Vec<Expectation> {
             message_contains: "invalid edit source object name",
             has_hint: true,
             suggested_command: None,
+        },
+        Expectation {
+            error: Box::new(ServiceBindingError::NotActive {
+                name: "ZSAMPLE_UI_O4".to_owned(),
+            }),
+            code: "binding_not_active",
+            status: None,
+            message_contains: "no active version",
+            has_hint: true,
+            // Activating is the remedy, and it mutates, so it stays in the hint.
+            suggested_command: None,
+        },
+        Expectation {
+            error: Box::new(ServiceBindingError::ServiceVersionAmbiguous {
+                name: "ZSAMPLE_UI_O4".to_owned(),
+                versions: vec!["0001".to_owned(), "0002".to_owned()],
+            }),
+            code: "binding_service_version_ambiguous",
+            status: None,
+            message_contains: "0001, 0002",
+            has_hint: true,
+            suggested_command: Some("fractal binding show --name ZSAMPLE_UI_O4"),
+        },
+        Expectation {
+            error: Box::new(ServiceBindingError::Refused {
+                operation: PublishOperation::Unpublish,
+                name: "ZSAMPLE_UI_O4".to_owned(),
+                message: SapPublishMessage {
+                    severity: "ERROR".to_owned(),
+                    short_text: "Un-publish failed".to_owned(),
+                    long_text: None,
+                },
+            }),
+            code: "binding_unpublish_failed",
+            status: None,
+            message_contains: "Un-publish failed",
+            has_hint: true,
+            suggested_command: Some("fractal binding show --name ZSAMPLE_UI_O4"),
+        },
+        Expectation {
+            error: Box::new(ServiceBindingError::Unverified {
+                operation: PublishOperation::Publish,
+                name: "ZSAMPLE_UI_O4".to_owned(),
+                message: None,
+            }),
+            code: "binding_publish_unverified",
+            status: None,
+            message_contains: "still unpublished",
+            has_hint: true,
+            suggested_command: Some("fractal binding show --name ZSAMPLE_UI_O4"),
         },
     ]
 }

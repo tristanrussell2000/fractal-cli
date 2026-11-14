@@ -5,8 +5,8 @@ mod reported;
 
 use clap::Parser;
 use cli::{
-    AuthCommand, Cli, Command, EditCommand, GuardCommand, InternalCommand, JournalCommand,
-    ObjectCommand, PackageCommand, SystemCommand, TableCommand, TransportCommand,
+    AuthCommand, BindingCommand, Cli, Command, EditCommand, GuardCommand, InternalCommand,
+    JournalCommand, ObjectCommand, PackageCommand, SystemCommand, TableCommand, TransportCommand,
 };
 use commands::auth::{
     auth_list, auth_login, auth_remove, auth_set, print_auth_list, print_auth_login,
@@ -45,6 +45,7 @@ use commands::transport::{
 };
 use commands::undo::{object_undo, print_object_undo};
 use fractal::journal::entry::RowOperation;
+use fractal::sap::service_binding::PublishOperation;
 use output::{default_output_format, run_and_print_with, run_and_print_with_async};
 use reported::Reported;
 
@@ -261,6 +262,48 @@ async fn main() {
             run_and_print_with_async(
                 || transport_list(cli.profile.as_deref(), args),
                 print_transport_list,
+                output,
+            )
+            .await
+        }
+        Command::Binding {
+            command: BindingCommand::Show(args),
+        } => {
+            run_and_print_with_async(
+                || commands::binding::binding_show(cli.profile.as_deref(), args),
+                commands::binding::print_binding_show,
+                output,
+            )
+            .await
+        }
+        Command::Binding {
+            command: BindingCommand::Publish(args),
+        } => {
+            run_and_print_with_async(
+                || {
+                    commands::binding::binding_publish(
+                        cli.profile.as_deref(),
+                        args,
+                        PublishOperation::Publish,
+                    )
+                },
+                commands::binding::print_binding_publish,
+                output,
+            )
+            .await
+        }
+        Command::Binding {
+            command: BindingCommand::Unpublish(args),
+        } => {
+            run_and_print_with_async(
+                || {
+                    commands::binding::binding_publish(
+                        cli.profile.as_deref(),
+                        args,
+                        PublishOperation::Unpublish,
+                    )
+                },
+                commands::binding::print_binding_publish,
                 output,
             )
             .await

@@ -68,6 +68,12 @@ pub fn object_xml(uri: &str) -> String {
     format!("fractal object xml {uri}")
 }
 
+/// Shows a service binding and whether each of its services is published.
+#[must_use]
+pub fn binding_show(name: &str) -> String {
+    format!("fractal binding show --name {name}")
+}
+
 /// Lists the fields of one DDIC entity.
 #[must_use]
 pub fn table_metadata(entity: &str) -> String {
@@ -98,6 +104,10 @@ mod tests {
             "fractal object search ZIF_MISSING --kind INTF"
         );
         assert_eq!(object_kinds(), "fractal object kinds");
+        assert_eq!(
+            binding_show("ZSAMPLE_UI_O4"),
+            "fractal binding show --name ZSAMPLE_UI_O4"
+        );
         assert_eq!(
             object_xml("/sap/bc/adt/ddic/domains/zdomain"),
             "fractal object xml /sap/bc/adt/ddic/domains/zdomain"

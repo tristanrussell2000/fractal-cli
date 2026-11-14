@@ -47,6 +47,10 @@ pub(super) const ASKED: &[&str] = &[
     // every other rule on this list relies on for recovery.
     "fractal journal clear",
     "fractal transport create",
+    // Registers or withdraws a service with the gateway: outside the object,
+    // but reversible by the opposite command.
+    "fractal binding publish",
+    "fractal binding unpublish",
     "fractal auth",
 ];
 

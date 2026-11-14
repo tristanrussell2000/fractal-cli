@@ -27,6 +27,7 @@ pub mod object_usages;
 pub mod package;
 pub mod package_authorization;
 pub mod repository_kind;
+pub mod service_binding;
 pub mod source_activation;
 pub mod source_check;
 pub mod source_discard;

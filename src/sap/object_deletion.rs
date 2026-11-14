@@ -32,6 +32,7 @@ use super::{
     },
     find_non_empty_attribute,
     metadata_document::strip_navigation_links,
+    metadata_object::MetadataAdtObjectType,
     object_family::AdtObjectFamily,
     object_usages::{ObjectUsagesError, UsageReference, get_object_usages},
     package_authorization::package_of_object_xml,
@@ -93,6 +94,13 @@ pub enum AdtObjectDeletionError {
     },
     #[error("ADT edit session failed while deleting: {0}")]
     Session(#[source] AdtEditSessionError),
+    /// SAP refuses to delete a binding whose service is still published.
+    #[error("{} cannot be deleted while its service is published", identity.name)]
+    BindingPublished {
+        identity: Box<AdtObjectIdentity>,
+        #[source]
+        source: SapClientError,
+    },
     #[error("the ADT delete request failed: {source}")]
     DeleteRequest {
         identity: Box<AdtObjectIdentity>,
@@ -139,6 +147,7 @@ impl ReportableError for AdtObjectDeletionError {
             Self::UsageCheck(_) => "edit_delete_usage_check_failed",
             Self::ObjectInUse { .. } => "edit_delete_object_in_use",
             Self::Session(_) => "edit_delete_lock_failed",
+            Self::BindingPublished { .. } => "edit_delete_binding_published",
             Self::DeleteRequest { .. } => "edit_delete_request_failed",
             Self::NotDeleted { .. } => "edit_delete_not_verified",
             Self::Verification { .. } => "edit_delete_verification_failed",
@@ -155,9 +164,9 @@ impl ReportableError for AdtObjectDeletionError {
             Self::UsageCheck(error) => error.status(),
             Self::PackageNotAllowed(error) => error.status(),
             Self::Session(error) => error.status(),
-            Self::DeleteRequest { source, .. } | Self::Verification { source, .. } => {
-                sap_http_status(Some(source))
-            }
+            Self::DeleteRequest { source, .. }
+            | Self::BindingPublished { source, .. }
+            | Self::Verification { source, .. } => sap_http_status(Some(source)),
             _ => None,
         }
     }
@@ -175,6 +184,10 @@ impl ReportableError for AdtObjectDeletionError {
             Self::AbandonedLock(primary) => format!(
                 "{} Releasing its lock also failed, so the object is still locked: clear the lock before retrying, or the next attempt will fail on the lock rather than the original cause.",
                 primary.hint().unwrap_or_default()
+            ),
+            Self::BindingPublished { identity, .. } => format!(
+                "The binding was not deleted. Unpublish it first with `fractal binding unpublish --name {}`, then delete it.",
+                identity.name
             ),
             Self::DeleteRequest { source, .. } => format!(
                 "The object was not deleted. {}",
@@ -208,9 +221,26 @@ impl ReportableError for AdtObjectDeletionError {
             Self::NotDeleted { identity, .. } | Self::Verification { identity, .. } => {
                 Some(suggested_command::object_xml(&identity.object_uri))
             }
+            Self::BindingPublished { identity, .. } => {
+                Some(suggested_command::binding_show(&identity.name))
+            }
             _ => None,
         }
     }
+}
+
+/// SAP answers 412 with "Service endpoint of Service Binding … is published".
+/// The status alone is a generic precondition failure, so the wording is
+/// checked too.
+fn is_published_binding_refusal(identity: &AdtObjectIdentity, source: &SapClientError) -> bool {
+    matches!(
+        identity.object_type,
+        AdtObjectFamily::Metadata(MetadataAdtObjectType::ServiceBinding)
+    ) && matches!(
+        source,
+        SapClientError::Http { status, message, .. }
+            if status.as_u16() == 412 && message.to_ascii_lowercase().contains("is published")
+    )
 }
 
 /// Reports what a deletion would do, without locking or deleting anything.
@@ -369,9 +399,16 @@ pub async fn delete_validated_adt_object(
         let abandoned_lock = release_adt_object_lock(sap, &identity.object_uri, &lock)
             .await
             .is_err();
-        let failure = AdtObjectDeletionError::DeleteRequest {
-            identity: Box::new(identity),
-            source,
+        let failure = if is_published_binding_refusal(&identity, &source) {
+            AdtObjectDeletionError::BindingPublished {
+                identity: Box::new(identity),
+                source,
+            }
+        } else {
+            AdtObjectDeletionError::DeleteRequest {
+                identity: Box::new(identity),
+                source,
+            }
         };
         return Err(if abandoned_lock {
             AdtObjectDeletionError::AbandonedLock(Box::new(failure))
@@ -607,6 +644,58 @@ fn summarize(usages: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn binding_identity() -> AdtObjectIdentity {
+        AdtObjectIdentity {
+            object_type: AdtObjectFamily::Metadata(MetadataAdtObjectType::ServiceBinding),
+            name: "ZSAMPLE_UI_O4".to_owned(),
+            object_uri: "/sap/bc/adt/businessservices/bindings/zsample_ui_o4".to_owned(),
+            source_uri: None,
+        }
+    }
+
+    fn http(status: u16, message: &str) -> SapClientError {
+        SapClientError::Http {
+            kind: crate::sap::client::SapHttpErrorKind::Other,
+            status: reqwest::StatusCode::from_u16(status).unwrap(),
+            url: "https://sap.example/x".to_owned(),
+            message: message.to_owned(),
+        }
+    }
+
+    #[test]
+    fn recognises_sap_refusing_to_delete_a_published_binding() {
+        let published = http(
+            412,
+            "Service endpoint of Service Binding ZSAMPLE_UI_O4 is published.",
+        );
+        assert!(is_published_binding_refusal(
+            &binding_identity(),
+            &published
+        ));
+        // A 412 is a generic precondition failure; only the wording makes it this one.
+        assert!(!is_published_binding_refusal(
+            &binding_identity(),
+            &http(412, "Precondition failed")
+        ));
+
+        let error = AdtObjectDeletionError::BindingPublished {
+            identity: Box::new(binding_identity()),
+            source: published,
+        };
+        assert_eq!(error.code(), "edit_delete_binding_published");
+        assert_eq!(error.status(), Some(412));
+        assert!(
+            error
+                .hint()
+                .unwrap()
+                .contains("fractal binding unpublish --name ZSAMPLE_UI_O4")
+        );
+        assert_eq!(
+            error.suggested_command().as_deref(),
+            Some("fractal binding show --name ZSAMPLE_UI_O4")
+        );
+    }
 
     #[test]
     fn summarizes_a_long_reference_list_without_flooding_the_hint() {
