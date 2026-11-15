@@ -125,6 +125,9 @@ pub struct ValidatedTableWrite {
     pub operation: RowOperation,
     pub table: String,
     pub keys: Vec<FieldValue>,
+    /// The table's client column, when it has one. It leads both the lock key
+    /// and the transport key, and the caller never gives it.
+    pub client_field: Option<String>,
     /// Each changed field, with the value it holds now and the value to write.
     pub changes: Vec<FieldChange>,
     /// Every field of the row as it stands, for the caller to see and keep.
@@ -386,6 +389,11 @@ pub fn resolve_changes(
         operation: request.operation(),
         table,
         keys: key_fields(metadata, request),
+        client_field: metadata
+            .fields
+            .iter()
+            .find(|field| is_client_field(field))
+            .map(|field| field.name.to_ascii_uppercase()),
         changes,
         before: row.clone(),
     })
@@ -398,7 +406,7 @@ pub fn resolve_changes(
 /// generated statement need the same answer.
 fn key_fields(metadata: &TableMetadata, request: &TableWriteRequest) -> Vec<FieldValue> {
     let insert = matches!(request, TableWriteRequest::Insert { .. });
-    request
+    let mut keys = request
         .key_source()
         .iter()
         // An insert names the whole row, so the key has to be picked out of it.
@@ -415,7 +423,16 @@ fn key_fields(metadata: &TableMetadata, request: &TableWriteRequest) -> Vec<Fiel
             value: pad_numeric(metadata, &given.field, &given.value),
             field: given.field.to_ascii_uppercase(),
         })
-        .collect()
+        .collect::<Vec<_>>();
+    // The table's order, not the caller's: the lock and transport keys lay the
+    // fields out at running offsets, and SAP's own keys follow the DDIC order.
+    keys.sort_by_key(|key| {
+        metadata
+            .fields
+            .iter()
+            .position(|field| field.name.eq_ignore_ascii_case(&key.field))
+    });
+    keys
 }
 
 /// The key as the caller would have typed it, for a message about it.
@@ -535,10 +552,9 @@ pub fn generate_abap(
     mode: WriteMode,
     transport_entry: Option<&TransportEntry>,
 ) -> String {
-    let client_dependent = transport_entry.is_some_and(|entry| entry.client_dependent);
     let mut abap = declarations(class_name, write);
     abap.push_str(&literals(write));
-    abap.push_str(&lock_block(write, client_dependent));
+    abap.push_str(&lock_block(write));
 
     abap.push_str("\n        IF lv_status IS INITIAL.\n");
     if let Some(entry) = transport_entry {
@@ -600,8 +616,13 @@ CLASS {class} IMPLEMENTATION.
     DATA lv_off TYPE i VALUE 0.
     DATA lv_len TYPE i.
     DATA lv_key_too_long TYPE abap_bool VALUE abap_false.
+    DATA lv_key_not_character TYPE abap_bool VALUE abap_false.
+    DATA lv_type TYPE c LENGTH 1.
+    FIELD-SYMBOLS <lv_key_bytes> TYPE any.
+    FIELD-SYMBOLS <lv_varkey_bytes> TYPE any.
 ",
     );
+    abap.push_str(&key_structure(write));
     for (index, key) in write.keys.iter().enumerate() {
         let field = key.field.to_ascii_lowercase();
         let _ = writeln!(abap, "    DATA lv_k{index} LIKE ls_row-{field}.");
@@ -716,22 +737,22 @@ pub struct TransportEntry {
     /// refuses a request with `TK 127`, "changes to objects are only allowed in
     /// correction/repair".
     pub task: String,
-    /// Whether the table has a client column, which leads the `TABU` key.
-    pub client_dependent: bool,
 }
 
 /// The ABAP that puts one row's key into the task as a `TABU` entry.
 ///
 /// Built the way SE16N builds it: `E071` naming the table, one `E071K` whose
 /// `TABKEY` is the key fields concatenated at fixed character offsets, client
-/// first. Lengths come from `DESCRIBE FIELD ... IN CHARACTER MODE` rather than
-/// from the metadata, so a key type this code has not seen still lands at the
-/// right offset.
+/// first. Lengths come from the field itself at run time rather than from the
+/// metadata, so a key type this code has not seen still lands at the right
+/// offset.
 ///
-/// `TABKEY` caps at 120 characters; SE16N writes `*` at the overflow and
-/// refuses, and so does this.
+/// SE16N gives up on an exact key in two cases and writes a generic `*`
+/// instead: a key past `TABKEY`'s 120 characters, and a key field that is not
+/// character-like (a RAW UUID, an integer). A generic key transports every row
+/// it matches, so this refuses both rather than widen the entry silently.
 fn transport_block(write: &ValidatedTableWrite, entry: &TransportEntry) -> String {
-    let fill = key_string(write, "lv_tabkey", entry.client_dependent);
+    let fill = transport_key(write);
 
     format!(
         "
@@ -742,7 +763,9 @@ fn transport_block(write: &ValidatedTableWrite, entry: &TransportEntry) -> Strin
         APPEND ls_e071 TO lt_e071.
 
 {fill}
-        IF lv_key_too_long = abap_true.
+        IF lv_key_not_character = abap_true.
+          lv_status = 'transport_key_not_character'.
+        ELSEIF lv_key_too_long = abap_true.
           lv_status = 'transport_key_too_long'.
         ELSE.
           ls_e071k-pgmid      = 'R3TR'.
@@ -806,32 +829,56 @@ fn transport_commit_block(entry: &TransportEntry) -> String {
     )
 }
 
-/// The key as a character string, client first.
+/// A structure of exactly the key fields, client first, typed from the table.
 ///
-/// Both the enqueue `VARKEY` and the transport entry's `TABKEY` are the same
-/// shape: key fields concatenated at running character offsets. Lengths come
-/// from `DESCRIBE FIELD ... IN CHARACTER MODE`, so a key type this code has not
-/// seen still lands at the right offset.
-fn key_string(write: &ValidatedTableWrite, target: &str, client_dependent: bool) -> String {
-    let mut fill = String::new();
-    fill.push_str("        CLEAR lv_off.\n");
-    if client_dependent {
-        let _ = write!(
-            fill,
+/// The lock key is this structure's bytes, which is how SE16N builds it: it
+/// fills a key structure created from the table's key fields and casts it to
+/// `RSTABLE-VARKEY` as `x`. Casting a real structure rather than laying the
+/// fields out by hand reproduces SAP's layout whatever the key types are,
+/// alignment padding included.
+fn key_structure(write: &ValidatedTableWrite) -> String {
+    let table = write.table.to_ascii_lowercase();
+    let mut abap = String::from("    TYPES: BEGIN OF ty_key,\n");
+    for field in write
+        .client_field
+        .iter()
+        .chain(write.keys.iter().map(|key| &key.field))
+    {
+        let field = field.to_ascii_lowercase();
+        let _ = writeln!(abap, "             {field} TYPE {table}-{field},");
+    }
+    abap.push_str("           END OF ty_key.\n    DATA ls_key TYPE ty_key.\n");
+    abap
+}
+
+/// The `TABKEY`: client first, then each key field at a running character
+/// offset, stopping at the first field that is not character-like.
+fn transport_key(write: &ValidatedTableWrite) -> String {
+    let mut fill = String::from("        CLEAR lv_off.\n");
+    if write.client_field.is_some() {
+        fill.push_str(
             "        lv_len = 3.
-        {target}+lv_off(lv_len) = sy-mandt.
-        ADD lv_len TO lv_off.\n"
+        lv_tabkey+lv_off(lv_len) = sy-mandt.
+        ADD lv_len TO lv_off.\n",
         );
     }
     for index in 0..write.keys.len() {
+        // `IN CHARACTER MODE` does not compile for a RAW field, so the length
+        // is read in bytes, and only once the type is known to be characters.
         let _ = write!(
             fill,
-            "        DESCRIBE FIELD lv_k{index} LENGTH lv_len IN CHARACTER MODE.
-        IF lv_off + lv_len > 120.
-          lv_key_too_long = abap_true.
-        ELSE.
-          {target}+lv_off(lv_len) = lv_k{index}.
-          ADD lv_len TO lv_off.
+            "        DESCRIBE FIELD lv_k{index} TYPE lv_type.
+        IF lv_type NA 'CNDT'.
+          lv_key_not_character = abap_true.
+        ELSEIF lv_key_not_character = abap_false.
+          DESCRIBE FIELD lv_k{index} LENGTH lv_len IN BYTE MODE.
+          lv_len = lv_len / cl_abap_char_utilities=>charsize.
+          IF lv_off + lv_len > 120.
+            lv_key_too_long = abap_true.
+          ELSE.
+            lv_tabkey+lv_off(lv_len) = lv_k{index}.
+            ADD lv_len TO lv_off.
+          ENDIF.
         ENDIF.\n"
         );
     }
@@ -843,11 +890,27 @@ fn key_string(write: &ValidatedTableWrite, target: &str, client_dependent: bool)
 /// Not needed for the guarded `UPDATE`, which is already atomic, but an insert
 /// and a delete have no value guard to lean on — SE16N's own delete is by key
 /// alone — and SM30 and SE16N expect to find this lock held.
-fn lock_block(write: &ValidatedTableWrite, client_dependent: bool) -> String {
-    let fill = key_string(write, "lv_varkey", client_dependent);
+fn lock_block(write: &ValidatedTableWrite) -> String {
+    let mut fill = String::new();
+    if let Some(client) = &write.client_field {
+        let _ = writeln!(
+            fill,
+            "        ls_key-{} = sy-mandt.",
+            client.to_ascii_lowercase()
+        );
+    }
+    for (index, key) in write.keys.iter().enumerate() {
+        let _ = writeln!(
+            fill,
+            "        ls_key-{} = lv_k{index}.",
+            key.field.to_ascii_lowercase()
+        );
+    }
     format!(
         "
-{fill}
+{fill}        ASSIGN ls_key TO <lv_key_bytes> CASTING TYPE x.
+        ASSIGN lv_varkey TO <lv_varkey_bytes> CASTING TYPE x.
+        <lv_varkey_bytes> = <lv_key_bytes>.
         CALL FUNCTION 'ENQUEUE_E_TABLEE'
           EXPORTING
             tabname      = '{table}'
@@ -1122,7 +1185,6 @@ pub async fn write_table_row(
         };
         Some(TransportEntry {
             task: resolve_task(sap, transport, username).await?,
-            client_dependent: metadata.fields.iter().any(is_client_field),
         })
     } else {
         None
@@ -1693,7 +1755,6 @@ mod tests {
         .unwrap();
         let entry = TransportEntry {
             task: "DE3K900671".to_owned(),
-            client_dependent: true,
         };
         let abap = generate_abap("ZCL_X", &write, WriteMode::Execute, Some(&entry));
 
@@ -1720,6 +1781,122 @@ mod tests {
     }
 
     #[test]
+    fn the_lock_key_is_a_typed_key_structure_cast_to_bytes() {
+        let write = validate(
+            &metadata(),
+            &request(&[("id", "R1")], &[("status", "DONE")]),
+            &row(),
+        )
+        .unwrap();
+        // No transport entry: the client still leads the lock key, as it does
+        // in SE16N's, or the two locks would never collide.
+        let abap = generate_abap("ZCL_X", &write, WriteMode::Execute, None);
+
+        assert!(abap.contains("mandt TYPE zsample_record-mandt,"), "{abap}");
+        assert!(abap.contains("id TYPE zsample_record-id,"), "{abap}");
+        assert!(
+            abap.find("mandt TYPE").unwrap() < abap.find("id TYPE").unwrap(),
+            "client first"
+        );
+        assert!(abap.contains("ls_key-mandt = sy-mandt."), "{abap}");
+        assert!(abap.contains("ls_key-id = lv_k0."), "{abap}");
+        assert!(abap.contains("ASSIGN ls_key TO <lv_key_bytes> CASTING TYPE x."));
+        assert!(abap.contains("<lv_varkey_bytes> = <lv_key_bytes>."));
+        // The only form that does not compile for a RAW key is gone.
+        assert!(!abap.contains("IN CHARACTER MODE"), "{abap}");
+    }
+
+    fn uuid_metadata() -> TableMetadata {
+        TableMetadata {
+            entity: "ZSAMPLE_ITEM".to_owned(),
+            total_rows: Some(0),
+            fields: vec![
+                field("CLIENT", true, "CLNT"),
+                field("ITEM_UUID", true, "RAW"),
+                field("ITEM_ID", false, "CHAR"),
+            ],
+        }
+    }
+
+    #[test]
+    fn a_raw_key_refuses_the_transport_entry_rather_than_widening_it() {
+        let insert = TableWriteRequest::Insert {
+            table: "ZSAMPLE_ITEM".to_owned(),
+            fields: vec![
+                FieldValue {
+                    field: "item_uuid".to_owned(),
+                    value: "0A1B2C3D4E5F60718293A4B5C6D7E8F9".to_owned(),
+                },
+                FieldValue {
+                    field: "item_id".to_owned(),
+                    value: "TEST1".to_owned(),
+                },
+            ],
+            transport: None,
+        };
+        let write = validate(&uuid_metadata(), &insert, &BTreeMap::new()).unwrap();
+        let entry = TransportEntry {
+            task: "DE3K900671".to_owned(),
+        };
+        let abap = generate_abap("ZCL_X", &write, WriteMode::Execute, Some(&entry));
+
+        assert!(
+            abap.contains("item_uuid TYPE zsample_item-item_uuid,"),
+            "{abap}"
+        );
+        assert!(abap.contains("IF lv_type NA 'CNDT'."), "{abap}");
+        assert!(
+            abap.contains("lv_status = 'transport_key_not_character'."),
+            "{abap}"
+        );
+    }
+
+    #[test]
+    fn keys_follow_the_table_order_not_the_callers() {
+        let metadata = TableMetadata {
+            entity: "ZSAMPLE_PAIR".to_owned(),
+            total_rows: Some(1),
+            fields: vec![
+                field("MANDT", true, "CLNT"),
+                field("AREA", true, "CHAR"),
+                field("CODE", true, "CHAR"),
+                field("NOTE", false, "CHAR"),
+            ],
+        };
+        let request = TableWriteRequest::Update {
+            table: "ZSAMPLE_PAIR".to_owned(),
+            keys: vec![
+                FieldValue {
+                    field: "code".to_owned(),
+                    value: "C1".to_owned(),
+                },
+                FieldValue {
+                    field: "area".to_owned(),
+                    value: "A1".to_owned(),
+                },
+            ],
+            sets: vec![FieldValue {
+                field: "note".to_owned(),
+                value: "x".to_owned(),
+            }],
+            expected_before: None,
+            transport: None,
+        };
+        let row = BTreeMap::from([
+            ("MANDT".to_owned(), "100".to_owned()),
+            ("AREA".to_owned(), "A1".to_owned()),
+            ("CODE".to_owned(), "C1".to_owned()),
+            ("NOTE".to_owned(), "y".to_owned()),
+        ]);
+
+        let write = validate(&metadata, &request, &row).unwrap();
+
+        let order: Vec<&str> = write.keys.iter().map(|key| key.field.as_str()).collect();
+        assert_eq!(order, ["AREA", "CODE"]);
+        assert_eq!(write.client_field.as_deref(), Some("MANDT"));
+    }
+
+    #[test]
     fn a_dry_run_never_records_the_entry_for_real() {
         let write = validate(
             &metadata(),
@@ -1729,13 +1906,11 @@ mod tests {
         .unwrap();
         let entry = TransportEntry {
             task: "DE3K900671".to_owned(),
-            client_dependent: false,
         };
         let abap = generate_abap("ZCL_X", &write, WriteMode::DryRun, Some(&entry));
 
         assert!(abap.contains("wi_simulation         = 'X'"));
         assert!(!abap.contains("wi_simulation         = ' '"), "{abap}");
-        assert!(!abap.contains("lv_tabkey+lv_off(lv_len) = sy-mandt"));
     }
 
     #[test]
