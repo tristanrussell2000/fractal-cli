@@ -1,6 +1,9 @@
 # Changelog
 
-## 0.9.0
+## 0.9.1
+
+0.9.0 was tagged but never released: its Apple Silicon build could not get a runner after GitHub
+retired the macos-14 image. 0.9.1 is the same release, built on macos-15.
 
 ### Added
 
