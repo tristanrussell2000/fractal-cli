@@ -11,8 +11,8 @@ use fractal::reportable_error::ReportableError;
 use fractal::sap::{
     client::SapClient,
     service_binding::{
-        ODataVersion, PublishOperation, PublishRequest, PublishStatus, publish_service_binding,
-        show_service_binding,
+        ODataVersion, PublishOperation, PublishRequest, PublishStatus, get_from_service,
+        publish_service_binding, show_service_binding,
     },
 };
 use wiremock::{
@@ -385,7 +385,7 @@ async fn show_reports_both_flags_without_sending_anything() {
     mount_binding(&server, "active", "V4").await;
     mount_details_before_and_after(&server, V4_DETAILS_PATH, v4_details(true), None).await;
 
-    let result = show_service_binding(&client(&server).await, &policy(), "ZSAMPLE_UI_O4")
+    let result = show_service_binding(&client(&server).await, "ZSAMPLE_UI_O4")
         .await
         .unwrap();
 
@@ -404,7 +404,7 @@ async fn a_missing_binding_points_at_search() {
         .mount(&server)
         .await;
 
-    let error = show_service_binding(&client(&server).await, &policy(), "ZSAMPLE_UI_O4")
+    let error = show_service_binding(&client(&server).await, "ZSAMPLE_UI_O4")
         .await
         .unwrap_err();
 
@@ -413,4 +413,179 @@ async fn a_missing_binding_points_at_search() {
         error.suggested_command().as_deref(),
         Some("fractal object search ZSAMPLE_UI_O4 --kind SRVB")
     );
+}
+
+const V4_ROOT: &str = "/sap/opu/odata4/sap/zsample_ui_o4/srvd/sap/zsample_ui_o4/0001/";
+
+#[tokio::test]
+async fn get_reads_the_callers_path_under_the_registered_root() {
+    let server = MockServer::start().await;
+    mount_binding(&server, "active", "V4").await;
+    mount_details_before_and_after(&server, V4_DETAILS_PATH, v4_details(true), None).await;
+    Mock::given(method("GET"))
+        .and(path(format!("{V4_ROOT}Language")))
+        .and(query_param("$top", "2"))
+        .and(query_param("$filter", "IsoCode eq 'DE'"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"value":[{"Language":"DE","IsoCode":"DE"}]}"#,
+            "application/json; charset=utf-8",
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let result = get_from_service(
+        &client(&server).await,
+        "ZSAMPLE_UI_O4",
+        None,
+        "Language?$top=2&$filter=IsoCode eq 'DE'",
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        result.url,
+        format!("{V4_ROOT}Language?$top=2&$filter=IsoCode eq 'DE'")
+    );
+    assert_eq!(result.status, 200);
+    assert!(result.content_type.unwrap().contains("json"));
+    assert!(result.body.contains("\"IsoCode\":\"DE\""));
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn get_joins_onto_a_v2_root_that_has_no_trailing_slash() {
+    let server = MockServer::start().await;
+    mount_binding(&server, "active", "V2").await;
+    let details = v2_details(true).replace(
+        r#"odatav2:serviceUrl="""#,
+        r#"odatav2:serviceUrl="/sap/opu/odata/sap/ZSAMPLE_UI_O4""#,
+    );
+    mount_details_before_and_after(&server, V2_DETAILS_PATH, details, None).await;
+    Mock::given(method("GET"))
+        .and(path("/sap/opu/odata/sap/ZSAMPLE_UI_O4/$metadata"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<edmx:Edmx/>"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let result = get_from_service(&client(&server).await, "ZSAMPLE_UI_O4", None, "$metadata")
+        .await
+        .unwrap();
+
+    assert_eq!(result.protocol, ODataVersion::V2);
+    assert_eq!(result.body, "<edmx:Edmx/>");
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn get_refuses_an_unpublished_service_without_calling_it() {
+    // An unpublished V2 service answers 403, which reads like an
+    // authorization problem. The registration says what is really wrong.
+    let server = MockServer::start().await;
+    mount_binding(&server, "active", "V4").await;
+    mount_details_before_and_after(&server, V4_DETAILS_PATH, v4_details(false), None).await;
+    Mock::given(method("GET"))
+        .and(path(format!("{V4_ROOT}Language")))
+        .respond_with(ResponseTemplate::new(403))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let error = get_from_service(&client(&server).await, "ZSAMPLE_UI_O4", None, "Language")
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code(), "binding_not_published");
+    assert!(
+        error
+            .hint()
+            .unwrap()
+            .contains("fractal binding publish --name ZSAMPLE_UI_O4")
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn get_refuses_a_path_outside_the_root_before_any_request() {
+    let server = MockServer::start().await;
+
+    let error = get_from_service(
+        &client(&server).await,
+        "ZSAMPLE_UI_O4",
+        None,
+        "../../../bc/adt/discovery",
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), "binding_path_invalid");
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn get_carries_the_services_own_error_message() {
+    let server = MockServer::start().await;
+    mount_binding(&server, "active", "V4").await;
+    mount_details_before_and_after(&server, V4_DETAILS_PATH, v4_details(true), None).await;
+    Mock::given(method("GET"))
+        .and(path(format!("{V4_ROOT}Language")))
+        .respond_with(ResponseTemplate::new(400).set_body_string(
+            r#"{"error":{"code":"/IWBEP/CM_V4_RUNTIME/021","message":"Property 'Nope' is unknown"}}"#,
+        ))
+        .mount(&server)
+        .await;
+
+    let error = get_from_service(
+        &client(&server).await,
+        "ZSAMPLE_UI_O4",
+        None,
+        "Language?$filter=Nope eq 1",
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), "binding_get_failed");
+    assert_eq!(error.status(), Some(400));
+    assert!(
+        error.message().contains("Property 'Nope' is unknown"),
+        "{}",
+        error.message()
+    );
+}
+
+#[tokio::test]
+async fn any_binding_can_be_read_but_only_the_customer_namespace_published() {
+    let server = MockServer::start().await;
+    let sap_binding = "/sap/bc/adt/businessservices/bindings/sap_ui_o4";
+    Mock::given(method("GET"))
+        .and(path(sap_binding))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(binding("active", "V4").replace("ZSAMPLE_UI_O4", "SAP_UI_O4")),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/businessservices/odatav4/SAP_UI_O4"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(v4_details(false)))
+        .mount(&server)
+        .await;
+
+    let shown = show_service_binding(&client(&server).await, "SAP_UI_O4")
+        .await
+        .unwrap();
+    assert_eq!(shown.name, "SAP_UI_O4");
+
+    let refused = publish_service_binding(
+        &mut client(&server).await,
+        &policy(),
+        &PublishRequest {
+            name: "SAP_UI_O4".to_owned(),
+            ..request(PublishOperation::Publish)
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused.code(), "object_outside_customer_namespaces");
 }

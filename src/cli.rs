@@ -138,6 +138,38 @@ pub enum BindingCommand {
     /// Sends nothing when the service is not published. A published binding
     /// cannot be deleted, so this comes first.
     Unpublish(BindingPublishArgs),
+    /// Read from a binding's published service: GET only.
+    ///
+    /// PATH is the part of the URL after the service root, written as in
+    /// /IWFND/GW_CLIENT; the root is taken from the service's registration.
+    /// Single-quote it so the shell leaves `$` alone. Any binding can be read,
+    /// not only one in the customer namespaces.
+    ///
+    ///   fractal binding get --name ZSAMPLE_UI_O4 '$metadata'
+    ///   fractal binding get --name ZSAMPLE_UI_O4 'Items?$top=5&$count=true'
+    ///   fractal binding get --name ZSAMPLE_UI_O4 "Items('A1')?\$expand=_Child"
+    ///   fractal binding get --name ZSAMPLE_UI_O2 'Items?$top=5&$format=json'
+    ///
+    /// OData V2 answers Atom XML unless the path asks for `$format=json`; V4
+    /// answers JSON. Reads go through the service, so its access control
+    /// applies: an empty result may mean the DCLS filtered every row out.
+    #[command(verbatim_doc_comment)]
+    Get(BindingGetArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct BindingGetArgs {
+    /// Service binding name.
+    #[arg(long)]
+    pub(crate) name: String,
+    /// Service version to read, such as 0001. Needed only when the binding
+    /// has more than one.
+    #[arg(long)]
+    pub(crate) service_version: Option<String>,
+    /// The URL after the service root: entity set, key, navigation,
+    /// `$metadata`, and query options. Empty reads the service document.
+    #[arg(default_value = "")]
+    pub(crate) path: String,
 }
 
 #[derive(Debug, Args)]

@@ -1,4 +1,5 @@
-//! Publishing a service binding, and reading whether it is published.
+//! Publishing a service binding, reading whether it is published, and reading
+//! from the published service.
 //!
 //! An activated binding is not yet a service: nothing answers at its URL until
 //! it is published, which registers it with the gateway. That registration is
@@ -16,6 +17,8 @@
 //!   proved by reading the details back.
 //! - Publishing a published binding, or unpublishing an unpublished one, is
 //!   answered `OK` by SAP. Fractal checks first and sends nothing.
+//! - **Reading is open, writing is not.** `show` and `get` work on any
+//!   binding; the customer-namespace rule guards `publish` and `unpublish`.
 
 use thiserror::Error;
 
@@ -25,11 +28,12 @@ use super::{
     adt_response::{AdtResponseParseError, parse_adt_document},
     adt_version::AdtVersion,
     client::{SapClient, SapClientError, SapHttpErrorKind},
-    editable_source::AdtEditTargetValidationError,
+    editable_source::{AdtEditTargetValidationError, validate_object_name},
     find_child, find_non_empty_attribute,
     metadata_activation::ACTIVE_VERSION,
     metadata_document::declared_version,
     metadata_object::{MetadataAdtObjectType, metadata_object_identity},
+    object_family::AdtObjectFamily,
     package_authorization::{PackageAuthorizationError, authorize_object_package},
 };
 use crate::config::EditPolicy;
@@ -230,6 +234,17 @@ pub enum ServiceBindingError {
         name: String,
         message: SapPublishMessage,
     },
+    #[error("the service of binding {name} is not published")]
+    NotPublished { name: String },
+    #[error("path '{path}' {reason}")]
+    PathInvalid { path: String, reason: &'static str },
+    #[error("reading {url} from service binding {name} failed: {source}")]
+    GetFailed {
+        name: String,
+        url: String,
+        #[source]
+        source: SapClientError,
+    },
     #[error("SAP answered the {} of service binding {name} without error, but the service is still {}", operation.as_str(), if operation.target() { "unpublished" } else { "published" })]
     Unverified {
         operation: PublishOperation,
@@ -250,6 +265,9 @@ impl ReportableError for ServiceBindingError {
             Self::TypeUnsupported { .. } => "binding_type_unsupported",
             Self::ServiceVersionAmbiguous { .. } => "binding_service_version_ambiguous",
             Self::ServiceVersionUnknown { .. } => "binding_service_version_unknown",
+            Self::NotPublished { .. } => "binding_not_published",
+            Self::PathInvalid { .. } => "binding_path_invalid",
+            Self::GetFailed { .. } => "binding_get_failed",
             Self::Request { operation, .. } => match operation {
                 PublishOperation::Publish => "binding_publish_request_failed",
                 PublishOperation::Unpublish => "binding_unpublish_request_failed",
@@ -269,9 +287,9 @@ impl ReportableError for ServiceBindingError {
         match self {
             Self::Validation(error) => error.status(),
             Self::PackageNotAllowed(error) => error.status(),
-            Self::Read { source, .. } | Self::Request { source, .. } => {
-                sap_http_status(Some(source))
-            }
+            Self::Read { source, .. }
+            | Self::Request { source, .. }
+            | Self::GetFailed { source, .. } => sap_http_status(Some(source)),
             _ => None,
         }
     }
@@ -294,6 +312,18 @@ impl ReportableError for ServiceBindingError {
             Self::TypeUnsupported { .. } => {
                 "INA and SQL bindings have no publish step that Fractal drives.".to_owned()
             }
+            Self::NotPublished { name } => format!(
+                "Nothing answers at the service URL until it is published. Publish it with `fractal binding publish --name {name}`."
+            ),
+            Self::PathInvalid { .. } => {
+                "Give the part of the URL after the service root, such as `Items?$top=5` or `$metadata`.".to_owned()
+            }
+            Self::GetFailed { source, .. } => match source {
+                SapClientError::Http { status, .. } if status.as_u16() == 404 => {
+                    "Check the entity set and key against the service's `$metadata`.".to_owned()
+                }
+                _ => "The message is the service's own; nothing was changed.".to_owned(),
+            },
             Self::ServiceVersionAmbiguous { .. } | Self::ServiceVersionUnknown { .. } => {
                 "Pass --service-version with one of the versions listed.".to_owned()
             }
@@ -312,29 +342,36 @@ impl ReportableError for ServiceBindingError {
             Self::Validation(error) => error.suggested_command(),
             Self::PackageNotAllowed(error) => error.suggested_command(),
             Self::NotFound { name } => Some(suggested_command::object_search("SRVB", name)),
-            Self::NotActive { .. } | Self::TypeUnsupported { .. } | Self::Parse { .. } => None,
+            Self::NotActive { .. }
+            | Self::TypeUnsupported { .. }
+            | Self::Parse { .. }
+            | Self::PathInvalid { .. } => None,
             Self::Read { name, .. }
             | Self::ServiceVersionAmbiguous { name, .. }
             | Self::ServiceVersionUnknown { name, .. }
             | Self::Request { name, .. }
             | Self::Refused { name, .. }
-            | Self::Unverified { name, .. } => Some(suggested_command::binding_show(name)),
+            | Self::Unverified { name, .. }
+            | Self::NotPublished { name }
+            | Self::GetFailed { name, .. } => Some(suggested_command::binding_show(name)),
         }
     }
 }
 
 /// Reads a binding and the registration state of every service version it has.
 ///
+/// Any binding, not only one in the customer namespaces: that rule guards
+/// writes, and this reads.
+///
 /// # Errors
 ///
-/// Returns [`ServiceBindingError`] for an invalid name, a binding that does not
-/// exist or is not active, or a read SAP refused.
+/// Returns [`ServiceBindingError`] for a malformed name, a binding that does
+/// not exist or is not active, or a read SAP refused.
 pub async fn show_service_binding(
     sap: &SapClient,
-    policy: &EditPolicy,
     name: &str,
 ) -> Result<ServiceBindingShowResult, ServiceBindingError> {
-    let identity = metadata_object_identity(MetadataAdtObjectType::ServiceBinding, name, policy)?;
+    let identity = read_identity(name)?;
     let binding = read_active_binding(sap, &identity).await?;
     let mut services = Vec::with_capacity(binding.services.len());
     for service in binding.services {
@@ -349,6 +386,136 @@ pub async fn show_service_binding(
         binding_published_flag: binding.published_flag,
         services,
     })
+}
+
+/// What `binding get` reports: the response, as the service sent it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceGetResult {
+    pub name: String,
+    pub protocol: ODataVersion,
+    pub service: BindingService,
+    /// The path that was read: the registered service root plus the caller's.
+    pub url: String,
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub body: String,
+}
+
+/// Reads `path` from a binding's published service.
+///
+/// `path` is the part after the service root, as written in
+/// `/IWFND/GW_CLIENT`: an entity set, key, navigation, `$metadata`, and query
+/// options. The root comes from the service's registration, so the caller
+/// never assembles V4's `srvd/…/0001/` form. Only a GET is sent, with no CSRF
+/// token, so actions and `$batch` (both POST) are unreachable.
+///
+/// # Errors
+///
+/// Returns [`ServiceBindingError`] for a malformed name or path, a binding
+/// that does not exist, is not active or is not published, or a response
+/// other than success, carrying the service's own message.
+pub async fn get_from_service(
+    sap: &SapClient,
+    name: &str,
+    service_version: Option<&str>,
+    path: &str,
+) -> Result<ServiceGetResult, ServiceBindingError> {
+    let identity = read_identity(name)?;
+    validate_service_path(path)?;
+    let binding = read_active_binding(sap, &identity).await?;
+    let service = choose_service(&identity.name, binding.services, service_version)?;
+    let details = read_details(sap, &identity.name, binding.protocol, &service).await?;
+    let root = match (details.published, details.service_url) {
+        (true, Some(root)) => root,
+        _ => {
+            return Err(ServiceBindingError::NotPublished {
+                name: identity.name,
+            });
+        }
+    };
+    let url = join_service_path(&root, path)?;
+
+    let response = sap.get_text_response(&url, &[]).await.map_err(|source| {
+        ServiceBindingError::GetFailed {
+            name: identity.name.clone(),
+            url: url.clone(),
+            source,
+        }
+    })?;
+    Ok(ServiceGetResult {
+        name: identity.name,
+        protocol: binding.protocol,
+        service,
+        url,
+        status: response.status,
+        content_type: response.content_type,
+        body: response.body,
+    })
+}
+
+/// A binding's identity for reading: the name's shape is checked, the
+/// customer namespace is not.
+fn read_identity(name: &str) -> Result<AdtObjectIdentity, ServiceBindingError> {
+    let name = validate_object_name(name).map_err(AdtEditTargetValidationError::InvalidObject)?;
+    let object_type = MetadataAdtObjectType::ServiceBinding;
+    Ok(AdtObjectIdentity {
+        object_type: AdtObjectFamily::Metadata(object_type),
+        object_uri: format!(
+            "{}/{}",
+            object_type.collection_path(),
+            name.to_ascii_lowercase().replace('/', "%2f")
+        ),
+        name,
+        source_uri: None,
+    })
+}
+
+/// Refuses a path that could address anything outside the service root.
+fn validate_service_path(path: &str) -> Result<(), ServiceBindingError> {
+    let lower = path.to_ascii_lowercase();
+    let reason = if path.starts_with('/') || path.starts_with('\\') {
+        Some("is absolute; give only the part after the service root")
+    } else if lower.contains("://") {
+        Some("names a host; give only the part after the service root")
+    } else if path.contains("..")
+        || lower.contains("%2e%2e")
+        || lower.contains(".%2e")
+        || lower.contains("%2e.")
+    {
+        Some("contains `..`, which could leave the service root")
+    } else if path.contains('#') {
+        Some("contains a fragment (`#`), which is never sent")
+    } else {
+        None
+    };
+    reason.map_or(Ok(()), |reason| {
+        Err(ServiceBindingError::PathInvalid {
+            path: path.to_owned(),
+            reason,
+        })
+    })
+}
+
+/// Joins the caller's path onto the service root, and proves the result is
+/// still under it after URL normalisation.
+fn join_service_path(root: &str, path: &str) -> Result<String, ServiceBindingError> {
+    let root = if root.ends_with('/') {
+        root.to_owned()
+    } else {
+        format!("{root}/")
+    };
+    let joined = format!("{root}{path}");
+    let normalised = url::Url::parse("http://sap.invalid")
+        .and_then(|base| base.join(&joined))
+        .ok()
+        .filter(|url| url.path().starts_with(root.trim_end_matches('/')));
+    if normalised.is_none() {
+        return Err(ServiceBindingError::PathInvalid {
+            path: path.to_owned(),
+            reason: "does not stay under the service root",
+        });
+    }
+    Ok(joined)
 }
 
 /// Publishes or unpublishes one service version of a binding, and proves it.
@@ -699,6 +866,48 @@ mod tests {
             service_version: "0001".to_owned(),
             service_definition: "ZSAMPLE_SD".to_owned(),
         }
+    }
+
+    #[test]
+    fn a_path_cannot_leave_the_service_root() {
+        for path in [
+            "/sap/bc/adt/discovery",
+            "https://elsewhere/x",
+            "../../bc/adt/x",
+            "Items/%2e%2e/%2E%2E/x",
+            "Items#frag",
+        ] {
+            assert_eq!(
+                validate_service_path(path).unwrap_err().code(),
+                "binding_path_invalid",
+                "{path}"
+            );
+        }
+        for path in [
+            "",
+            "$metadata",
+            "Items?$top=5&$filter=Name eq 'A.B'",
+            "Items('K1')/_Child?$format=json",
+            "Items?$filter=CreatedAt gt 2024-01-01T00:00:00Z",
+        ] {
+            assert!(validate_service_path(path).is_ok(), "{path}");
+        }
+    }
+
+    #[test]
+    fn joins_onto_either_protocol_root() {
+        assert_eq!(
+            join_service_path("/sap/opu/odata/sap/ZSAMPLE_O2", "Items?$format=json").unwrap(),
+            "/sap/opu/odata/sap/ZSAMPLE_O2/Items?$format=json"
+        );
+        assert_eq!(
+            join_service_path(
+                "/sap/opu/odata4/sap/zsample_o4/srvd/sap/zsample_o4/0001/",
+                "$metadata"
+            )
+            .unwrap(),
+            "/sap/opu/odata4/sap/zsample_o4/srvd/sap/zsample_o4/0001/$metadata"
+        );
     }
 
     #[test]

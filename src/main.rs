@@ -277,6 +277,16 @@ async fn main() {
             .await
         }
         Command::Binding {
+            command: BindingCommand::Get(args),
+        } => {
+            run_and_print_with_async(
+                || commands::binding::binding_get(cli.profile.as_deref(), args),
+                commands::binding::print_binding_get,
+                output,
+            )
+            .await
+        }
+        Command::Binding {
             command: BindingCommand::Publish(args),
         } => {
             run_and_print_with_async(

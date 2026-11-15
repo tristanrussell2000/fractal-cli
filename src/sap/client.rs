@@ -163,6 +163,14 @@ pub struct DiscoveryResult {
     pub csrf_token_received: bool,
 }
 
+/// A successful response, with what a caller passing it on needs to report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextResponse {
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub body: String,
+}
+
 pub struct SapClient {
     http: Client,
     base_url: Url,
@@ -256,6 +264,40 @@ impl SapClient {
                 url: self.base_url.to_string(),
                 message: format!("could not read SAP response body: {error}"),
             })
+    }
+
+    /// Fetches a text response together with its status and content type.
+    ///
+    /// For callers that pass a response on rather than parse it, and so have to
+    /// say what it was.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SapClientError`] for URL, network, HTTP, or response-body failures.
+    pub async fn get_text_response(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+    ) -> Result<TextResponse, SapClientError> {
+        let (_, response) = self.get_read_only(path, query, HeaderMap::new()).await?;
+        let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let body = response
+            .text()
+            .await
+            .map_err(|error| SapClientError::Network {
+                url: self.base_url.to_string(),
+                message: format!("could not read SAP response body: {error}"),
+            })?;
+        Ok(TextResponse {
+            status,
+            content_type,
+            body,
+        })
     }
 
     /// Fetches response bytes with caller-provided headers.
@@ -664,10 +706,26 @@ fn describe_network_error(error: &reqwest::Error) -> String {
 }
 
 fn extract_sap_message(body: &str) -> Option<String> {
+    if let Some(message) = extract_odata_json_message(body) {
+        return Some(message);
+    }
     let message =
         find_xml_text(body, "message").or_else(|| find_xml_text(body, "localizedMessage"))?;
     let message = decode_xml_entities(message.trim());
     (!message.is_empty()).then_some(message)
+}
+
+/// The message of an OData JSON error: `error.message` as a string in V4, or
+/// `error.message.value` in V2. The XML extraction never sees these, so a bad
+/// `$filter` would otherwise read as just "Bad Request".
+fn extract_odata_json_message(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body.trim_start()).ok()?;
+    let message = value.get("error")?.get("message")?;
+    let text = message
+        .as_str()
+        .or_else(|| message.get("value").and_then(serde_json::Value::as_str))?
+        .trim();
+    (!text.is_empty()).then(|| text.to_owned())
 }
 
 fn find_xml_text<'a>(body: &'a str, element: &str) -> Option<&'a str> {
@@ -724,6 +782,20 @@ mod tests {
     fn prefers_message_over_localized_message() {
         let body = r#"<error><localizedMessage>Localized</localizedMessage><message>Primary</message></error>"#;
         assert_eq!(extract_sap_message(body).as_deref(), Some("Primary"));
+    }
+
+    #[test]
+    fn extracts_the_message_of_an_odata_json_error() {
+        let v4 = r#"{"error":{"code":"/IWBEP/CM_V4_RUNTIME/021","message":"Property 'Nope' is unknown","details":[]}}"#;
+        assert_eq!(
+            extract_sap_message(v4).as_deref(),
+            Some("Property 'Nope' is unknown")
+        );
+        let v2 = r#"{"error":{"code":"005056A509B11EE1B9A8FEC11C21578E","message":{"lang":"en","value":"Invalid filter expression"}}}"#;
+        assert_eq!(
+            extract_sap_message(v2).as_deref(),
+            Some("Invalid filter expression")
+        );
     }
 
     #[test]

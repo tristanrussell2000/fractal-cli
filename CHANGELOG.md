@@ -4,12 +4,22 @@
 
 ### Added
 
+- **`fractal binding get --name <SRVB> <PATH>`** reads from a published service. `PATH` is the
+  part of the URL after the service root, written as in `/IWFND/GW_CLIENT` (`'$metadata'`,
+  `'Items?$top=5&$count=true'`, `"Items('A1')?\$expand=_Child"`). Fractal takes the root from the
+  service's registration, so nobody has to assemble V4's `srvd/…/0001/` form. It is GET-only,
+  refuses a path that would leave the service root, and refuses an unpublished service up front
+  (V2 would answer a misleading 403). The JSON output carries the URL, status, content type and
+  body, which is parsed when SAP answers JSON.
+- **SAP's message is now reported for OData JSON errors**, such as "Invalid token 'Nope' at
+  position '1'" for a bad `$filter`, where before only "Bad Request" came through.
 - **`fractal binding show | publish | unpublish`** — publish a service binding, the last step to a
   callable RAP service. OData V2 and V4 both work; the binding's own protocol decides which
   endpoints are used. Success is proved by reading the registration back, never by SAP's answer,
   which reports a refusal as HTTP 200. Publishing a published service, or unpublishing an
   unpublished one, sends nothing. `show` reports the service URL and entity sets, and the binding's
   own `published` flag beside the registration's, because the two have been seen to disagree.
+  `show` works on any binding; `publish` and `unpublish` are limited to the customer namespaces.
   Publishing is not journaled: it changes no content, and unpublish is its inverse. It needs no
   transport, even for a binding in a transportable package; the gateway objects travel with the
   binding's activation.

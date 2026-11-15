@@ -152,7 +152,7 @@ fractal table      data | metadata | set | insert | remove
 fractal query      <complete SELECT, or - for stdin>
 fractal transport  list | show | create
 fractal edit       create | read | patch | set | set-xml | check | activate | discard
-fractal binding    show | publish | unpublish
+fractal binding    show | publish | unpublish | get
 fractal delete     <one destructive verb, kept out of `edit` on purpose>
 fractal journal    list | show | clear
 fractal undo       <reverse a recorded activation or table write>
@@ -185,6 +185,9 @@ An activated service binding is not yet a service. `fractal binding publish --na
 registers it with the gateway, as OData V2 or V4 according to the binding, and confirms it by
 reading the registration back; `binding unpublish` reverses it, and `binding show` reports the
 service URL and entity sets. SAP refuses to delete a published binding, so unpublish first.
+`fractal binding get --name <SRVB> 'Items?$top=5'` reads from the published service: you write
+the part of the URL after the service root, as in `/IWFND/GW_CLIENT`, and Fractal supplies the
+root. It is GET-only and works on any binding, not just your namespaces.
 
 `edit set-xml` replaces a whole DDIC document, and SAP keeps no retrievable version history for
 those objects, so pass `--expected-sha256` (from `fractal object xml`) to refuse the write if the

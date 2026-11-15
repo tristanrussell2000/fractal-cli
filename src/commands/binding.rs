@@ -4,13 +4,14 @@ use serde::Serialize;
 
 use super::connect;
 use crate::{
-    cli::{BindingPublishArgs, BindingShowArgs},
+    cli::{BindingGetArgs, BindingPublishArgs, BindingShowArgs},
     output::{OutputFormat, print_json},
     reported::Reported,
 };
 use fractal::sap::service_binding::{
     BindingService, PublishOperation, PublishRequest, PublishResult, PublishStatus,
-    SapPublishMessage, ServiceDetails, publish_service_binding, show_service_binding,
+    SapPublishMessage, ServiceDetails, get_from_service, publish_service_binding,
+    show_service_binding,
 };
 
 #[derive(Debug, Serialize)]
@@ -68,8 +69,8 @@ pub async fn binding_show(
     explicit_profile: Option<&str>,
     args: &BindingShowArgs,
 ) -> Result<BindingShowOutput, Reported> {
-    let (profile_name, profile, client) = connect(explicit_profile).await?;
-    let result = show_service_binding(&client, &profile.edit_policy(), &args.name).await?;
+    let (profile_name, _profile, client) = connect(explicit_profile).await?;
+    let result = show_service_binding(&client, &args.name).await?;
 
     Ok(BindingShowOutput {
         ok: true,
@@ -248,4 +249,66 @@ pub fn print_binding_publish(result: &BindingPublishOutput, output: OutputFormat
     }
     write_service(&mut text, &result.service);
     print!("{text}");
+}
+
+#[derive(Debug, Serialize)]
+pub struct BindingGetOutput {
+    ok: bool,
+    profile: String,
+    name: String,
+    odata_version: &'static str,
+    service_version: String,
+    /// The path that was read: the registered service root plus the caller's.
+    url: String,
+    status: u16,
+    content_type: Option<String>,
+    /// Parsed when the service answered JSON; the text as sent otherwise
+    /// (`$metadata`, Atom).
+    body: serde_json::Value,
+    #[serde(skip)]
+    raw_body: String,
+}
+
+pub async fn binding_get(
+    explicit_profile: Option<&str>,
+    args: &BindingGetArgs,
+) -> Result<BindingGetOutput, Reported> {
+    let (profile_name, _profile, client) = connect(explicit_profile).await?;
+    let result = get_from_service(
+        &client,
+        &args.name,
+        args.service_version.as_deref(),
+        &args.path,
+    )
+    .await?;
+    let is_json = result
+        .content_type
+        .as_deref()
+        .is_some_and(|content_type| content_type.contains("json"));
+    let body = if is_json {
+        serde_json::from_str(&result.body)
+            .unwrap_or_else(|_| serde_json::Value::String(result.body.clone()))
+    } else {
+        serde_json::Value::String(result.body.clone())
+    };
+    Ok(BindingGetOutput {
+        ok: true,
+        profile: profile_name,
+        name: result.name,
+        odata_version: result.protocol.as_str(),
+        service_version: result.service.service_version,
+        url: result.url,
+        status: result.status,
+        content_type: result.content_type,
+        body,
+        raw_body: result.body,
+    })
+}
+
+pub fn print_binding_get(result: &BindingGetOutput, output: OutputFormat) {
+    if matches!(output, OutputFormat::Json) {
+        print_json(result);
+        return;
+    }
+    println!("{}", result.raw_body);
 }

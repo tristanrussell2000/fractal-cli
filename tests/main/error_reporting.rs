@@ -436,6 +436,45 @@ fn contract() -> Vec<Expectation> {
             has_hint: true,
             suggested_command: Some("fractal binding show --name ZSAMPLE_UI_O4"),
         },
+        Expectation {
+            error: Box::new(ServiceBindingError::NotPublished {
+                name: "ZSAMPLE_UI_O4".to_owned(),
+            }),
+            code: "binding_not_published",
+            status: None,
+            message_contains: "not published",
+            has_hint: true,
+            // Publishing mutates, so it is named in the hint only.
+            suggested_command: Some("fractal binding show --name ZSAMPLE_UI_O4"),
+        },
+        Expectation {
+            error: Box::new(ServiceBindingError::PathInvalid {
+                path: "/sap/bc/adt/discovery".to_owned(),
+                reason: "is absolute; give only the part after the service root",
+            }),
+            code: "binding_path_invalid",
+            status: None,
+            message_contains: "is absolute",
+            has_hint: true,
+            suggested_command: None,
+        },
+        Expectation {
+            error: Box::new(ServiceBindingError::GetFailed {
+                name: "ZSAMPLE_UI_O4".to_owned(),
+                url: "/sap/opu/odata4/sap/zsample_ui_o4/srvd/sap/zsample_ui_o4/0001/Nope"
+                    .to_owned(),
+                source: http(
+                    SapHttpErrorKind::NotFound,
+                    StatusCode::NOT_FOUND,
+                    "Not Found",
+                ),
+            }),
+            code: "binding_get_failed",
+            status: Some(404),
+            message_contains: "/0001/Nope",
+            has_hint: true,
+            suggested_command: Some("fractal binding show --name ZSAMPLE_UI_O4"),
+        },
     ]
 }
 
