@@ -17,3 +17,7 @@ install-path = "CARGO_HOME"
 hosting = "github"
 # Whether to install an updater program
 install-updater = false
+
+# GitHub retired the macos-14 image dist defaults to for Apple Silicon (2026-11-02)
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
