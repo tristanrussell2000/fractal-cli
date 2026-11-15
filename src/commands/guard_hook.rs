@@ -299,6 +299,7 @@ mod tests {
         for command in [
             "fractal binding publish --name ZSAMPLE_UI_O4",
             "fractal binding unpublish --name ZSAMPLE_UI_O4",
+            "fractal package create --name ZSAMPLE_PKG --description x --transport DE3K900123",
         ] {
             assert!(
                 matches!(decide(command, false), HookDecision::Ask(_)),
@@ -308,6 +309,11 @@ mod tests {
         assert!(matches!(
             decide("fractal binding show --name ZSAMPLE_UI_O4", false),
             HookDecision::NoOpinion
+        ));
+        // Deleting a package goes through the refused verb like any delete.
+        assert!(matches!(
+            decide("fractal delete --type DEVC --name ZSAMPLE_PKG", false),
+            HookDecision::Deny(_)
         ));
     }
 

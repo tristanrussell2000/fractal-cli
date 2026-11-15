@@ -16,6 +16,8 @@ pub enum PackageError {
     Sap(#[from] super::client::SapClientError),
     #[error("could not parse package node structure: {0}")]
     Parse(String),
+    #[error("package {0} does not exist")]
+    NotFound(String),
 }
 
 impl ReportableError for PackageError {
@@ -23,13 +25,14 @@ impl ReportableError for PackageError {
         match self {
             Self::Sap(error) => error.code(),
             Self::Parse(_) => "package_response_parse_error",
+            Self::NotFound(_) => "package_not_found",
         }
     }
 
     fn status(&self) -> Option<u16> {
         match self {
             Self::Sap(error) => error.status(),
-            Self::Parse(_) => None,
+            Self::Parse(_) | Self::NotFound(_) => None,
         }
     }
 
@@ -40,13 +43,14 @@ impl ReportableError for PackageError {
                 "The SAP package response did not match the expected nodestructure format."
                     .to_owned(),
             ),
+            Self::NotFound(_) => Some("Check the package name.".to_owned()),
         }
     }
 
     fn suggested_command(&self) -> Option<String> {
         match self {
             Self::Sap(error) => error.suggested_command(),
-            Self::Parse(_) => None,
+            Self::Parse(_) | Self::NotFound(_) => None,
         }
     }
 }
@@ -153,7 +157,7 @@ pub async fn get_package_contents(
     let xml = sap
         .post_text(NODE_STRUCTURE_PATH, &query, None, headers)
         .await?;
-    parse_package_contents(&xml, &package)
+    contents_from_response(sap, &xml, package).await
 }
 
 /// Parses one SAP `nodestructure` response into direct items and subpackages.
@@ -448,7 +452,40 @@ async fn get_package_contents_read_only(
     let xml = sap
         .post_text_read_only(NODE_STRUCTURE_PATH, &query, None, headers)
         .await?;
-    parse_package_contents(&xml, &package)
+    contents_from_response(sap, &xml, package).await
+}
+
+/// Parses a `nodestructure` answer, telling an empty package from a missing one.
+///
+/// SAP answers both with the same empty body, so only the package's own
+/// document tells them apart. A non-empty body is parsed as before.
+async fn contents_from_response(
+    sap: &SapClient,
+    xml: &str,
+    package: String,
+) -> Result<PackageContents, PackageError> {
+    if !xml.trim().is_empty() {
+        return parse_package_contents(xml, &package);
+    }
+    let uri = format!(
+        "/sap/bc/adt/packages/{}",
+        package
+            .to_ascii_lowercase()
+            .replace('/', "%2f")
+            .replace('$', "%24")
+    );
+    match sap.get_text(&uri).await {
+        Ok(_) => Ok(PackageContents {
+            package,
+            items: Vec::new(),
+            subpackages: Vec::new(),
+        }),
+        Err(super::client::SapClientError::Http {
+            kind: super::client::SapHttpErrorKind::NotFound,
+            ..
+        }) => Err(PackageError::NotFound(package)),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn is_repository_node(node: &Node<'_, '_>) -> bool {

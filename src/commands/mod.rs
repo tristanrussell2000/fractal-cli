@@ -18,6 +18,7 @@ pub mod object;
 pub mod object_delete;
 pub mod object_show;
 pub mod package;
+pub mod package_lifecycle;
 pub mod query;
 pub mod system;
 pub mod table;

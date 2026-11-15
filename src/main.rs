@@ -163,6 +163,16 @@ async fn main() {
             .await
         }
         Command::Package {
+            command: PackageCommand::Create(args),
+        } => {
+            run_and_print_with_async(
+                || commands::package_lifecycle::package_create(cli.profile.as_deref(), args),
+                commands::package_lifecycle::print_package_create,
+                output,
+            )
+            .await
+        }
+        Command::Package {
             command: PackageCommand::Items(args),
         } => {
             run_and_print_with_async(
@@ -370,6 +380,14 @@ async fn main() {
             |(), _| {},
             output,
         ),
+        Command::Delete(args) if args.object_type.trim().eq_ignore_ascii_case("DEVC") => {
+            run_and_print_with_async(
+                || commands::package_lifecycle::package_delete(cli.profile.as_deref(), args),
+                commands::package_lifecycle::print_package_delete,
+                output,
+            )
+            .await
+        }
         Command::Delete(args) => {
             run_and_print_with_async(
                 || object_delete(cli.profile.as_deref(), args),

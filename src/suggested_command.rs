@@ -74,6 +74,17 @@ pub fn binding_show(name: &str) -> String {
     format!("fractal binding show --name {name}")
 }
 
+/// Lists the objects in one package.
+#[must_use]
+pub fn package_items(package: &str) -> String {
+    // A local package starts with `$`, which a shell would expand.
+    if package.contains('$') {
+        format!("fractal package items '{package}'")
+    } else {
+        format!("fractal package items {package}")
+    }
+}
+
 /// Lists the fields of one DDIC entity.
 #[must_use]
 pub fn table_metadata(entity: &str) -> String {
@@ -104,6 +115,10 @@ mod tests {
             "fractal object search ZIF_MISSING --kind INTF"
         );
         assert_eq!(object_kinds(), "fractal object kinds");
+        assert_eq!(
+            package_items("$SAMPLE_LOCAL"),
+            "fractal package items '$SAMPLE_LOCAL'"
+        );
         assert_eq!(
             binding_show("ZSAMPLE_UI_O4"),
             "fractal binding show --name ZSAMPLE_UI_O4"

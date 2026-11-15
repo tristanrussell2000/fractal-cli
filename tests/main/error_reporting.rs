@@ -25,6 +25,7 @@ use fractal::{
         object_info::ObjectInfoError,
         object_source::ObjectSourceError,
         package::PackageError,
+        package_lifecycle::PackageLifecycleError,
         service_binding::{PublishOperation, SapPublishMessage, ServiceBindingError},
         source_activation::AdtSourceActivationError,
         source_check::AdtSourceCheckError,
@@ -474,6 +475,38 @@ fn contract() -> Vec<Expectation> {
             message_contains: "/0001/Nope",
             has_hint: true,
             suggested_command: Some("fractal binding show --name ZSAMPLE_UI_O4"),
+        },
+        Expectation {
+            error: Box::new(PackageLifecycleError::NotEmpty {
+                name: "ZSAMPLE_PKG".to_owned(),
+                items: vec!["DDLS/DF ZSAMPLE_VIEW".to_owned()],
+                subpackages: Vec::new(),
+            }),
+            code: "package_not_empty",
+            status: None,
+            message_contains: "ZSAMPLE_VIEW",
+            has_hint: true,
+            suggested_command: Some("fractal package items ZSAMPLE_PKG"),
+        },
+        Expectation {
+            error: Box::new(PackageLifecycleError::TransportRequired {
+                name: "ZSAMPLE_PKG".to_owned(),
+            }),
+            code: "package_transport_required",
+            status: None,
+            message_contains: "needs a transport request",
+            has_hint: true,
+            suggested_command: Some("fractal transport list"),
+        },
+        Expectation {
+            error: Box::new(PackageLifecycleError::AttributesRequired {
+                name: "ZSAMPLE_PKG".to_owned(),
+            }),
+            code: "package_attributes_required",
+            status: None,
+            message_contains: "software component",
+            has_hint: true,
+            suggested_command: None,
         },
     ]
 }

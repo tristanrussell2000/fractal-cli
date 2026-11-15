@@ -55,6 +55,8 @@ mod object_usages;
 mod package;
 #[path = "main/package_items.rs"]
 mod package_items;
+#[path = "main/package_lifecycle.rs"]
+mod package_lifecycle;
 #[path = "main/package_tree.rs"]
 mod package_tree;
 #[path = "main/query.rs"]

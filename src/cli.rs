@@ -431,6 +431,39 @@ pub enum PackageCommand {
     Tree(PackageTreeArgs),
     /// List objects contained in a package.
     Items(PackageItemsArgs),
+    /// Create a package, and confirm it by reading it back.
+    ///
+    /// A name starting with $ makes a local package, which is never
+    /// transported and takes no transport. Any other needs --transport, and a
+    /// software component and transport layer, which default to the parent's
+    /// when --parent is given. Delete one with `fractal delete --type DEVC`;
+    /// only an empty package is deleted.
+    Create(PackageCreateArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct PackageCreateArgs {
+    /// Package name: a customer name such as ZPROJ_UTIL, or $NAME for a local package.
+    #[arg(long)]
+    pub(crate) name: String,
+    /// Short description SAP stores as the package's text.
+    #[arg(long)]
+    pub(crate) description: String,
+    /// Parent (super) package. Its software component and transport layer are
+    /// the defaults.
+    #[arg(long)]
+    pub(crate) parent: Option<String>,
+    /// Software component, such as HOME. Required without --parent for a
+    /// transportable package.
+    #[arg(long)]
+    pub(crate) software_component: Option<String>,
+    /// Transport layer. Required without --parent for a transportable package.
+    #[arg(long)]
+    pub(crate) transport_layer: Option<String>,
+    /// Transport request the package is recorded in. Required unless the
+    /// package is local.
+    #[arg(long)]
+    pub(crate) transport: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -635,7 +668,7 @@ pub struct EditObjectCreateArgs {
 
 #[derive(Debug, Args)]
 pub struct ObjectDeleteArgs {
-    /// Object type to delete.
+    /// Object type to delete. DEVC deletes a package, and only an empty one.
     #[arg(long = "type")]
     pub(crate) object_type: String,
     /// Object name, which must be inside a configured customer namespace.
@@ -1046,6 +1079,7 @@ mod tests {
                 "inactive",
             ),
             suggested_command::binding_show("ZSAMPLE_UI_O4"),
+            suggested_command::package_items("ZSAMPLE_PKG"),
         ];
 
         for command in commands {

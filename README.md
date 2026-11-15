@@ -146,7 +146,7 @@ storing a password in the clear is always a choice you made.
 ```text
 fractal auth       login | set | list | remove
 fractal system     list | test
-fractal package    tree | items
+fractal package    tree | items | create
 fractal object     search | source | xml | info | show | usages | kinds
 fractal table      data | metadata | set | insert | remove
 fractal query      <complete SELECT, or - for stdin>

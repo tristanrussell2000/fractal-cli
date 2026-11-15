@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`fractal package create`** creates a package and reads it back.
+  - A `$NAME` package is local: it is never transported and takes no transport.
+  - Any other package needs `--transport`, plus a software component and transport layer, which
+    default to the parent's when `--parent` is given.
+  - The name has to be in the customer namespaces and, on a profile with a package allowlist, on
+    the allowlist.
+  - `guard install` asks before it.
+- **`fractal delete --type DEVC`** deletes a package, and only an empty one: any object or
+  subpackage in it refuses the delete (`package_not_empty`) before it is locked. A transportable
+  package whose objects were deleted under an unreleased request is refused by SAP. Fractal reports
+  that as `package_pending_deletions` and says to release the request first. Package deletes are
+  not journaled.
+
+### Fixed
+
+- **`package items` and `package tree` failed on an empty package** with
+  `package_response_parse_error`. SAP answers an empty package and a missing one with the same
+  empty body. An empty package now lists as empty, and a missing one is reported as
+  `package_not_found`.
+
 ## 0.9.2
 
 ### Fixed
