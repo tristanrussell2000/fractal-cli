@@ -15,6 +15,54 @@ pub struct PatchPlan {
     pub original_bytes: usize,
     pub updated_bytes: usize,
     pub replacements: usize,
+    /// Set when the find and replace text were rewritten to the source's line
+    /// endings before matching; see [`plan_patch`].
+    pub adapted_line_endings: Option<LineEnding>,
+}
+
+/// The line-ending convention a stored source uses throughout.
+///
+/// SAP stores ABAP source with CRLF and the CDS family (DDLS, BDEF, DCLS,
+/// DDLX, SRVD) with LF, and a caller writing a multi-line patch types LF.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineEnding {
+    Lf,
+    CrLf,
+}
+
+impl LineEnding {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Lf => "lf",
+            Self::CrLf => "crlf",
+        }
+    }
+
+    /// The convention `source` uses on every line, or `None` when it has no
+    /// line break at all or mixes the two.
+    #[must_use]
+    pub fn uniform_in(source: &str) -> Option<Self> {
+        let breaks = source.matches('\n').count();
+        if breaks == 0 {
+            return None;
+        }
+        match source.matches("\r\n").count() {
+            0 => Some(Self::Lf),
+            crlf if crlf == breaks => Some(Self::CrLf),
+            _ => None,
+        }
+    }
+
+    /// Rewrites every line break in `text` to this convention.
+    #[must_use]
+    pub fn apply(self, text: &str) -> String {
+        let lf = text.replace("\r\n", "\n");
+        match self {
+            Self::Lf => lf,
+            Self::CrLf => lf.replace('\n', "\r\n"),
+        }
+    }
 }
 
 /// A fully validated complete-source replacement that has not been written to SAP.
@@ -72,7 +120,7 @@ impl ReportableError for SourceChangePlanError {
             }
             Self::EmptyFind => "Provide non-empty literal text to replace.".to_owned(),
             Self::AnchorNotFound => {
-                "Copy the exact anchor from the source-read result, including its whitespace and line endings."
+                "Copy the anchor from the source-read result, including its whitespace and indentation. Line endings are matched to the source's own when it uses one convention throughout."
                     .to_owned()
             }
             Self::AnchorAmbiguous { .. } => {
@@ -132,11 +180,17 @@ pub fn source_sha256(source: &str) -> String {
     hash
 }
 
-/// Plans one exact literal replacement against a known source version.
+/// Plans one literal replacement against a known source version.
 ///
 /// This function does not perform I/O. The find text must occur exactly once,
 /// and `expected_sha256` must match the supplied source before a plan is
 /// returned.
+///
+/// Line endings are the one thing not matched literally. When the source uses
+/// one convention throughout, the replacement is written in it, and a find
+/// text that does not occur as given is retried in it — so a multi-line
+/// anchor typed with LF matches ABAP source SAP stores with CRLF. The plan
+/// says when that retry was what matched.
 ///
 /// # Errors
 ///
@@ -163,14 +217,27 @@ pub fn plan_patch(
         });
     }
 
-    let occurrences = source.match_indices(find).count();
+    // An exact match always wins, so a caller who copied the stored line
+    // endings gets exactly what they asked for. Otherwise, when the source
+    // uses one convention throughout, the find and replace text are rewritten
+    // to it: SAP would normalize the replacement on save anyway, and an anchor
+    // typed with LF can never match CRLF source byte for byte.
+    let convention = LineEnding::uniform_in(source);
+    let adapted = convention.filter(|ending| !source.contains(find) && ending.apply(find) != find);
+    let (find, replace) = match (adapted, convention) {
+        (Some(ending), _) => (ending.apply(find), ending.apply(replace)),
+        (None, Some(ending)) => (find.to_owned(), ending.apply(replace)),
+        (None, None) => (find.to_owned(), replace.to_owned()),
+    };
+
+    let occurrences = source.match_indices(find.as_str()).count();
     match occurrences {
         0 => return Err(SourceChangePlanError::AnchorNotFound),
         1 => {}
         _ => return Err(SourceChangePlanError::AnchorAmbiguous { occurrences }),
     }
 
-    let updated_source = source.replacen(find, replace, 1);
+    let updated_source = source.replacen(find.as_str(), &replace, 1);
     if updated_source == source {
         return Err(SourceChangePlanError::NoChanges);
     }
@@ -182,6 +249,7 @@ pub fn plan_patch(
         updated_bytes: updated_source.len(),
         updated_source,
         replacements: 1,
+        adapted_line_endings: adapted,
     })
 }
 
@@ -320,6 +388,101 @@ mod tests {
 
     fn source_hash() -> String {
         source_sha256(SOURCE)
+    }
+
+    /// How SAP serves ABAP source: CRLF on every line.
+    const CRLF_SOURCE: &str = "METHOD get.\r\n  ENDMETHOD.\r\nMETHOD set.\r\n  ENDMETHOD.\r\n";
+
+    fn plan(source: &str, find: &str, replace: &str) -> Result<PatchPlan, SourceChangePlanError> {
+        plan_patch(source, find, replace, &source_sha256(source))
+    }
+
+    #[test]
+    fn a_multi_line_lf_anchor_matches_crlf_source() {
+        let plan = plan(
+            CRLF_SOURCE,
+            "METHOD set.\n  ENDMETHOD.",
+            "METHOD set.\n    x = 1.\n  ENDMETHOD.",
+        )
+        .unwrap();
+
+        assert_eq!(plan.adapted_line_endings, Some(LineEnding::CrLf));
+        // The replacement is written in the source's convention too, so the
+        // stored source stays uniform rather than mixed.
+        assert_eq!(
+            plan.updated_source,
+            "METHOD get.\r\n  ENDMETHOD.\r\nMETHOD set.\r\n    x = 1.\r\n  ENDMETHOD.\r\n"
+        );
+    }
+
+    #[test]
+    fn an_anchor_that_matches_as_given_is_not_adapted() {
+        let plan = plan(CRLF_SOURCE, "METHOD set.\r\n", "METHOD put.\r\n").unwrap();
+        assert_eq!(plan.adapted_line_endings, None);
+        assert!(plan.updated_source.contains("METHOD put.\r\n"));
+    }
+
+    #[test]
+    fn a_single_line_anchor_still_gets_its_replacement_in_the_source_convention() {
+        // The anchor needed no rewriting, so nothing is reported as adapted,
+        // but the multi-line replacement is still written as CRLF.
+        let plan = plan(CRLF_SOURCE, "METHOD set.", "METHOD set.\n  \" new").unwrap();
+        assert_eq!(plan.adapted_line_endings, None);
+        assert!(plan.updated_source.contains("METHOD set.\r\n  \" new\r\n"));
+    }
+
+    #[test]
+    fn a_crlf_anchor_matches_lf_source() {
+        // CDS sources keep LF; an anchor copied from somewhere that wrote CRLF
+        // is rewritten the other way.
+        let source = "define view entity ZI_X\n  as select from t000\n{\n  key mandt\n}\n";
+        let plan = plan(
+            source,
+            "{\r\n  key mandt\r\n}",
+            "{\r\n  key mandt as Client\r\n}",
+        )
+        .unwrap();
+        assert_eq!(plan.adapted_line_endings, Some(LineEnding::Lf));
+        assert!(plan.updated_source.contains("{\n  key mandt as Client\n}"));
+        assert!(!plan.updated_source.contains('\r'));
+    }
+
+    #[test]
+    fn mixed_line_endings_are_matched_literally() {
+        // No single convention to rewrite to, so nothing is guessed.
+        let source = "line one\r\nline two\nline three\n";
+        assert_eq!(LineEnding::uniform_in(source), None);
+        assert_eq!(
+            plan(source, "line one\nline two", "x"),
+            Err(SourceChangePlanError::AnchorNotFound)
+        );
+        assert!(plan(source, "line one\r\nline two", "x").is_ok());
+    }
+
+    #[test]
+    fn ambiguity_is_judged_after_rewriting() {
+        let source = "a\r\nb\r\na\r\nb\r\n";
+        assert_eq!(
+            plan(source, "a\nb", "c"),
+            Err(SourceChangePlanError::AnchorAmbiguous { occurrences: 2 })
+        );
+    }
+
+    #[test]
+    fn a_replacement_that_differs_only_in_line_endings_changes_nothing() {
+        assert_eq!(
+            plan(CRLF_SOURCE, "METHOD set.\n", "METHOD set.\r\n"),
+            Err(SourceChangePlanError::NoChanges)
+        );
+    }
+
+    #[test]
+    fn names_the_convention_a_source_uses() {
+        assert_eq!(LineEnding::uniform_in("a\r\nb\r\n"), Some(LineEnding::CrLf));
+        assert_eq!(LineEnding::uniform_in("a\nb"), Some(LineEnding::Lf));
+        assert_eq!(LineEnding::uniform_in("one line"), None);
+        assert_eq!(LineEnding::CrLf.apply("a\nb\r\nc"), "a\r\nb\r\nc");
+        assert_eq!(LineEnding::Lf.apply("a\r\nb\nc"), "a\nb\nc");
     }
 
     #[test]

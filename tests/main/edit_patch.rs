@@ -711,3 +711,54 @@ async fn a_patch_to_missing_test_classes_says_the_include_is_missing() {
     );
     server.verify().await;
 }
+
+/// ABAP source as SAP serves it: CRLF on every line.
+const CRLF_ORIGINAL: &str = "REPORT zsample.\r\nWRITE 'before'.\r\nWRITE 'end'.\r\n";
+const CRLF_PROPOSED: &str =
+    "REPORT zsample.\r\nWRITE 'before'.\r\nWRITE 'middle'.\r\nWRITE 'end'.\r\n";
+
+#[tokio::test]
+async fn a_multi_line_lf_anchor_patches_crlf_source_and_writes_crlf() {
+    let server = MockServer::start().await;
+    mount_csrf_session(&server).await;
+    mount_successful_lock(&server).await;
+    Mock::given(method("GET"))
+        .and(path(SOURCE_PATH))
+        .and(query_param("version", "inactive"))
+        .respond_with(SequentialResponses::sources(&[
+            CRLF_ORIGINAL,
+            CRLF_PROPOSED,
+        ]))
+        .expect(2)
+        .mount(&server)
+        .await;
+    // The central assertion: SAP receives CRLF throughout, not a source with
+    // two LF lines spliced into it.
+    Mock::given(method("PUT"))
+        .and(path(SOURCE_PATH))
+        .and(body_string(CRLF_PROPOSED))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    mount_unlock(&server, 200).await;
+
+    let profile = profile(server.uri());
+    let mut client = SapClient::new(&profile, "password".to_owned()).unwrap();
+    let request = AdtSourcePatchRequest {
+        find: "WRITE 'before'.\nWRITE 'end'.".to_owned(),
+        replace: "WRITE 'before'.\nWRITE 'middle'.\nWRITE 'end'.".to_owned(),
+        ..patch_request()
+    };
+    let result = patch_adt_source_atomically(&mut client, &profile.edit_policy(), &request)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result.adapted_line_endings,
+        Some(fractal::source_change::LineEnding::CrLf)
+    );
+    assert_eq!(result.proposed.source, CRLF_PROPOSED);
+    assert_eq!(result.stored.source, CRLF_PROPOSED);
+    server.verify().await;
+}

@@ -18,7 +18,7 @@ use super::{
     },
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
-use crate::source_change::{SourceChangePlanError, plan_patch};
+use crate::source_change::{LineEnding, SourceChangePlanError, plan_patch};
 use crate::suggested_command;
 
 /// One exact source replacement to preview or perform against an ADT object.
@@ -43,6 +43,9 @@ pub struct AdtSourcePatchPreview {
     pub original: AdtSourceSnapshot,
     pub proposed: AdtSourceSnapshot,
     pub replacements: usize,
+    /// Set when the find text matched only after being rewritten to the
+    /// source's line endings.
+    pub adapted_line_endings: Option<LineEnding>,
 }
 
 /// The source versions observed before and after an atomic ADT patch.
@@ -54,6 +57,9 @@ pub struct AdtSourcePatchWriteResult {
     pub proposed: AdtSourceSnapshot,
     pub stored: AdtSourceSnapshot,
     pub replacements: usize,
+    /// Set when the find text matched only after being rewritten to the
+    /// source's line endings.
+    pub adapted_line_endings: Option<LineEnding>,
     /// The write landed, but its lock could not be released.
     ///
     /// Reported as success with a caveat rather than as a failure: the source
@@ -260,7 +266,7 @@ pub async fn patch_adt_source_atomically(
                 plan.updated_sha256,
                 plan.updated_bytes,
             ),
-            metadata: plan.replacements,
+            metadata: (plan.replacements, plan.adapted_line_endings),
         })
     })
     .await
@@ -274,7 +280,8 @@ pub async fn patch_adt_source_atomically(
         original: saved.original,
         proposed: saved.proposed,
         stored: saved.stored,
-        replacements: saved.metadata,
+        replacements: saved.metadata.0,
+        adapted_line_endings: saved.metadata.1,
         still_locked: saved.still_locked,
     })
 }
@@ -339,6 +346,7 @@ pub async fn preview_adt_source_patch(
             plan.updated_bytes,
         ),
         replacements: plan.replacements,
+        adapted_line_endings: plan.adapted_line_endings,
     })
 }
 

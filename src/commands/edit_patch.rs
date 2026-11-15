@@ -18,6 +18,7 @@ use fractal::sap::{
         patch_adt_source_atomically, preview_adt_source_patch,
     },
 };
+use fractal::source_change::LineEnding;
 
 // The flags are the agent-facing JSON contract: `dry_run`, `wrote_source`, and
 // `activated` are separately meaningful because a caller must be able to tell a
@@ -36,6 +37,11 @@ pub struct EditSourcePatchOutput {
     object: EditObjectIdentityOutput,
     transport: Option<String>,
     replacements: usize,
+    /// `crlf` or `lf` when the find text matched only after its line endings
+    /// were rewritten to the source's own; the replacement was written the
+    /// same way. Absent when the anchor matched as given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line_endings_adapted_to: Option<&'static str>,
     original_bytes: usize,
     proposed_bytes: usize,
     stored_bytes: Option<usize>,
@@ -101,6 +107,7 @@ fn map_patch_preview(
         object: preview.identity.into(),
         transport: preview.transport,
         replacements: preview.replacements,
+        line_endings_adapted_to: preview.adapted_line_endings.map(LineEnding::as_str),
         original_bytes: preview.original.bytes,
         proposed_bytes: preview.proposed.bytes,
         stored_bytes: None,
@@ -133,6 +140,7 @@ fn map_applied_patch(
         object: result.identity.into(),
         transport: result.transport,
         replacements: result.replacements,
+        line_endings_adapted_to: result.adapted_line_endings.map(LineEnding::as_str),
         original_bytes: result.original.bytes,
         proposed_bytes: result.proposed.bytes,
         stored_bytes: Some(result.stored.bytes),
@@ -170,6 +178,12 @@ fn render_edit_source_patch_readable(result: &EditSourcePatchOutput) -> String {
         let _ = writeln!(output, "status: stored as inactive source; not activated");
     }
     let _ = writeln!(output, "replacements: {}", result.replacements);
+    if let Some(ending) = result.line_endings_adapted_to {
+        let _ = writeln!(
+            output,
+            "line endings: anchor and replacement rewritten to {ending} to match the source"
+        );
+    }
     let _ = writeln!(output, "original bytes: {}", result.original_bytes);
     let _ = writeln!(output, "proposed bytes: {}", result.proposed_bytes);
     if let Some(stored_bytes) = result.stored_bytes {
@@ -338,11 +352,14 @@ mod tests {
                     proposed.len(),
                 ),
                 replacements: 1,
+                adapted_line_endings: None,
             },
         );
 
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["status"], "dry_run");
+        // An anchor that matched as given says nothing about line endings.
+        assert!(json.get("line_endings_adapted_to").is_none());
         assert_eq!(json["wrote_source"], false);
         assert_eq!(json["activated"], false);
         assert_eq!(json["transport"], "AB1K900575");
@@ -389,6 +406,7 @@ mod tests {
                     stored.len(),
                 ),
                 replacements: 1,
+                adapted_line_endings: Some(LineEnding::CrLf),
                 still_locked: false,
             },
         );
@@ -403,5 +421,7 @@ mod tests {
         let readable = render_edit_source_patch_readable(&output);
         assert!(readable.contains("stored as inactive source; not activated"));
         assert!(readable.contains("SAP changed submitted source: yes"));
+        assert_eq!(json["line_endings_adapted_to"], "crlf");
+        assert!(readable.contains("rewritten to crlf"));
     }
 }

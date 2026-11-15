@@ -39,6 +39,13 @@
 
 ### Fixed
 
+- **A multi-line `edit patch` anchor never matched ABAP source.** SAP serves ABAP with CRLF line
+  endings, so a `--find` typed with LF reported `patch_anchor_not_found`. When the anchor does not
+  match as given and the source uses one line-ending convention throughout, the anchor and the
+  replacement are now rewritten to it; the output says so in `line_endings_adapted_to`. The
+  replacement is always written in the source's convention, so a patch no longer leaves a source
+  with mixed line endings. An exact match still wins, and a source that already mixes them is
+  matched literally.
 - **Writing `main` was refused while a colleague had any include staged.** The check for another
   user's staged edit looked at the class as a whole, whose marker goes inactive when any include is
   staged. It now looks at the include being written, so a colleague's staged local types no longer
