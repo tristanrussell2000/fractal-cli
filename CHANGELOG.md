@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.0
 
 ### Added
 
@@ -82,6 +82,12 @@
   (`…#start=9,9`), and Fractal read a `line` attribute SAP does not send. Messages now carry
   `line`, `column`, `uri` and, for a class, the `include` they are in — so an error in local types
   is no longer reported as if it were in the global class.
+
+### Known gaps
+
+- **`table insert`, `set` and `remove` fail on a table with a RAW key** (such as a RAP table keyed
+  on `sysuuid_x16`): the generated class does not activate, and nothing is written. Seed such a
+  table through its business object instead.
 
 ## 0.8.0
 
