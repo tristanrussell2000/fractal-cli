@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`table insert`, `set` and `remove` failed on a table with a RAW key**, such as a RAP table keyed
+  on `sysuuid_x16`. The generated class did not activate and nothing was written. The lock key is
+  now built the way SE16N builds it: the table's key fields, client included, cast byte for byte.
+- **The table lock left out the client on an application table**, so it never collided with
+  SE16N's lock on the same row. It now always includes it.
+- **Key fields given out of table order produced a wrong lock and transport key** on a table with
+  more than one key field. They are now put in the table's order.
+
+### Changed
+
+- A customizing table whose key is not all character fields (a RAW UUID, an integer) now refuses a
+  transport entry with status `transport_key_not_character`, and writes nothing. SE16N would
+  record a generic `*` key, which transports every row; Fractal does not widen an entry silently.
+
 ## 0.9.1
 
 0.9.0 was tagged but never released: its Apple Silicon build could not get a runner after GitHub
