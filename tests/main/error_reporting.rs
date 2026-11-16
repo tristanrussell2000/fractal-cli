@@ -33,6 +33,7 @@ use fractal::{
         source_patch::AdtSourcePatchError,
         source_replace::AdtSourceReplacementError,
         staged_work::StagedWorkError,
+        table_write::{NotWritten, TableWriteRunError},
     },
     source_change::SourceChangePlanError,
 };
@@ -507,6 +508,34 @@ fn contract() -> Vec<Expectation> {
             message_contains: "software component",
             has_hint: true,
             suggested_command: None,
+        },
+        Expectation {
+            error: Box::new(TableWriteRunError::NotWritten(Box::new(NotWritten {
+                table: "ZSAMPLE_RECORD".to_owned(),
+                key: "id=R1".to_owned(),
+                status: "conflict".to_owned(),
+                detail: String::new(),
+                dry_run: false,
+            }))),
+            code: "table_write_conflict",
+            status: None,
+            message_contains: "ZSAMPLE_RECORD row id=R1 was not written",
+            has_hint: true,
+            suggested_command: None,
+        },
+        Expectation {
+            error: Box::new(TableWriteRunError::NotWritten(Box::new(NotWritten {
+                table: "ZSAMPLE_CONFIG".to_owned(),
+                key: "code=C1".to_owned(),
+                status: "transport_refused".to_owned(),
+                detail: "TK127".to_owned(),
+                dry_run: false,
+            }))),
+            code: "table_write_transport_refused",
+            status: None,
+            message_contains: "TK127",
+            has_hint: true,
+            suggested_command: Some("fractal transport list"),
         },
     ]
 }

@@ -4,7 +4,7 @@ use super::{
     client::SapClient,
     table_write::{
         FieldDivergence, FieldValue, TableWriteRequest, TableWriteRunError, WriteMode,
-        diagnose_divergence, row_changed, write_table_row,
+        diagnose_divergence, write_table_row,
     },
 };
 use std::collections::BTreeMap;
@@ -340,19 +340,26 @@ pub async fn undo_table_write(
     // Not journaled: an undo is the reversal of an entry that already exists,
     // and recording it would offer an undo of the undo that the status
     // transition already expresses.
-    let outcome =
-        write_table_row(sap, policy, username, &request, WriteMode::Execute, None).await?;
-
-    if row_changed(&outcome.envelope.status) {
-        let mut entry = entry.clone();
-        entry.undone();
-        journal.entries().update(&entry)?;
-        return Ok(TableUndoOutcome {
-            plan,
-            status: outcome.envelope.status,
-            rows_affected: outcome.envelope.rows,
-            divergence: Vec::new(),
-        });
+    match write_table_row(sap, policy, username, &request, WriteMode::Execute, None).await {
+        Ok(outcome) => {
+            let mut entry = entry.clone();
+            entry.undone();
+            journal.entries().update(&entry)?;
+            return Ok(TableUndoOutcome {
+                plan,
+                status: outcome.envelope.status,
+                rows_affected: outcome.envelope.rows,
+                divergence: Vec::new(),
+            });
+        }
+        // Only a row that moved is a divergence. A lock, a refused transport
+        // entry or an exception is reported as itself.
+        Err(TableWriteRunError::NotWritten(refusal))
+            if matches!(
+                refusal.status.as_str(),
+                "conflict" | "row_not_found" | "row_exists"
+            ) => {}
+        Err(error) => return Err(error.into()),
     }
 
     // The write refused because the row no longer holds what we left. Name the

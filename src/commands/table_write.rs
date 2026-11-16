@@ -41,8 +41,9 @@ pub struct TableSetOutput {
     table: String,
     delivery_class: String,
     dry_run: bool,
-    /// What the run reported: `applied`, `would_apply`, `conflict`,
-    /// `row_not_found` or `exception`.
+    /// `applied`, `applied_with_transport_entry` or
+    /// `applied_without_transport_entry`, or `would_apply` for a dry run. A run
+    /// that did not write the row is an error, not a status here.
     status: String,
     rows_affected: i64,
     detail: String,
@@ -51,6 +52,9 @@ pub struct TableSetOutput {
     changes: Vec<FieldChangeOutput>,
     abap: String,
     next_step: Option<String>,
+    /// Present when the row changed but something it needed did not happen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -112,6 +116,7 @@ pub async fn table_set(
         )
     });
 
+    let transport_entry_missing = outcome.envelope.status == "applied_without_transport_entry";
     Ok(TableSetOutput {
         ok: true,
         profile: profile_name,
@@ -143,6 +148,9 @@ pub async fn table_set(
             .collect(),
         abap: outcome.abap,
         next_step,
+        warning: transport_entry_missing.then(|| {
+            "The row was changed and committed, but the task refused the transport entry, so the change stays in this client and will not travel. Record it in a transport another way.".to_owned()
+        }),
     })
 }
 
@@ -258,6 +266,9 @@ pub fn print_table_set(result: &TableSetOutput, output: OutputFormat) {
         result.table.clone()
     };
     println!("{heading}");
+    if let Some(warning) = &result.warning {
+        println!("warning: {warning}");
+    }
     println!("status: {}  rows: {}", result.status, result.rows_affected);
     if !result.detail.is_empty() {
         println!("detail: {}", result.detail);

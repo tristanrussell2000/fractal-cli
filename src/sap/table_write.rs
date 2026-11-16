@@ -19,6 +19,7 @@ use crate::journal::entry::{FieldChange as JournalFieldChange, RowOperation, Row
 use crate::journal::recorder::Journal;
 use crate::pattern::glob_matches;
 use crate::reportable_error::ReportableError;
+use crate::suggested_command;
 
 /// The envelope a generated class prints. Its absence means the run failed:
 /// `classrun` answers 200 with an error string for a class it cannot run, so
@@ -1101,6 +1102,81 @@ pub enum TableWriteRunError {
     Exec(#[from] ExecClassError),
     #[error("could not record the change in the journal: {0}")]
     Journal(#[from] JournalError),
+    /// The generated class ran and answered, but did not write the row.
+    #[error(transparent)]
+    NotWritten(Box<NotWritten>),
+}
+
+/// A run that reached the table and was refused there, or under a dry run
+/// would have been.
+#[derive(Debug, Error)]
+#[error("{table} row {key} {}: {}", if *dry_run { "would not be written" } else { "was not written" }, describe_refusal(status, detail))]
+pub struct NotWritten {
+    pub table: String,
+    pub key: String,
+    /// The envelope status, such as `conflict` or `locked_by_another`.
+    pub status: String,
+    pub detail: String,
+    pub dry_run: bool,
+}
+
+fn describe_refusal(status: &str, detail: &str) -> String {
+    let reason = match status {
+        "locked_by_another" => "another session holds a lock on it",
+        "conflict" => "it no longer holds the values the write was based on",
+        "row_not_found" => "no row has that key",
+        "row_exists" => "a row with that key already exists",
+        "transport_refused" => "the task would not take the transport entry",
+        "transport_key_too_long" => "its key is longer than a transport entry's 120 characters",
+        "transport_key_not_character" => {
+            "its key has a field that is not characters, so it cannot be recorded exactly in a transport entry"
+        }
+        "exception" => "the generated class raised an exception",
+        _ => "the run reported an unexpected status",
+    };
+    if detail.trim().is_empty() {
+        format!("{reason} ({status})")
+    } else {
+        format!("{reason} ({status}: {})", detail.trim())
+    }
+}
+
+impl ReportableError for NotWritten {
+    fn code(&self) -> &'static str {
+        match self.status.as_str() {
+            "locked_by_another" => "table_write_row_locked",
+            "conflict" => "table_write_conflict",
+            "row_not_found" => "table_write_row_not_found",
+            "row_exists" => "table_write_row_exists",
+            "transport_refused" => "table_write_transport_refused",
+            "transport_key_too_long" => "table_write_transport_key_too_long",
+            "transport_key_not_character" => "table_write_transport_key_not_character",
+            "exception" => "table_write_exception",
+            _ => "table_write_not_applied",
+        }
+    }
+
+    fn hint(&self) -> Option<String> {
+        Some(match self.status.as_str() {
+            "locked_by_another" => {
+                "Nothing was written. Retry once the other session is done with the row.".to_owned()
+            }
+            "conflict" | "row_not_found" | "row_exists" => {
+                "Nothing was written. The row changed after it was read; read it again and retry.".to_owned()
+            }
+            "transport_refused" => {
+                "Nothing was written. Check that the task is modifiable and yours, or pass another request with --transport.".to_owned()
+            }
+            "transport_key_too_long" | "transport_key_not_character" => {
+                "Nothing was written. SAP itself would record a generic key here, which transports every row matching it; maintain this row another way if that is what you want.".to_owned()
+            }
+            _ => "Nothing was written.".to_owned(),
+        })
+    }
+
+    fn suggested_command(&self) -> Option<String> {
+        (self.status == "transport_refused").then(suggested_command::transport_list)
+    }
 }
 
 impl ReportableError for TableWriteRunError {
@@ -1111,6 +1187,7 @@ impl ReportableError for TableWriteRunError {
             Self::Transport { source, .. } => source.code(),
             Self::Exec(error) => error.code(),
             Self::Journal(error) => error.code(),
+            Self::NotWritten(error) => error.code(),
         }
     }
 
@@ -1121,6 +1198,7 @@ impl ReportableError for TableWriteRunError {
             Self::Transport { source, .. } => source.status(),
             Self::Exec(error) => error.status(),
             Self::Journal(error) => error.status(),
+            Self::NotWritten(_) => None,
         }
     }
 
@@ -1131,6 +1209,14 @@ impl ReportableError for TableWriteRunError {
             Self::Transport { source, .. } => source.hint(),
             Self::Exec(error) => error.hint(),
             Self::Journal(error) => error.hint(),
+            Self::NotWritten(error) => error.hint(),
+        }
+    }
+
+    fn suggested_command(&self) -> Option<String> {
+        match self {
+            Self::NotWritten(error) => error.suggested_command(),
+            _ => None,
         }
     }
 }
@@ -1249,6 +1335,16 @@ pub async fn write_table_row(
         }
     }
 
+    if !write_reached_its_goal(&envelope.status, mode) {
+        return Err(TableWriteRunError::NotWritten(Box::new(NotWritten {
+            table: validated.table,
+            key: describe_key(&validated.keys),
+            status: envelope.status,
+            detail: envelope.detail,
+            dry_run: mode == WriteMode::DryRun,
+        })));
+    }
+
     Ok(TableWriteOutcome {
         table: validated.table,
         keys: validated.keys,
@@ -1259,6 +1355,19 @@ pub async fn write_table_row(
         abap,
         envelope,
     })
+}
+
+/// Whether the run did what was asked: changed the row, or under a dry run
+/// found it would.
+///
+/// Every other status is a refusal reported inside a successful HTTP answer,
+/// and a caller must not read it as success.
+#[must_use]
+pub fn write_reached_its_goal(status: &str, mode: WriteMode) -> bool {
+    match mode {
+        WriteMode::Execute => row_changed(status),
+        WriteMode::DryRun => status == "would_apply",
+    }
 }
 
 /// The task a `TABU` entry goes in.
@@ -1949,6 +2058,72 @@ mod tests {
             ),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn only_a_changed_row_or_a_clean_dry_run_counts_as_success() {
+        for status in [
+            "applied",
+            "applied_with_transport_entry",
+            "applied_without_transport_entry",
+        ] {
+            assert!(
+                write_reached_its_goal(status, WriteMode::Execute),
+                "{status}"
+            );
+        }
+        assert!(write_reached_its_goal("would_apply", WriteMode::DryRun));
+        // Each of these arrives inside a successful HTTP answer, and none of
+        // them wrote anything.
+        for status in [
+            "conflict",
+            "row_not_found",
+            "row_exists",
+            "locked_by_another",
+            "transport_refused",
+            "transport_key_too_long",
+            "transport_key_not_character",
+            "exception",
+            "something_new",
+        ] {
+            assert!(
+                !write_reached_its_goal(status, WriteMode::Execute),
+                "{status}"
+            );
+            assert!(
+                !write_reached_its_goal(status, WriteMode::DryRun),
+                "{status}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_refusal_names_the_row_the_reason_and_whether_it_was_a_dry_run() {
+        let refusal = NotWritten {
+            table: "ZSAMPLE_RECORD".to_owned(),
+            key: "id=R1".to_owned(),
+            status: "locked_by_another".to_owned(),
+            detail: "COLLEAGUE".to_owned(),
+            dry_run: true,
+        };
+        assert_eq!(refusal.code(), "table_write_row_locked");
+        let message = refusal.to_string();
+        assert!(
+            message.contains("ZSAMPLE_RECORD row id=R1 would not be written"),
+            "{message}"
+        );
+        assert!(
+            message.contains("locked_by_another: COLLEAGUE"),
+            "{message}"
+        );
+        assert!(refusal.hint().unwrap().starts_with("Nothing was written."));
+        let unknown = NotWritten {
+            status: "something_new".to_owned(),
+            dry_run: false,
+            ..refusal
+        };
+        assert_eq!(unknown.code(), "table_write_not_applied");
+        assert!(unknown.to_string().contains("was not written"));
     }
 
     #[test]

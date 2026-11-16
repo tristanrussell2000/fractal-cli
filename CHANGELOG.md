@@ -2,8 +2,24 @@
 
 ## Unreleased
 
+### Breaking
+
+- **A table write that did not write the row is now an error.** `table set`, `insert` and
+  `remove` used to answer `ok: true` with the reason only in `status`, so an agent checking `ok`
+  took a refusal for success. These now exit non-zero with `ok: false` and a code:
+  `table_write_conflict`, `table_write_row_not_found`, `table_write_row_exists`,
+  `table_write_row_locked`, `table_write_transport_refused`,
+  `table_write_transport_key_too_long`, `table_write_transport_key_not_character`,
+  `table_write_exception` or `table_write_not_applied`. The same goes for a dry run that would be
+  refused. `status` on a success is now `applied`, `applied_with_transport_entry`,
+  `applied_without_transport_entry` (with a `warning`: the row changed but the transport entry
+  was refused) or `would_apply`.
+
 ### Fixed
 
+- **`undo` of a table write reported any refusal as "the row has moved".** A lock held by another
+  session, or a refused transport entry, now surfaces as itself. Only a row that changed since the
+  write is reported as a divergence.
 - **A deleted object's name could not be reused for half an hour or more.** SAP's editing lock
   outlives the object it was taken on, and Fractal released it only when a delete failed, so
   recreating the same name was refused as "User … is currently editing" until the session timed
