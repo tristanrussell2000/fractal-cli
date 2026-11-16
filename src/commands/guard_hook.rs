@@ -123,6 +123,12 @@ fn what_it_changes(rule: &str) -> &'static str {
             "deletes the local record of what Fractal changed, which is the only way back from an operation SAP will not reverse"
         }
         "fractal auth" => "changes stored SAP credentials",
+        "fractal table set" | "fractal table insert" | "fractal table remove" => {
+            "changes rows of a SAP table, committed with --execute and rolled back otherwise"
+        }
+        "fractal internal class-run" => {
+            "runs a class's ABAP code in SAP, which can change any data the user may"
+        }
         _ => "changes a SAP system",
     }
 }
@@ -254,11 +260,44 @@ mod tests {
             "fractal object search 'Z*'",
             "fractal object show ZSAMPLE_STATUS",
             "fractal table data ZSAMPLE",
+            "fractal table metadata ZSAMPLE",
+            "fractal binding show --name ZSAMPLE_UI_O4",
+            "fractal binding get --name ZSAMPLE_UI_O4 '$metadata'",
+            "fractal package items ZSAMPLE_PKG",
+            "fractal query 'SELECT * FROM zsample'",
             // Reading the journal is not changing it.
             "fractal journal list",
             "fractal journal show 20260909T201150.262Z",
         ] {
             assert_eq!(decide(command, false), HookDecision::NoOpinion, "{command}");
+        }
+    }
+
+    #[test]
+    fn table_writes_and_class_runs_are_asked_about_with_their_own_reason() {
+        for (command, expected) in [
+            (
+                "fractal table set ZSAMPLE --key ID=1 --set NOTE=x --execute",
+                "rows of a SAP table",
+            ),
+            // The default dry run too: a prefix rule cannot see --execute.
+            (
+                "fractal table insert ZSAMPLE --set ID=1",
+                "rows of a SAP table",
+            ),
+            (
+                "fractal table remove ZSAMPLE --key ID=1 --execute",
+                "rows of a SAP table",
+            ),
+            (
+                "fractal --profile de3 internal class-run ZCL_SAMPLE",
+                "runs a class's ABAP",
+            ),
+        ] {
+            let HookDecision::Ask(reason) = decide(command, false) else {
+                panic!("expected an ask for {command}");
+            };
+            assert!(reason.contains(expected), "{command}: {reason}");
         }
     }
 

@@ -52,6 +52,14 @@ pub(super) const ASKED: &[&str] = &[
     // but reversible by the opposite command.
     "fractal binding publish",
     "fractal binding unpublish",
+    // Change rows of a table. A dry run is the default, but a prefix rule
+    // cannot see `--execute`, so every run is asked about, as `delete` and
+    // `undo` dry runs are.
+    "fractal table set",
+    "fractal table insert",
+    "fractal table remove",
+    // Runs an activated class's ABAP, which can change anything at all.
+    "fractal internal class-run",
     "fractal auth",
 ];
 
@@ -508,6 +516,8 @@ mod tests {
         for rule in DENIED.iter().chain(ASKED) {
             assert!(!rule.contains("read"), "{rule}");
             assert!(!rule.contains("search"), "{rule}");
+            // `table data` and `table metadata` read; only the row writes ask.
+            assert_ne!(*rule, "fractal table", "{rule}");
         }
     }
 

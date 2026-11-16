@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`guard install` let agents write table rows and run classes without asking.** `table set`,
+  `insert` and `remove` and `internal class-run` are now on the ask list, in both the Claude Code
+  rules and the Codex hook. The table writes are asked about even as a dry run, since a prefix rule
+  cannot see `--execute`. Re-run `fractal guard install` to add the new rules.
+
 ## 0.11.0
 
 ### Added

@@ -271,7 +271,8 @@ It denies the irreversible commands, asks for the ones that write, leaves read-o
 alone, and merges into an existing settings file without removing anything already there.
 `fractal undo` and `fractal journal clear` are on the ask list — the first publishes a version,
 the second destroys the only record of what was replaced — and so are `fractal binding publish`
-and `unpublish`.
+and `unpublish`, the table row writes (`table set`, `insert`, `remove`, dry runs included, since a
+rule cannot see `--execute`), and `fractal internal class-run`, which runs ABAP.
 
 One gap is worth stating rather than papering over: Claude Code's rules match a command
 **prefix**, so they cannot see a flag. Approving `fractal edit activate` also approves
