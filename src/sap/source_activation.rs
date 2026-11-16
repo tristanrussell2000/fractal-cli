@@ -119,12 +119,13 @@ pub enum AdtSourceActivationError {
         #[source]
         source: AdtSourceReadError,
     },
-    /// A class include could not be read for the journal, so nothing was
+    /// The active version could not be read for the journal, so nothing was
     /// activated: without its before-image, an undo could not put it back.
-    #[error("could not record the active version of {name}'s {} include: {source}", include.as_str())]
+    /// `include` names the class include, and is `None` for any other object.
+    #[error("could not record the active version of {name}{}: {source}", include.map(|include| format!("'s {} include", include.as_str())).unwrap_or_default())]
     BeforeImageUnreadable {
         name: String,
-        include: ClassInclude,
+        include: Option<ClassInclude>,
         #[source]
         source: AdtSourceReadError,
     },
@@ -473,7 +474,7 @@ pub(super) async fn activation_before(
 ) -> Result<RecordedObject<ActivationBefore>, AdtSourceActivationError> {
     let family = AdtObjectFamily::Source(identity.object_type);
     if identity.object_type != EditableAdtObjectType::Class {
-        let active = read_active_source_if_any(sap, identity).await;
+        let active = read_active_source_if_any(sap, identity).await?;
         return Ok(RecordedObject::for_family(
             family,
             identity.name.clone(),
@@ -504,7 +505,7 @@ pub(super) async fn activation_before(
             Err(source) => {
                 return Err(AdtSourceActivationError::BeforeImageUnreadable {
                     name: identity.name.clone(),
-                    include,
+                    include: Some(include),
                     source,
                 });
             }
@@ -705,16 +706,25 @@ pub(super) async fn activation_after(
 async fn read_active_source_if_any(
     sap: &SapClient,
     identity: &EditableAdtSourceIdentity,
-) -> Option<String> {
-    read_adt_source_for_edit(
+) -> Result<Option<String>, AdtSourceActivationError> {
+    match read_adt_source_for_edit(
         sap,
         identity.object_type,
         &identity.name,
         AdtVersion::Active,
     )
     .await
-    .ok()
-    .map(|read| read.snapshot.source)
+    {
+        Ok(read) => Ok(Some(read.snapshot.source)),
+        // Only a 404 means there is no active version. Anything else recorded
+        // as absent would make an undo treat this as the first activation.
+        Err(error) if error.sap_error().is_some_and(SapClientError::is_not_found) => Ok(None),
+        Err(source) => Err(AdtSourceActivationError::BeforeImageUnreadable {
+            name: identity.name.clone(),
+            include: None,
+            source,
+        }),
+    }
 }
 
 /// Everything that must hold before the activation is posted.

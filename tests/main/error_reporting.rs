@@ -207,7 +207,7 @@ fn contract() -> Vec<Expectation> {
         Expectation {
             error: Box::new(AdtSourceActivationError::BeforeImageUnreadable {
                 name: "ZCL_SAMPLE".to_owned(),
-                include: ClassInclude::Implementations,
+                include: Some(ClassInclude::Implementations),
                 source: AdtSourceReadError::Sap {
                     object_type: "CLAS",
                     name: "ZCL_SAMPLE".to_owned(),

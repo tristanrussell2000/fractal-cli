@@ -542,3 +542,38 @@ async fn without_a_journal_neither_before_image_is_read() {
 
     server.verify().await;
 }
+
+#[tokio::test]
+async fn an_unreadable_active_document_stops_the_activation_before_it_is_sent() {
+    // Recorded as absent, a 500 would make an undo of this activation treat it
+    // as the data element's first.
+    let server = MockServer::start().await;
+    session().mount_csrf_session(&server).await;
+    mount_inactive_list(&server, true).await;
+    Mock::given(method("GET"))
+        .and(path(OBJECT_PATH))
+        .and(query_param("version", "active"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(ACTIVATION_PATH))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let journal = journal(&dir);
+
+    let error = activate_metadata_object(
+        &mut client(&server).await,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &request(),
+        Some(&journal),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), "edit_activation_before_image_unreadable");
+    server.verify().await;
+}

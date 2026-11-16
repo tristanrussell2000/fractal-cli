@@ -131,15 +131,23 @@ pub enum MetadataObjectActivationError {
     },
     #[error("SAP returned a document that could not be parsed: {0}")]
     ResponseInvalid(#[from] AdtResponseParseError),
+    /// The document could not be read for the journal, so nothing was
+    /// activated: without its before-image, an undo could not put it back.
+    #[error("could not record the active version of {name}: {source}")]
+    BeforeImageUnreadable {
+        name: String,
+        #[source]
+        source: SapClientError,
+    },
 }
 
 impl MetadataObjectActivationError {
     #[must_use]
     pub const fn sap_error(&self) -> Option<&SapClientError> {
         match self {
-            Self::ActivationRequest { source, .. } | Self::Verification { source, .. } => {
-                Some(source)
-            }
+            Self::ActivationRequest { source, .. }
+            | Self::Verification { source, .. }
+            | Self::BeforeImageUnreadable { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -159,6 +167,7 @@ impl ReportableError for MetadataObjectActivationError {
             Self::ActivationRefused { .. } => "edit_activate_refused",
             Self::Verification { .. } => "edit_activate_verification_failed",
             Self::ResponseInvalid(error) => error.code(),
+            Self::BeforeImageUnreadable { .. } => "edit_activation_before_image_unreadable",
         }
     }
 
@@ -202,6 +211,9 @@ impl ReportableError for MetadataObjectActivationError {
                     .to_owned()
             }
             Self::ResponseInvalid(error) => return error.hint(),
+            Self::BeforeImageUnreadable { .. } => {
+                "Nothing was activated. Retry; or pass --no-journal to activate without a record, which leaves this activation impossible to undo.".to_owned()
+            }
         })
     }
 
@@ -242,8 +254,8 @@ pub async fn activate_metadata_object(
     let entry = match journal {
         Some(journal) => {
             // Only read these when they will be recorded.
-            let active_before = read_active_document_if_any(sap, &identity).await;
-            let inactive_before = read_document(sap, &identity, "inactive").await;
+            let active_before = read_active_document_if_any(sap, &identity).await?;
+            let inactive_before = read_document(sap, &identity, "inactive").await?;
             Some(
                 journal
                     .begin_activation(
@@ -412,23 +424,37 @@ async fn prepare_activation(
 async fn read_active_document_if_any(
     sap: &SapClient,
     identity: &AdtObjectIdentity,
-) -> Option<String> {
-    let document = read_document(sap, identity, ACTIVE_VERSION).await?;
-    (document_version(&document).ok().flatten().as_deref() == Some(ACTIVE_VERSION))
-        .then_some(document)
+) -> Result<Option<String>, MetadataObjectActivationError> {
+    let Some(document) = read_document(sap, identity, ACTIVE_VERSION).await? else {
+        return Ok(None);
+    };
+    Ok(
+        (document_version(&document).ok().flatten().as_deref() == Some(ACTIVE_VERSION))
+            .then_some(document),
+    )
 }
 
-/// One version of the document, canonical, or `None` when there is none to
-/// read.
+/// One version of the document, canonical, or `None` when SAP says there is
+/// none (404).
+///
+/// Any other failure stops the activation: recorded as absent, it would make
+/// an undo treat this as the object's first activation.
 async fn read_document(
     sap: &SapClient,
     identity: &AdtObjectIdentity,
     version: &str,
-) -> Option<String> {
-    sap.get_text_with_query(&identity.object_uri, &[("version", version)])
+) -> Result<Option<String>, MetadataObjectActivationError> {
+    match sap
+        .get_text_with_query(&identity.object_uri, &[("version", version)])
         .await
-        .ok()
-        .map(|xml| strip_navigation_links(&xml))
+    {
+        Ok(xml) => Ok(Some(strip_navigation_links(&xml))),
+        Err(error) if error.is_not_found() => Ok(None),
+        Err(source) => Err(MetadataObjectActivationError::BeforeImageUnreadable {
+            name: identity.name.clone(),
+            source,
+        }),
+    }
 }
 
 /// Reads the **active** document, canonical.

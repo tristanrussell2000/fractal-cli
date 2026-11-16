@@ -304,3 +304,47 @@ async fn each_entry_is_written_with_its_group_and_resolved_by_its_own_outcome() 
         "{statuses:?}"
     );
 }
+
+#[tokio::test]
+async fn a_member_that_cannot_be_journaled_leaves_no_entry_pending() {
+    // The child's active version cannot be read for its before-image, so the
+    // group is refused before anything is activated. The parent's entry,
+    // already opened, must record that rather than stay pending.
+    let server = MockServer::start().await;
+    mount_common(&server, Vec::new()).await;
+    mount_active(&server, PARENT, PARENT_STAGED).await;
+    Mock::given(method("GET"))
+        .and(path(format!("{CHILD}/source/main")))
+        .and(query_param("version", "active"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/activation"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let journal = journal(&dir);
+
+    let error = activate_adt_sources_together(
+        &mut client(&server).await,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &request(),
+        Some(&journal),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), "edit_activation_before_image_unreadable");
+    let statuses: Vec<_> = journal
+        .entries()
+        .list()
+        .unwrap()
+        .iter()
+        .map(|entry| entry.status.as_str())
+        .collect();
+    assert_eq!(statuses, ["failed"]);
+    server.verify().await;
+}

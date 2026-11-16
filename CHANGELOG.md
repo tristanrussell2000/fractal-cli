@@ -28,6 +28,17 @@
 
 ### Fixed
 
+- **A failed read was taken to mean "there is nothing there"** in four places, each of which could
+  leave the journal or an undo wrong:
+  - the active version recorded before activating any source object other than a class;
+  - the same for a metadata object (data element, domain, service binding…);
+  - `undo`'s read of the current active version;
+  - `undo`'s read of the current pending version, which guards your staged work.
+
+  A 500 or a timeout was recorded as "never activated", so an undo would have treated that
+  activation as the object's first; or it hid pending work an undo would then write over. Now only
+  a 404 means absent. Anything else stops the activation (`edit_activation_before_image_unreadable`)
+  or the undo (`undo_current_state_unreadable`) before anything is written.
 - **Activation hints repeated SAP's messages**, such as "DDLS … was not activated" twice. Identical
   messages are now listed once.
 

@@ -213,6 +213,13 @@ pub enum UndoError {
         #[source]
         source: SapClientError,
     },
+    /// The same, for a source stream read through the edit path.
+    #[error("could not read the current state of {name}: {source}")]
+    CurrentSourceUnreadable {
+        name: String,
+        #[source]
+        source: Box<AdtSourceReadError>,
+    },
     #[error("SAP returned a document that could not be parsed: {0}")]
     ResponseInvalid(#[from] super::adt_response::AdtResponseParseError),
     #[error("could not write the previous version back: {0}")]
@@ -230,6 +237,7 @@ impl UndoError {
     pub const fn sap_error(&self) -> Option<&SapClientError> {
         match self {
             Self::CurrentStateUnreadable { source, .. } => Some(source),
+            Self::CurrentSourceUnreadable { source, .. } => source.sap_error(),
             _ => None,
         }
     }
@@ -249,7 +257,9 @@ impl ReportableError for UndoError {
             Self::Stale(_) => "undo_stale",
             Self::PendingWork { .. } => "undo_pending_work",
             Self::PendingWorkProbe { .. } => "undo_pending_work_probe_failed",
-            Self::CurrentStateUnreadable { .. } => "undo_current_state_unreadable",
+            Self::CurrentStateUnreadable { .. } | Self::CurrentSourceUnreadable { .. } => {
+                "undo_current_state_unreadable"
+            }
             Self::ResponseInvalid(error) => error.code(),
             Self::InactiveWrite(error) => error.code(),
             Self::MetadataWrite(error) => error.code(),
@@ -310,6 +320,10 @@ impl ReportableError for UndoError {
                     .to_owned()
             }
             Self::CurrentStateUnreadable { source, .. } => format!(
+                "Nothing was written. {}",
+                source.hint().unwrap_or_default()
+            ),
+            Self::CurrentSourceUnreadable { source, .. } => format!(
                 "Nothing was written. {}",
                 source.hint().unwrap_or_default()
             ),
@@ -643,16 +657,17 @@ async fn current_inactive_content(
     stream: Stream,
 ) -> Result<Option<String>, UndoError> {
     match identity.object_type {
-        AdtObjectFamily::Source(object_type) => Ok(read_stream(
-            sap,
-            object_type,
-            &identity.name,
-            stream,
-            AdtVersion::Inactive,
-        )
-        .await
-        .ok()
-        .map(|read| read.snapshot.source)),
+        AdtObjectFamily::Source(object_type) => source_if_any(
+            identity,
+            read_stream(
+                sap,
+                object_type,
+                &identity.name,
+                stream,
+                AdtVersion::Inactive,
+            )
+            .await,
+        ),
         AdtObjectFamily::Metadata(_) => {
             let document = sap
                 .get_text_with_query(&identity.object_uri, &[("version", "inactive")])
@@ -677,12 +692,10 @@ async fn current_active_content(
     stream: Stream,
 ) -> Result<Option<String>, UndoError> {
     match identity.object_type {
-        AdtObjectFamily::Source(object_type) => {
-            match read_stream(sap, object_type, &identity.name, stream, AdtVersion::Active).await {
-                Ok(read) => Ok(Some(read.snapshot.source)),
-                Err(_) => Ok(None),
-            }
-        }
+        AdtObjectFamily::Source(object_type) => source_if_any(
+            identity,
+            read_stream(sap, object_type, &identity.name, stream, AdtVersion::Active).await,
+        ),
         AdtObjectFamily::Metadata(_) => {
             let document = sap
                 .get_text_with_query(&identity.object_uri, &[("version", ACTIVE_VERSION)])
@@ -697,6 +710,25 @@ async fn current_active_content(
                     .then_some(document),
             )
         }
+    }
+}
+
+/// A stream's content, `None` only when SAP says it does not exist (404).
+///
+/// Any other failure is an error: "SAP would not answer" read as "there is
+/// nothing there" would let an undo overwrite pending work, or treat a stale
+/// object as fresh.
+fn source_if_any(
+    identity: &AdtObjectIdentity,
+    read: Result<AdtSourceReadResult, AdtSourceReadError>,
+) -> Result<Option<String>, UndoError> {
+    match read {
+        Ok(read) => Ok(Some(read.snapshot.source)),
+        Err(error) if error.sap_error().is_some_and(SapClientError::is_not_found) => Ok(None),
+        Err(source) => Err(UndoError::CurrentSourceUnreadable {
+            name: identity.name.clone(),
+            source: Box::new(source),
+        }),
     }
 }
 

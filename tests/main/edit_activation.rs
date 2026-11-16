@@ -756,6 +756,67 @@ async fn a_journalled_activation_records_the_previous_active_source() {
 }
 
 #[tokio::test]
+async fn an_unreadable_active_version_stops_the_activation_before_it_is_sent() {
+    // Recorded as "no active version", a 500 would make an undo of this
+    // activation treat it as the object's first. A program, because a class
+    // reads its includes on a path that already refused.
+    const PROGRAM: &str = "/sap/bc/adt/programs/programs/zsample";
+    let server = MockServer::start().await;
+    mount_csrf_session(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/activation/inactiveobjects"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(format!("<objects><object uri=\"{PROGRAM}\"/></objects>")),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{PROGRAM}/source/main")))
+        .and(query_param("version", "inactive"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("REPORT zsample.\n"))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/checkruns"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"<chkrun:checkMessageList xmlns:chkrun="http://www.sap.com/adt/checkrun"/>"#,
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{PROGRAM}/source/main")))
+        .and(query_param("version", "active"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/activation"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let journal = journal(&dir);
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let error = activate_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &AdtSourceActivationRequest {
+            object_type: EditableAdtObjectType::Program,
+            name: "zsample".to_owned(),
+            transport: None,
+        },
+        Some(&journal),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), "edit_activation_before_image_unreadable");
+}
+
+#[tokio::test]
 async fn a_refused_activation_is_recorded_as_failed_with_its_before_image() {
     let server = MockServer::start().await;
     // The inactive version survives the activation, which is how a refusal is

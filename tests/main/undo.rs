@@ -1214,3 +1214,33 @@ async fn pending_work_in_an_include_the_undo_does_not_touch_is_at_risk() {
     assert_eq!(error.code(), "undo_pending_work");
     server.verify().await;
 }
+
+#[tokio::test]
+async fn an_unreadable_active_version_is_an_error_not_an_absence() {
+    // A 500 is not "there is no active version": read as one, the object
+    // would look stale or, for a first activation, fresh.
+    let server = MockServer::start().await;
+    forbid_writes(&server).await;
+    Mock::given(method("GET"))
+        .and(path(CLASS_SOURCE_URI))
+        .and(query_param("version", "active"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    mount_no_pending_work(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let journal = journal(&dir);
+    let entry = recorded(
+        &journal,
+        class(),
+        Some(PREVIOUS_ACTIVE),
+        Some(PENDING),
+        ACTIVATED,
+    );
+
+    let error = plan(&server, &journal, entry, false).await.unwrap_err();
+
+    assert_eq!(error.code(), "undo_current_state_unreadable");
+    assert!(error.hint().unwrap().starts_with("Nothing was written."));
+    server.verify().await;
+}
