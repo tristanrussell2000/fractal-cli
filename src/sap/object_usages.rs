@@ -166,7 +166,15 @@ fn parse_usage_references(
                 name,
                 object_type,
                 package,
-                direct_result: node.attribute("isResult") == Some("true"),
+                // `isResult` marks a leaf hit, and is false on every CDS view
+                // that selects from the object and on a class whose method uses
+                // it. `usageInformation` ("gradeDirect,…") is on each real usage
+                // and on nothing that is only context, such as the package, and
+                // is what `numberOfResults` counts.
+                direct_result: node.attribute("isResult") == Some("true")
+                    || node
+                        .attribute("usageInformation")
+                        .is_some_and(|value| !value.trim().is_empty()),
             })
         })
         .collect())
@@ -195,6 +203,34 @@ mod tests {
         let refs =
             parse_usage_references(xml, "/sap/bc/adt/ddic/dataelements/zexample_element").unwrap();
         assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn a_usage_without_is_result_still_counts_when_sap_grades_it() {
+        // Shape of a live answer: CDS views selecting from a table, and a
+        // class method using it, all `isResult="false"`.
+        let xml = r#"<usageReferences:usageReferenceResult numberOfResults="2" xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences"><usageReferences:referencedObjects>
+            <usageReferences:referencedObject uri="/sap/bc/adt/ddic/ddl/sources/zsample_view" parentUri="/sap/bc/adt/packages/zsample" isResult="false" canHaveChildren="true" usageInformation="gradeDirect,includeProductive">
+                <usageReferences:adtObject adtcore:name="ZSAMPLE_VIEW" adtcore:type="DDLS/DF" xmlns:adtcore="http://www.sap.com/adt/core"/>
+            </usageReferences:referencedObject>
+            <usageReferences:referencedObject uri="/sap/bc/adt/oo/classes/zcl_sample" parentUri="/sap/bc/adt/packages/zsample" isResult="false" canHaveChildren="false">
+                <usageReferences:adtObject adtcore:name="ZCL_SAMPLE" adtcore:type="CLAS/OC" xmlns:adtcore="http://www.sap.com/adt/core"/>
+            </usageReferences:referencedObject>
+            <usageReferences:referencedObject uri="/sap/bc/adt/oo/classes/zcl_sample/source/main#type=CLAS%2FOM;name=RUN;start=1" parentUri="/sap/bc/adt/oo/classes/zcl_sample" isResult="false" canHaveChildren="true" usageInformation="gradeDirect,includeProductive">
+                <usageReferences:adtObject adtcore:name="RUN" adtcore:type="CLAS/OM" xmlns:adtcore="http://www.sap.com/adt/core"/>
+            </usageReferences:referencedObject>
+            <usageReferences:referencedObject uri="/sap/bc/adt/packages/zsample" isResult="false" canHaveChildren="true">
+                <usageReferences:adtObject adtcore:name="ZSAMPLE" adtcore:type="DEVC/K" xmlns:adtcore="http://www.sap.com/adt/core"/>
+            </usageReferences:referencedObject>
+        </usageReferences:referencedObjects></usageReferences:usageReferenceResult>"#;
+
+        let refs = parse_usage_references(xml, "/sap/bc/adt/ddic/tables/zsample_table").unwrap();
+        let direct: Vec<_> = refs
+            .iter()
+            .filter(|r| r.direct_result)
+            .map(|r| r.name.as_deref().unwrap_or_default())
+            .collect();
+        assert_eq!(direct, ["ZSAMPLE_VIEW", "RUN"]);
     }
 
     #[test]

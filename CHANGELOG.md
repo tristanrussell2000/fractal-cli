@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`delete` let through objects that CDS views or classes still used.** The where-used guard
+  counted only references SAP flags `isResult="true"`, and SAP leaves that flag false on a CDS
+  view selecting from the object and on a class whose method uses it. So deleting a table under
+  active views went ahead and broke them. Deleting one of two views that reference each other
+  failed with a bare `400 … could not be deleted`. The guard now also counts what SAP grades a
+  usage (`usageInformation`), and names each referencing object once, as the class rather than the
+  method. `object usages --direct-results` lists those usages too.
+- When `--force` overrides the guard and SAP still refuses, the hint now says SAP will not delete
+  an object that active objects use, and names them, instead of a generic message.
+
 ## 0.10.0
 
 ### Breaking

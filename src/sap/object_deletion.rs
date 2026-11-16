@@ -107,6 +107,9 @@ pub enum AdtObjectDeletionError {
     #[error("the ADT delete request failed: {source}")]
     DeleteRequest {
         identity: Box<AdtObjectIdentity>,
+        /// References `--force` overrode. SAP refuses some deletes for exactly
+        /// these, without saying so.
+        forced_past: Vec<String>,
         #[source]
         source: SapClientError,
     },
@@ -191,6 +194,10 @@ impl ReportableError for AdtObjectDeletionError {
             Self::BindingPublished { identity, .. } => format!(
                 "The binding was not deleted. Unpublish it first with `fractal binding unpublish --name {}`, then delete it.",
                 identity.name
+            ),
+            Self::DeleteRequest { forced_past, .. } if !forced_past.is_empty() => format!(
+                "The object was not deleted. SAP refuses to delete an object that active objects still use, which --force cannot override; here that is {}. Remove the reference from each and activate it, then delete.",
+                summarize(forced_past)
             ),
             Self::DeleteRequest { source, .. } => format!(
                 "The object was not deleted. {}",
@@ -411,6 +418,7 @@ pub async fn delete_validated_adt_object(
         } else {
             AdtObjectDeletionError::DeleteRequest {
                 identity: Box::new(identity),
+                forced_past: direct_usages.clone(),
                 source,
             }
         };
@@ -627,17 +635,43 @@ async fn direct_usages(
     let references = get_object_usages(sap, &identity.object_uri)
         .await
         .map_err(AdtObjectDeletionError::UsageCheck)?;
-    Ok(references
+    let mut usages: Vec<String> = Vec::new();
+    for reference in references
         .iter()
         .filter(|reference| reference.direct_result)
-        .map(describe_reference)
-        .collect())
+    {
+        let owner = describe_reference(reference, &references);
+        if !usages.contains(&owner) {
+            usages.push(owner);
+        }
+    }
+    Ok(usages)
 }
 
-fn describe_reference(reference: &UsageReference) -> String {
-    reference
+/// The object a usage belongs to, by name.
+///
+/// A hit inside source (`…/source/main#type=CLAS%2FOM;name=RUN`) is named by
+/// SAP after the method; what holds the deleted object is the class, which is
+/// the hit's parent.
+fn describe_reference(reference: &UsageReference, all: &[UsageReference]) -> String {
+    let owner = if reference.uri.contains('#') {
+        reference
+            .parent_uri
+            .as_deref()
+            .and_then(|parent| all.iter().find(|candidate| candidate.uri == parent))
+    } else {
+        None
+    };
+    owner
+        .unwrap_or(reference)
         .name
         .clone()
+        .or_else(|| {
+            reference
+                .parent_uri
+                .clone()
+                .filter(|_| reference.uri.contains('#'))
+        })
         .unwrap_or_else(|| reference.uri.clone())
 }
 
@@ -729,8 +763,55 @@ mod tests {
         };
 
         assert_eq!(
-            describe_reference(&unnamed),
+            describe_reference(&unnamed, std::slice::from_ref(&unnamed)),
             "/sap/bc/adt/oo/classes/zcl_caller#start=1"
         );
+    }
+
+    #[test]
+    fn a_forced_delete_sap_refuses_names_what_still_uses_it() {
+        let identity = AdtObjectIdentity {
+            object_type: AdtObjectFamily::Metadata(MetadataAdtObjectType::DataElement),
+            name: "ZSAMPLE_CHILD".to_owned(),
+            object_uri: "/sap/bc/adt/ddic/ddl/sources/zsample_child".to_owned(),
+            source_uri: None,
+        };
+        let refused = |forced_past: Vec<String>| AdtObjectDeletionError::DeleteRequest {
+            identity: Box::new(identity.clone()),
+            forced_past,
+            source: SapClientError::Http {
+                kind: crate::sap::client::SapHttpErrorKind::Other,
+                status: reqwest::StatusCode::BAD_REQUEST,
+                url: "https://sap.example/x".to_owned(),
+                message: "DDL source ZSAMPLE_CHILD could not be deleted".to_owned(),
+            },
+        };
+
+        let hint = refused(vec!["ZSAMPLE_PARENT".to_owned()]).hint().unwrap();
+        assert!(hint.contains("--force cannot override"), "{hint}");
+        assert!(hint.contains("ZSAMPLE_PARENT"), "{hint}");
+        assert!(!refused(Vec::new()).hint().unwrap().contains("--force"));
+    }
+
+    #[test]
+    fn a_hit_inside_a_method_is_named_after_its_class() {
+        let class = UsageReference {
+            uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
+            parent_uri: Some("/sap/bc/adt/packages/zsample".to_owned()),
+            name: Some("ZCL_SAMPLE".to_owned()),
+            object_type: None,
+            package: None,
+            direct_result: false,
+        };
+        let method = UsageReference {
+            uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main#type=CLAS%2FOM;name=RUN".to_owned(),
+            parent_uri: Some(class.uri.clone()),
+            name: Some("RUN".to_owned()),
+            object_type: None,
+            package: None,
+            direct_result: true,
+        };
+        let all = [class, method.clone()];
+        assert_eq!(describe_reference(&method, &all), "ZCL_SAMPLE");
     }
 }
