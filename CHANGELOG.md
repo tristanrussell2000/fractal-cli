@@ -2,7 +2,34 @@
 
 ## Unreleased
 
+### Added
+
+- **`fractal edit activate --object TYPE:NAME --object TYPE:NAME …`** activates several source
+  objects in one request. This is the only way to activate objects that need each other, such as a
+  new root view with a `composition` and its child view with an `association to parent`: neither
+  can be activated first. Each object is written type, colon, name (`--object
+  DDLS:ZRAP_R_TRAVEL`); `--type`/`--name` stays the single-object form.
+  - The group skips Fractal's own syntax pre-check, which cannot pass for such a pair. SAP still
+    checks every object as it activates.
+  - **SAP does not roll a group back.** With one object broken, it reports the activation
+    cancelled, yet still publishes the others' source, leaving them listed as inactive. So each
+    object is judged by its own state afterwards:
+    - `activated`;
+    - `published_still_listed`;
+    - `not_activated`, with SAP's message;
+    - `unverified`.
+
+    Anything short of all activated is the error `edit_activation_incomplete`, and running the
+    same command again after a fix finishes the group.
+  - An object with nothing staged is left out, and named under `nothing_to_activate`.
+  - Each object gets its own journal entry, so `undo` works per object. The entries share a
+    `group` id, which `journal list` shows.
+  - Source-based types only.
+
 ### Fixed
+
+- **Activation hints repeated SAP's messages**, such as "DDLS … was not activated" twice. Identical
+  messages are now listed once.
 
 - **`delete` let through objects that CDS views or classes still used.** The where-used guard
   counted only references SAP flags `isResult="true"`, and SAP leaves that flag false on a CDS

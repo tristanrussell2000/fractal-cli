@@ -635,6 +635,25 @@ pub enum EditCommand {
     /// Run SAP's syntax checker against a stored source version.
     Check(EditSourceCheckArgs),
     /// Activate and verify an object's stored inactive source.
+    ///
+    /// One object:
+    ///
+    ///   fractal edit activate --type DDLS --name ZRAP_R_TRAVEL
+    ///
+    /// Several objects in one request, with one --object per object, each
+    /// written TYPE:NAME (type, a colon, then the name; no spaces):
+    ///
+    ///   fractal edit activate --object DDLS:ZRAP_R_TRAVEL --object DDLS:ZRAP_R_BOOKING
+    ///
+    /// Use the group form for objects that need each other to activate, such
+    /// as a new root view with a composition and its child view with an
+    /// association to parent: neither can be activated first on its own. The
+    /// group skips Fractal's own syntax pre-check, which cannot pass for such a
+    /// pair; SAP still checks every object as it activates. SAP does not roll
+    /// a group back: if one object fails, others may still activate, so each
+    /// object's outcome is reported, and running the same command again after
+    /// a fix finishes the group. Covers source-based types only.
+    #[command(verbatim_doc_comment)]
     Activate(EditActivateArgs),
     /// Discard inactive changes while preserving the current active source.
     Discard(EditSourceDiscardArgs),
@@ -770,12 +789,21 @@ pub struct EditSourceCheckArgs {
 pub struct EditActivateArgs {
     /// Object type to activate: a source type (CLAS, INTF, PROG, DDLS, TABL,
     /// STRU, BDEF, SRVD, DDLX, DCLS) or a metadata type (DTEL, DOMA, TTYP,
-    /// MSAG, SRVB).
-    #[arg(long = "type")]
-    pub(crate) object_type: String,
-    /// ABAP repository object name.
-    #[arg(long)]
-    pub(crate) name: String,
+    /// MSAG, SRVB). Not with --object.
+    #[arg(
+        long = "type",
+        required_unless_present = "objects",
+        conflicts_with = "objects"
+    )]
+    pub(crate) object_type: Option<String>,
+    /// ABAP repository object name. Not with --object.
+    #[arg(long, required_unless_present = "objects", conflicts_with = "objects")]
+    pub(crate) name: Option<String>,
+    /// One object of a group to activate together, written TYPE:NAME, such as
+    /// DDLS:ZRAP_R_TRAVEL. Repeat it once per object. A namespaced name keeps
+    /// its slashes: DDLS:/ACME/R_TRAVEL. Source-based types only.
+    #[arg(long = "object", value_name = "TYPE:NAME")]
+    pub(crate) objects: Vec<String>,
     /// Parent CTS change request to attach before activation, for example AB1K900575.
     #[arg(long)]
     pub(crate) transport: Option<String>,

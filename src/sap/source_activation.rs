@@ -465,7 +465,7 @@ pub(super) async fn activate_validated_adt_source(
 /// worklist will publish: activation leaves other users' staged includes
 /// alone, so recording them would claim an undo can restore what it never
 /// touched.
-async fn activation_before(
+pub(super) async fn activation_before(
     sap: &SapClient,
     identity: &EditableAdtSourceIdentity,
     publishing: &[(ClassInclude, AdtSourceSnapshot)],
@@ -536,7 +536,7 @@ async fn activation_before(
 /// the pre-check already made. A worklist that names the class but none of its
 /// streams is taken to mean `main`, which is what activating it has always
 /// verified. Empty for anything but a class.
-async fn publishing_includes(
+pub(super) async fn publishing_includes(
     sap: &SapClient,
     identity: &EditableAdtSourceIdentity,
     worklist: &Worklist,
@@ -589,7 +589,7 @@ async fn staged_by_others(
 
 /// Proves the activation published what was pending: the one stream of most
 /// objects, or each include a class published.
-async fn verify_published(
+pub(super) async fn verify_published(
     sap: &SapClient,
     identity: &EditableAdtSourceIdentity,
     publishing: &[(ClassInclude, AdtSourceSnapshot)],
@@ -660,7 +660,7 @@ async fn verify_published_includes(
 ///
 /// A stream that cannot be read is left out, so its entry carries no
 /// after-image rather than a wrong one.
-async fn activation_after(
+pub(super) async fn activation_after(
     sap: &SapClient,
     identity: &EditableAdtSourceIdentity,
     main_active: &str,
@@ -801,7 +801,7 @@ async fn read_and_precheck_inactive_source(
 /// and the active body is irrelevant, so the race returns without waiting for
 /// it. If the active read finishes first, its result is held until the probe
 /// establishes whether activation occurred.
-async fn verify_activation_post_state(
+pub(super) async fn verify_activation_post_state(
     sap: &SapClient,
     identity: &EditableAdtSourceIdentity,
 ) -> Result<Option<Result<AdtSourceReadResult, AdtSourceReadError>>, AdtSourceActivationError> {

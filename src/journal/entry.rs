@@ -157,6 +157,10 @@ pub struct JournalEntry {
     pub system: EntrySystem,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transport: Option<String>,
+    /// Shared by the entries of one group activation: the objects SAP was
+    /// asked to activate together.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     pub record: EntryRecord,
 }
 
@@ -658,6 +662,7 @@ pub fn sample_activation(uri: &str, active_before: ContentRef) -> JournalEntry {
             user: "developer".to_owned(),
         },
         transport: None,
+        group: None,
         record: EntryRecord::Activate {
             object: RecordedObject::Source {
                 object_type: SingleSourceType(EditableAdtObjectType::Program),
@@ -706,6 +711,7 @@ mod tests {
             status: EntryStatus::Pending,
             system: system(),
             transport: None,
+            group: None,
             record,
         }
     }

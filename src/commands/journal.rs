@@ -56,6 +56,9 @@ struct JournalEntrySummary {
     name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     transport: Option<String>,
+    /// Shared by the entries of one group activation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group: Option<String>,
     /// Whether the content this entry holds is still on disk. An entry whose
     /// blobs were swept is a record of what happened, not something to restore.
     content_available: bool,
@@ -292,6 +295,7 @@ fn summarize(entry: &JournalEntry, blobs: &BlobStore) -> JournalEntrySummary {
         object_type: entry.record.object_type().to_owned(),
         name: entry.record.object_name().to_owned(),
         transport: entry.transport.clone(),
+        group: entry.group.clone(),
         content_available: entry
             .referenced_blobs()
             .into_iter()
@@ -632,6 +636,7 @@ mod tests {
                 user: "developer".to_owned(),
             },
             transport: None,
+            group: None,
             record,
         }
     }

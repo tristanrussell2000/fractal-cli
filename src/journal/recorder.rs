@@ -117,6 +117,21 @@ impl Journal {
         object: RecordedObject<ActivationBefore>,
         transport: Option<String>,
     ) -> Result<JournalEntry, JournalError> {
+        self.begin_activation_in_group(object, transport, None)
+    }
+
+    /// [`Self::begin_activation`] for one object of a group activation, tagged
+    /// with the id every entry of the group shares.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::begin_activation`].
+    pub fn begin_activation_in_group(
+        &self,
+        object: RecordedObject<ActivationBefore>,
+        transport: Option<String>,
+        group: Option<String>,
+    ) -> Result<JournalEntry, JournalError> {
         let contents = object
             .streams()
             .into_iter()
@@ -139,6 +154,7 @@ impl Journal {
         stored?;
         self.create(
             transport,
+            group,
             EntryRecord::Activate {
                 object,
                 undo_progress: None,
@@ -169,6 +185,7 @@ impl Journal {
         stored?;
         self.create(
             transport,
+            None,
             EntryRecord::Delete {
                 object,
                 package,
@@ -203,6 +220,7 @@ impl Journal {
         }
         self.create(
             transport,
+            None,
             EntryRecord::TableWrite {
                 table,
                 rows: recorded,
@@ -293,15 +311,18 @@ impl Journal {
     fn create(
         &self,
         transport: Option<String>,
+        group: Option<String>,
         record: EntryRecord,
         contents: &[String],
     ) -> Result<JournalEntry, JournalError> {
+        // Written once, complete: an entry is never on disk without its group.
         let entry = self.entries.create(JournalEntry {
             id: String::new(),
             recorded_at: String::new(),
             status: EntryStatus::Pending,
             system: self.system.clone(),
             transport,
+            group,
             record,
         })?;
         self.confirm(contents)?;

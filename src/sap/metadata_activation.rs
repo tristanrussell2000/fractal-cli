@@ -468,12 +468,14 @@ mod tests {
                     text: "Something cosmetic".to_owned(),
                     line: None,
                     object_description: None,
+                    href: None,
                 },
                 AdtActivationMessage {
                     severity: AdtMessageSeverity::Error,
                     text: "No active domain ZSAMPLE_DOM available".to_owned(),
                     line: None,
                     object_description: None,
+                    href: None,
                 },
             ],
         };

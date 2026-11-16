@@ -396,6 +396,7 @@ mod tests {
                 user: "developer".to_owned(),
             },
             transport: None,
+            group: None,
             record,
         }
     }

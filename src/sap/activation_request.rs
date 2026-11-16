@@ -23,6 +23,9 @@ pub struct AdtActivationMessage {
     pub text: String,
     pub line: Option<usize>,
     pub object_description: Option<String>,
+    /// The object the message is about, by URI. How a message in an
+    /// activation of several objects is told apart from the others.
+    pub href: Option<String>,
 }
 
 /// SAP's activation response, parsed.
@@ -51,7 +54,22 @@ pub(super) async fn post_activation(
     object_uri: &str,
     name: &str,
 ) -> Result<String, SapClientError> {
-    let body = build_activation_request(object_uri, name);
+    post_activation_of(sap, &[(object_uri, name)]).await
+}
+
+/// Posts one activation request for several objects, which SAP activates
+/// together. Objects that reference each other can only be activated this way.
+///
+/// # Errors
+///
+/// As [`post_activation`]. A successful response still proves nothing about
+/// any one object: SAP has activated some of a group while reporting the whole
+/// activation cancelled.
+pub(super) async fn post_activation_of(
+    sap: &mut SapClient,
+    objects: &[(&str, &str)],
+) -> Result<String, SapClientError> {
+    let body = build_activation_request_of(objects);
     let mut headers = HeaderMap::new();
     headers.insert("Content-Type", HeaderValue::from_static("application/xml"));
     headers.insert("Accept", HeaderValue::from_static("application/xml"));
@@ -64,9 +82,17 @@ pub(super) async fn post_activation(
     .await
 }
 
-pub(super) fn build_activation_request(object_uri: &str, name: &str) -> String {
+fn build_activation_request_of(objects: &[(&str, &str)]) -> String {
+    let references: String = objects
+        .iter()
+        .map(|(object_uri, name)| {
+            format!(
+                "<adtcore:objectReference adtcore:uri=\"{object_uri}\" adtcore:name=\"{name}\"/>"
+            )
+        })
+        .collect();
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><adtcore:objectReferences xmlns:adtcore=\"http://www.sap.com/adt/core\"><adtcore:objectReference adtcore:uri=\"{object_uri}\" adtcore:name=\"{name}\"/></adtcore:objectReferences>"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><adtcore:objectReferences xmlns:adtcore=\"http://www.sap.com/adt/core\">{references}</adtcore:objectReferences>"
     )
 }
 
@@ -117,6 +143,7 @@ fn parse_activation_message(node: roxmltree::Node<'_, '_>) -> Option<AdtActivati
         text: text.to_owned(),
         line: find_attribute_value(node, "line").and_then(|line| line.parse().ok()),
         object_description: find_non_empty_attribute(node, "objDescr"),
+        href: find_non_empty_attribute(node, "href"),
     })
 }
 
@@ -138,12 +165,18 @@ pub(super) fn first_message_hint<'a>(
     messages: impl Iterator<Item = &'a str>,
     fallback: &str,
 ) -> String {
-    let summary = messages
+    // SAP repeats itself: an object that did not activate is reported once per
+    // dependent step, word for word.
+    let mut distinct: Vec<&str> = Vec::new();
+    for message in messages
         .map(|message| message.trim().trim_end_matches('.'))
         .filter(|message| !message.is_empty())
-        .take(3)
-        .collect::<Vec<_>>()
-        .join(" | ");
+    {
+        if !distinct.contains(&message) {
+            distinct.push(message);
+        }
+    }
+    let summary = distinct.into_iter().take(3).collect::<Vec<_>>().join(" | ");
     if summary.is_empty() {
         fallback.to_owned()
     } else {
@@ -156,9 +189,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_hint_repeats_no_message() {
+        let hint = first_message_hint(
+            [
+                "DDLS ZSAMPLE_A is inconsistent in active version",
+                "DDLS ZSAMPLE_A is inconsistent in active version.",
+                "The data source does not exist",
+            ]
+            .into_iter(),
+            "Review.",
+        );
+        assert_eq!(
+            hint,
+            "DDLS ZSAMPLE_A is inconsistent in active version | The data source does not exist. Review."
+        );
+    }
+
+    #[test]
+    fn a_group_request_names_every_object() {
+        let body = build_activation_request_of(&[
+            (
+                "/sap/bc/adt/ddic/ddl/sources/zsample_parent",
+                "ZSAMPLE_PARENT",
+            ),
+            (
+                "/sap/bc/adt/ddic/ddl/sources/zsample_child",
+                "ZSAMPLE_CHILD",
+            ),
+        ]);
+        assert_eq!(body.matches("<adtcore:objectReference ").count(), 2);
+        assert!(body.contains(r#"adtcore:name="ZSAMPLE_CHILD""#));
+    }
+
+    #[test]
     fn builds_the_object_reference_body() {
-        let body =
-            build_activation_request("/sap/bc/adt/ddic/dataelements/zsample_de", "ZSAMPLE_DE");
+        let body = build_activation_request_of(&[(
+            "/sap/bc/adt/ddic/dataelements/zsample_de",
+            "ZSAMPLE_DE",
+        )]);
         assert!(body.contains("adtcore:uri=\"/sap/bc/adt/ddic/dataelements/zsample_de\""));
         assert!(body.contains("adtcore:name=\"ZSAMPLE_DE\""));
     }

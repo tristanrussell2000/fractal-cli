@@ -22,6 +22,7 @@ use fractal::{
             AdtEditTargetValidationError, AdtSourceReadError, EditableAdtObjectType,
             EditableAdtSourceIdentity, EditableAdtSourceTargetError,
         },
+        group_activation::{GroupActivationError, GroupOutcome, MemberSummary},
         object_info::ObjectInfoError,
         object_source::ObjectSourceError,
         package::PackageError,
@@ -536,6 +537,23 @@ fn contract() -> Vec<Expectation> {
             message_contains: "TK127",
             has_hint: true,
             suggested_command: Some("fractal transport list"),
+        },
+        Expectation {
+            error: Box::new(GroupActivationError::Incomplete {
+                members: vec![MemberSummary {
+                    object_type: EditableAdtObjectType::DdlSource,
+                    name: "ZSAMPLE_CHILD".to_owned(),
+                    outcome: GroupOutcome::NotActivated,
+                    first_error: Some("The column sptxtx is unknown".to_owned()),
+                }],
+            }),
+            code: "edit_activation_incomplete",
+            status: None,
+            message_contains: "ZSAMPLE_CHILD not_activated",
+            has_hint: true,
+            suggested_command: Some(
+                "fractal edit check --type DDLS --name ZSAMPLE_CHILD --version inactive",
+            ),
         },
     ]
 }

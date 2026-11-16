@@ -13,6 +13,7 @@ pub mod ddic_type;
 pub mod edit_session;
 pub mod editable_source;
 pub mod exec_class;
+pub mod group_activation;
 mod inactive_source_save;
 pub mod metadata_activation;
 pub mod metadata_document;

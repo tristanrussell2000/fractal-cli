@@ -189,6 +189,13 @@ service URL and entity sets. SAP refuses to delete a published binding, so unpub
 the part of the URL after the service root, as in `/IWFND/GW_CLIENT`, and Fractal supplies the
 root. It is GET-only and works on any binding, not just your namespaces.
 
+Objects that need each other to activate, such as a new root view and its child, are activated
+together with one `--object TYPE:NAME` per object:
+
+```bash
+fractal edit activate --object DDLS:ZRAP_R_TRAVEL --object DDLS:ZRAP_R_BOOKING
+```
+
 `edit set-xml` replaces a whole DDIC document, and SAP keeps no retrievable version history for
 those objects, so pass `--expected-sha256` (from `fractal object xml`) to refuse the write if the
 document changed since you read it.

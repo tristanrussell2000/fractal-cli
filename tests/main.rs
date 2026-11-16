@@ -41,6 +41,8 @@ mod edit_replace;
 mod edit_source;
 #[path = "main/error_reporting.rs"]
 mod error_reporting;
+#[path = "main/group_activation.rs"]
+mod group_activation;
 #[path = "main/metadata_activation.rs"]
 mod metadata_activation;
 #[path = "main/metadata_create.rs"]

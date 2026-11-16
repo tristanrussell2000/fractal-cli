@@ -9,6 +9,9 @@ use crate::{
     reported::Reported,
 };
 use fractal::journal::recorder::Journal;
+use fractal::sap::group_activation::{
+    GroupActivationRequest, GroupActivationResult, activate_adt_sources_together,
+};
 use fractal::sap::{
     activation_request::AdtActivationMessage,
     metadata_activation::{
@@ -112,7 +115,8 @@ pub async fn edit_object_activate(
     explicit_profile: Option<&str>,
     args: &EditActivateArgs,
 ) -> Result<EditActivationOutput, Reported> {
-    let object_type = AdtObjectFamily::parse(&args.object_type)?;
+    let (object_type, name) = single_object(args)?;
+    let object_type = AdtObjectFamily::parse(&object_type)?;
     let (profile_name, profile, mut client) = connect(explicit_profile).await?;
     let policy = profile.edit_policy();
 
@@ -126,7 +130,7 @@ pub async fn edit_object_activate(
         AdtObjectFamily::Source(object_type) => {
             let request = AdtSourceActivationRequest {
                 object_type,
-                name: args.name.clone(),
+                name: name.clone(),
                 transport: args.transport.clone(),
             };
             let result =
@@ -136,7 +140,7 @@ pub async fn edit_object_activate(
         AdtObjectFamily::Metadata(object_type) => {
             let request = MetadataObjectActivationRequest {
                 object_type,
-                name: args.name.clone(),
+                name,
                 transport: args.transport.clone(),
             };
             let result =
@@ -144,6 +148,217 @@ pub async fn edit_object_activate(
             Ok(map_metadata_activation_result(profile_name, result))
         }
     }
+}
+
+/// The one object of a single activation: `--type` and `--name`, or a lone
+/// `--object`.
+fn single_object(args: &EditActivateArgs) -> Result<(String, String), ObjectSpecError> {
+    if let [spec] = args.objects.as_slice() {
+        return parse_object_spec(spec);
+    }
+    match (&args.object_type, &args.name) {
+        (Some(object_type), Some(name)) => Ok((object_type.clone(), name.clone())),
+        // clap requires both unless --object is given.
+        _ => Err(ObjectSpecError(String::new())),
+    }
+}
+
+/// Splits `TYPE:NAME` at the first colon. A namespaced name keeps its slashes.
+fn parse_object_spec(spec: &str) -> Result<(String, String), ObjectSpecError> {
+    match spec.split_once(':') {
+        Some((object_type, name)) if !object_type.trim().is_empty() && !name.trim().is_empty() => {
+            Ok((object_type.trim().to_owned(), name.trim().to_owned()))
+        }
+        _ => Err(ObjectSpecError(spec.to_owned())),
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("'{0}' is not TYPE:NAME")]
+pub struct ObjectSpecError(String);
+
+impl fractal::reportable_error::ReportableError for ObjectSpecError {
+    fn code(&self) -> &'static str {
+        "invalid_object_spec"
+    }
+
+    fn hint(&self) -> Option<String> {
+        Some(
+            "Write each --object as the type, a colon, and the name, with no spaces: --object DDLS:ZRAP_R_TRAVEL --object DDLS:ZRAP_R_BOOKING."
+                .to_owned(),
+        )
+    }
+}
+
+/// A group of two or more names a type outside the source family.
+#[derive(Debug, thiserror::Error)]
+#[error("{0} cannot be activated in a group; group activation covers source-based types only")]
+pub struct GroupTypeError(String);
+
+impl fractal::reportable_error::ReportableError for GroupTypeError {
+    fn code(&self) -> &'static str {
+        "edit_activation_group_type_unsupported"
+    }
+
+    fn hint(&self) -> Option<String> {
+        Some(format!(
+            "Activate it on its own with `--type` and `--name`; the group can take CLAS, INTF, PROG, DDLS, TABL, STRU, BDEF, SRVD, DDLX and DCLS. ({})",
+            self.0
+        ))
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct GroupMemberOutput {
+    object_type: &'static str,
+    name: String,
+    object_uri: String,
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_sha256_after: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    published: Vec<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    journal_entry_incomplete: Option<String>,
+    activation_messages: Vec<EditActivationDiagnosticOutput>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GroupActivationOutput {
+    ok: bool,
+    profile: String,
+    status: &'static str,
+    transport: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    journal_group: Option<String>,
+    objects: Vec<GroupMemberOutput>,
+    /// Named, but with nothing staged, so left out of the request.
+    nothing_to_activate: Vec<String>,
+    sap_reported_activation_executed: Option<bool>,
+    activation_messages: Vec<EditActivationDiagnosticOutput>,
+}
+
+/// `edit activate` with two or more `--object`s.
+pub async fn edit_group_activate(
+    explicit_profile: Option<&str>,
+    args: &EditActivateArgs,
+) -> Result<GroupActivationOutput, Reported> {
+    let mut objects = Vec::with_capacity(args.objects.len());
+    for spec in &args.objects {
+        let (object_type, name) = parse_object_spec(spec)?;
+        match AdtObjectFamily::parse(&object_type)? {
+            AdtObjectFamily::Source(object_type) => objects.push((object_type, name)),
+            AdtObjectFamily::Metadata(_) => return Err(GroupTypeError(spec.clone()).into()),
+        }
+    }
+    let (profile_name, profile, mut client) = connect(explicit_profile).await?;
+    let journal = if args.no_journal {
+        None
+    } else {
+        Some(Journal::open(&profile_name, &profile)?)
+    };
+    let request = GroupActivationRequest {
+        objects,
+        transport: args.transport.clone(),
+    };
+    let result = activate_adt_sources_together(
+        &mut client,
+        &profile.edit_policy(),
+        &request,
+        journal.as_ref(),
+    )
+    .await?;
+    Ok(map_group_activation_result(profile_name, result))
+}
+
+fn map_group_activation_result(
+    profile: String,
+    result: GroupActivationResult,
+) -> GroupActivationOutput {
+    GroupActivationOutput {
+        ok: true,
+        profile,
+        status: "activated_verified",
+        transport: result.transport,
+        journal_group: result.group,
+        objects: result
+            .members
+            .into_iter()
+            .map(|member| GroupMemberOutput {
+                object_type: member.identity.object_type.as_str(),
+                name: member.identity.name,
+                object_uri: member.identity.object_uri,
+                status: member.outcome.as_str(),
+                active_sha256_after: member.active_after.map(|active| active.sha256),
+                published: member
+                    .published
+                    .iter()
+                    .map(|include| include.include.as_str())
+                    .collect(),
+                journal_entry_incomplete: member.journal_entry_incomplete,
+                activation_messages: member.messages.into_iter().map(diagnostic).collect(),
+            })
+            .collect(),
+        nothing_to_activate: result
+            .nothing_to_activate
+            .into_iter()
+            .map(|identity| identity.name)
+            .collect(),
+        sap_reported_activation_executed: result.sap_reported_activation_executed,
+        activation_messages: result
+            .general_messages
+            .into_iter()
+            .map(diagnostic)
+            .collect(),
+    }
+}
+
+fn diagnostic(message: AdtActivationMessage) -> EditActivationDiagnosticOutput {
+    EditActivationDiagnosticOutput {
+        severity: message.severity.as_str().to_owned(),
+        text: message.text,
+        uri: message.href,
+        include: None,
+        line: message.line,
+        column: None,
+        object_description: message.object_description,
+    }
+}
+
+pub fn print_group_activate(result: &GroupActivationOutput, output: OutputFormat) {
+    if matches!(output, OutputFormat::Json) {
+        print_json(result);
+        return;
+    }
+    let mut text = String::new();
+    let _ = writeln!(
+        text,
+        "Activated {} object(s) together:",
+        result.objects.len()
+    );
+    for object in &result.objects {
+        let _ = writeln!(
+            text,
+            "  {} {}: {}",
+            object.object_type, object.name, object.status
+        );
+    }
+    if !result.nothing_to_activate.is_empty() {
+        let _ = writeln!(
+            text,
+            "Nothing staged, left out: {}",
+            result.nothing_to_activate.join(", ")
+        );
+    }
+    for message in result
+        .objects
+        .iter()
+        .flat_map(|object| &object.activation_messages)
+        .chain(&result.activation_messages)
+    {
+        let _ = writeln!(text, "{}: {}", message.severity, message.text);
+    }
+    print!("{text}");
 }
 
 pub fn print_edit_object_activate(result: &EditActivationOutput, output: OutputFormat) {
@@ -409,9 +624,62 @@ mod tests {
             panic!("expected edit activate command");
         };
 
-        assert_eq!(args.object_type, "CLAS");
-        assert_eq!(args.name, "ZCL_SAMPLE");
+        assert_eq!(args.object_type.as_deref(), Some("CLAS"));
+        assert_eq!(args.name.as_deref(), Some("ZCL_SAMPLE"));
         assert_eq!(args.transport.as_deref(), Some("AB1K900575"));
+    }
+
+    fn activate_args(argv: &[&str]) -> Result<EditActivateArgs, clap::Error> {
+        let mut full = vec!["fractal", "edit", "activate"];
+        full.extend_from_slice(argv);
+        let Command::Edit {
+            command: EditCommand::Activate(args),
+        } = Cli::try_parse_from(full)?.command
+        else {
+            panic!("expected edit activate command");
+        };
+        Ok(args)
+    }
+
+    #[test]
+    fn several_objects_are_named_one_flag_each() {
+        let args = activate_args(&[
+            "--object",
+            "DDLS:ZSAMPLE_PARENT",
+            "--object",
+            "DDLS:/ACME/CHILD",
+        ])
+        .unwrap();
+        assert_eq!(args.objects, ["DDLS:ZSAMPLE_PARENT", "DDLS:/ACME/CHILD"]);
+        // A namespaced name keeps its slashes; only the first colon splits.
+        assert_eq!(
+            parse_object_spec("DDLS:/ACME/CHILD").unwrap(),
+            ("DDLS".to_owned(), "/ACME/CHILD".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_two_ways_of_naming_objects_do_not_mix() {
+        assert!(activate_args(&["--type", "DDLS", "--name", "ZA", "--object", "DDLS:ZB"]).is_err());
+        assert!(activate_args(&[]).is_err(), "something must be named");
+        assert!(
+            activate_args(&["--type", "DDLS"]).is_err(),
+            "a type needs a name"
+        );
+    }
+
+    #[test]
+    fn a_malformed_object_says_how_to_write_it() {
+        for bad in ["ZSAMPLE_PARENT", "DDLS:", ":ZSAMPLE", "DDLS ZSAMPLE"] {
+            let error = parse_object_spec(bad).unwrap_err();
+            assert_eq!(
+                fractal::reportable_error::ReportableError::code(&error),
+                "invalid_object_spec",
+                "{bad}"
+            );
+            let hint = fractal::reportable_error::ReportableError::hint(&error).unwrap();
+            assert!(hint.contains("--object DDLS:ZRAP_R_TRAVEL"), "{hint}");
+        }
     }
 
     #[test]
@@ -469,6 +737,7 @@ mod tests {
                     text: "Activation completed".to_owned(),
                     line: None,
                     object_description: Some("Class ZCL_SAMPLE".to_owned()),
+                    href: None,
                 }],
                 published: vec![fractal::sap::source_activation::PublishedInclude {
                     include: fractal::sap::class_include::ClassInclude::Implementations,

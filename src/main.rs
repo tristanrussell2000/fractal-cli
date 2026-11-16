@@ -448,6 +448,16 @@ async fn main() {
         }
         Command::Edit {
             command: EditCommand::Activate(args),
+        } if args.objects.len() > 1 => {
+            run_and_print_with_async(
+                || commands::edit_activate::edit_group_activate(cli.profile.as_deref(), args),
+                commands::edit_activate::print_group_activate,
+                output,
+            )
+            .await
+        }
+        Command::Edit {
+            command: EditCommand::Activate(args),
         } => {
             run_and_print_with_async(
                 || edit_object_activate(cli.profile.as_deref(), args),
