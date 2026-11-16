@@ -76,6 +76,9 @@ pub struct PackageCreationResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageDeletionResult {
+    /// The package is gone but its lock could not be released, so the name
+    /// stays blocked until SAP's session times out.
+    pub name_still_locked: bool,
     pub name: String,
     pub uri: String,
     pub transport: Option<String>,
@@ -432,6 +435,7 @@ pub async fn delete_package(
     }
     if dry_run {
         return Ok(PackageDeletionResult {
+            name_still_locked: false,
             name,
             uri,
             transport,
@@ -459,10 +463,13 @@ pub async fn delete_package(
         });
     }
 
+    // The lock outlives the package it was taken on, and holds the name.
+    let name_still_locked = release_adt_object_lock(sap, &uri, &lock).await.is_err();
     if read_package(sap, &name).await?.is_some() {
         return Err(PackageLifecycleError::NotDeleted { name });
     }
     Ok(PackageDeletionResult {
+        name_still_locked,
         name,
         uri,
         transport,

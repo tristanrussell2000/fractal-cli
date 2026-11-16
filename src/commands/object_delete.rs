@@ -42,6 +42,17 @@ pub struct EditObjectDeleteOutput {
     /// restore needs.
     #[serde(skip_serializing_if = "Option::is_none")]
     journal_entry_incomplete: Option<String>,
+    /// Present when the object is gone but its lock could not be released.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
+}
+
+/// The delete landed but SAP still holds the name.
+pub fn name_still_locked_warning(still_locked: bool) -> Option<String> {
+    still_locked.then(|| {
+        "The object is deleted, but releasing its lock failed, so SAP still holds the name: recreating it is refused as \"currently editing\" until the session times out. Clear the lock in SM12 to reuse the name sooner; do not repeat the delete."
+            .to_owned()
+    })
 }
 
 /// # Errors
@@ -133,6 +144,7 @@ fn map_deletion_preview(
         direct_usages: preview.direct_usages,
         // A dry run records nothing, so it has nothing left incomplete.
         journal_entry_incomplete: None,
+        warning: None,
     }
 }
 
@@ -148,11 +160,15 @@ fn map_deletion_result(profile: String, result: AdtObjectDeletionResult) -> Edit
         transport: result.transport,
         direct_usages: result.direct_usages,
         journal_entry_incomplete: result.journal_entry_incomplete,
+        warning: name_still_locked_warning(result.name_still_locked),
     }
 }
 
 fn render_object_delete_readable(result: &EditObjectDeleteOutput) -> String {
     let mut output = String::new();
+    if let Some(warning) = &result.warning {
+        let _ = writeln!(output, "warning: {warning}");
+    }
     if let Some(entry) = &result.journal_entry_incomplete {
         let _ = writeln!(
             output,
@@ -292,6 +308,7 @@ mod tests {
                 transport: Some("AB1K900575".to_owned()),
                 direct_usages: vec!["ZCL_CALLER".to_owned()],
                 forced: true,
+                name_still_locked: false,
             },
         );
 

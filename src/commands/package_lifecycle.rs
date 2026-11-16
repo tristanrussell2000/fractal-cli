@@ -87,6 +87,8 @@ pub struct PackageDeleteOutput {
     name: String,
     object_uri: String,
     transport: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
 }
 
 /// `fractal delete --type DEVC`: kept on the one destructive verb, so the
@@ -118,6 +120,7 @@ pub async fn package_delete(
         name: result.name,
         object_uri: result.uri,
         transport: result.transport,
+        warning: super::object_delete::name_still_locked_warning(result.name_still_locked),
     })
 }
 
@@ -125,6 +128,9 @@ pub fn print_package_delete(result: &PackageDeleteOutput, output: OutputFormat) 
     if matches!(output, OutputFormat::Json) {
         print_json(result);
         return;
+    }
+    if let Some(warning) = &result.warning {
+        println!("warning: {warning}");
     }
     if result.deleted {
         println!("Deleted package {}, confirmed gone.", result.name);

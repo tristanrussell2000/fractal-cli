@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A deleted object's name could not be reused for half an hour or more.** SAP's editing lock
+  outlives the object it was taken on, and Fractal released it only when a delete failed, so
+  recreating the same name was refused as "User … is currently editing" until the session timed
+  out. The lock is now released after a successful delete too, for every object type and for
+  packages. If that release fails, the delete is still reported done, with a `warning` that the
+  name is held.
+
 ## 0.10.0
 
 ### Added

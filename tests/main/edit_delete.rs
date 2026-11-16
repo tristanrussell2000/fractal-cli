@@ -798,3 +798,98 @@ async fn a_journalled_class_delete_keeps_every_include() {
     assert_eq!(kept(ClassInclude::Testclasses), None);
     server.verify().await;
 }
+
+/// The delete itself, answered as a success, plus the proof it is gone.
+async fn mount_successful_delete(server: &MockServer) {
+    Mock::given(method("DELETE"))
+        .and(path(OBJECT_PATH))
+        .and(query_param("lockHandle", LOCK_HANDLE))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(OBJECT_PATH))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn a_successful_delete_releases_the_lock_so_the_name_can_be_reused() {
+    // SAP's lock outlives the object: without the release, recreating the
+    // name is refused as "currently editing" until the session times out.
+    let server = MockServer::start().await;
+    mount_csrf_session(&server).await;
+    mount_usages(&server, no_usages()).await;
+    mount_lock(&server).await;
+    mount_successful_delete(&server).await;
+    Mock::given(method("POST"))
+        .and(path(OBJECT_PATH))
+        .and(query_param("_action", "UNLOCK"))
+        .and(query_param("lockHandle", LOCK_HANDLE))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let result = delete_adt_object(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &deletion_request(false, None),
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert!(!result.name_still_locked);
+    let requests = server.received_requests().await.unwrap();
+    let delete = requests
+        .iter()
+        .position(|request| request.method.as_str() == "DELETE")
+        .unwrap();
+    let unlock = requests
+        .iter()
+        .position(|request| {
+            request
+                .url
+                .query()
+                .unwrap_or_default()
+                .contains("_action=UNLOCK")
+        })
+        .unwrap();
+    assert!(delete < unlock, "the lock is released after the delete");
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn a_lock_that_will_not_release_after_a_delete_is_reported_not_failed() {
+    // The object is gone; saying the delete failed would invite a retry that
+    // can only fail. The stuck name is reported instead.
+    let server = MockServer::start().await;
+    mount_csrf_session(&server).await;
+    mount_usages(&server, no_usages()).await;
+    mount_lock(&server).await;
+    mount_successful_delete(&server).await;
+    Mock::given(method("POST"))
+        .and(path(OBJECT_PATH))
+        .and(query_param("_action", "UNLOCK"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let result = delete_adt_object(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &deletion_request(false, None),
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert!(result.name_still_locked);
+    server.verify().await;
+}

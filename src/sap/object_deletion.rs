@@ -75,6 +75,9 @@ pub struct AdtObjectDeletionResult {
     pub transport: Option<String>,
     pub direct_usages: Vec<String>,
     pub forced: bool,
+    /// The object is gone but its lock could not be released, so the name
+    /// stays blocked for anyone recreating it until SAP's session times out.
+    pub name_still_locked: bool,
 }
 
 /// A failure while deleting an editable ADT object.
@@ -297,8 +300,9 @@ pub async fn preview_validated_deletion(
 /// Deletes one object and proves it is gone.
 ///
 /// Refuses when other objects still reference this one unless `force` is set.
-/// The lock is released only when the delete fails: a successful delete removes
-/// the object the lock was taken on, so there is nothing left to unlock.
+/// The lock is released whether or not the delete succeeds. SAP's lock outlives
+/// the object it was taken on: without the release, recreating the name is
+/// refused with "User … is currently editing" until the session times out.
 ///
 /// # Errors
 ///
@@ -417,6 +421,10 @@ pub async fn delete_validated_adt_object(
         });
     }
 
+    // The lock outlives the object it was taken on, and holds the name.
+    let name_still_locked = release_adt_object_lock(sap, &identity.object_uri, &lock)
+        .await
+        .is_err();
     let gone = verify_object_is_gone(sap, &identity).await;
     // The object is gone either way the read-back landed, so the entry is
     // resolved before the result is reported.
@@ -438,6 +446,7 @@ pub async fn delete_validated_adt_object(
         transport,
         direct_usages,
         forced: force,
+        name_still_locked,
     })
 }
 

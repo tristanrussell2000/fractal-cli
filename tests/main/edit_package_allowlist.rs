@@ -308,9 +308,18 @@ async fn an_unrestricted_profile_never_looks_a_package_up() {
         .await;
     Mock::given(method("POST"))
         .and(path(OBJECT_PATH))
+        .and(query_param("_action", "LOCK"))
         .respond_with(ResponseTemplate::new(200).set_body_string(
             "<lockResult><LOCK_HANDLE>2026090312000000</LOCK_HANDLE></lockResult>",
         ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // Released after the delete too: the lock outlives the object.
+    Mock::given(method("POST"))
+        .and(path(OBJECT_PATH))
+        .and(query_param("_action", "UNLOCK"))
+        .respond_with(ResponseTemplate::new(200))
         .expect(1)
         .mount(&server)
         .await;
