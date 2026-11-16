@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.10.0
 
 ### Breaking
 
@@ -14,20 +14,6 @@
   refused. `status` on a success is now `applied`, `applied_with_transport_entry`,
   `applied_without_transport_entry` (with a `warning`: the row changed but the transport entry
   was refused) or `would_apply`.
-
-### Fixed
-
-- **`undo` of a table write reported any refusal as "the row has moved".** A lock held by another
-  session, or a refused transport entry, now surfaces as itself. Only a row that changed since the
-  write is reported as a divergence.
-- **A deleted object's name could not be reused for half an hour or more.** SAP's editing lock
-  outlives the object it was taken on, and Fractal released it only when a delete failed, so
-  recreating the same name was refused as "User … is currently editing" until the session timed
-  out. The lock is now released after a successful delete too, for every object type and for
-  packages. If that release fails, the delete is still reported done, with a `warning` that the
-  name is held.
-
-## 0.10.0
 
 ### Added
 
@@ -46,6 +32,15 @@
 
 ### Fixed
 
+- **`undo` of a table write reported any refusal as "the row has moved".** A lock held by another
+  session, or a refused transport entry, now surfaces as itself. Only a row that changed since the
+  write is reported as a divergence.
+- **A deleted object's name could not be reused for half an hour or more.** SAP's editing lock
+  outlives the object it was taken on, and Fractal released it only when a delete failed, so
+  recreating the same name was refused as "User … is currently editing" until the session timed
+  out. The lock is now released after a successful delete too, for every object type and for
+  packages. If that release fails, the delete is still reported done, with a `warning` that the
+  name is held.
 - **`package items` and `package tree` failed on an empty package** with
   `package_response_parse_error`. SAP answers an empty package and a missing one with the same
   empty body. An empty package now lists as empty, and a missing one is reported as
