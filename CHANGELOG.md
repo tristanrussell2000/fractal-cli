@@ -20,6 +20,10 @@
   - Harmless and dangerous tests, short and medium, run by default; `--risk` and `--duration` add
     critical and long. The run waits up to `--timeout` seconds (default 300).
   - `guard install` asks before it.
+- **`fractal edit inactive`** lists what you have staged and not activated, grouped by transport
+  request, with objects on no transport last. Each object is also given as `TYPE:NAME`, ready for
+  `edit activate --object`; a class shows which of its includes and sections are staged. SAP keeps
+  this list per user, so it is yours only.
 - **`fractal auth password [profile]`** changes a profile's stored password and nothing else,
   where `auth login` would ask for every value again. The password stays where it was kept;
   `--store-plaintext` and `--password-stdin` work as they do for `auth login`.

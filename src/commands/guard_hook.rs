@@ -258,6 +258,7 @@ mod tests {
     fn read_only_commands_get_no_opinion() {
         for command in [
             "fractal edit read --type PROG --name ZSAMPLE",
+            "fractal edit inactive",
             "fractal object search 'Z*'",
             "fractal object show ZSAMPLE_STATUS",
             "fractal table data ZSAMPLE",

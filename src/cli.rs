@@ -718,6 +718,11 @@ pub enum EditCommand {
     SetXml(EditXmlSetArgs),
     /// Run SAP's syntax checker against a stored source version.
     Check(EditSourceCheckArgs),
+    /// List what you have staged and not activated, grouped by transport.
+    ///
+    /// SAP keeps this list per user, so it shows your inactive objects only.
+    /// Each is also written TYPE:NAME, the form `edit activate --object` takes.
+    Inactive,
     /// Activate and verify an object's stored inactive source.
     ///
     /// One object:

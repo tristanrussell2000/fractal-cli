@@ -16,6 +16,7 @@ use commands::edit_activate::{edit_object_activate, print_edit_object_activate};
 use commands::edit_check::{edit_source_check, print_edit_source_check};
 use commands::edit_create::{edit_object_create, print_edit_object_create};
 use commands::edit_discard::{edit_source_discard, print_edit_source_discard};
+use commands::edit_inactive::{edit_inactive, print_edit_inactive};
 use commands::edit_patch::{edit_source_patch, print_edit_source_patch};
 use commands::edit_read::{edit_source_read, print_edit_source_read};
 use commands::edit_set::{edit_source_set, print_edit_source_set};
@@ -448,6 +449,16 @@ async fn main() {
             run_and_print_with_async(
                 || edit_xml_set(cli.profile.as_deref(), args),
                 print_edit_xml_set,
+                output,
+            )
+            .await
+        }
+        Command::Edit {
+            command: EditCommand::Inactive,
+        } => {
+            run_and_print_with_async(
+                || edit_inactive(cli.profile.as_deref()),
+                print_edit_inactive,
                 output,
             )
             .await

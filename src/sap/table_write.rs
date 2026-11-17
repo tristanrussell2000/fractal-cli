@@ -2051,7 +2051,7 @@ mod tests {
         std::fs::write(
             std::env::var("FRACTAL_DUMP_ABAP").unwrap(),
             generate_abap(
-                "ZCL_FRACTAL_EXEC_TRUSSELL",
+                "ZCL_FRACTAL_EXEC_DEVELOPER",
                 &write,
                 WriteMode::Execute,
                 None,

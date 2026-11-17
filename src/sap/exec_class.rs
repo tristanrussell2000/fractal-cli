@@ -240,7 +240,10 @@ mod tests {
 
     #[test]
     fn names_the_class_after_the_user() {
-        assert_eq!(executor_class_name("trussell"), "ZCL_FRACTAL_EXEC_TRUSSELL");
+        assert_eq!(
+            executor_class_name("developer"),
+            "ZCL_FRACTAL_EXEC_DEVELOPER"
+        );
     }
 
     #[test]

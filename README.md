@@ -162,7 +162,7 @@ fractal object     search | source | xml | info | show | usages | kinds
 fractal table      data | metadata | set | insert | remove
 fractal query      <complete SELECT, or - for stdin>
 fractal transport  list | show | create
-fractal edit       create | read | patch | set | set-xml | check | activate | discard
+fractal edit       create | read | patch | set | set-xml | check | inactive | activate | discard
 fractal binding    show | publish | unpublish | get
 fractal delete     <one destructive verb, kept out of `edit` on purpose>
 fractal journal    list | show | clear
@@ -207,6 +207,9 @@ together with one `--object TYPE:NAME` per object:
 ```bash
 fractal edit activate --object DDLS:ZRAP_R_TRAVEL --object DDLS:ZRAP_R_BOOKING
 ```
+
+`fractal edit inactive` lists what you have staged and not activated, grouped by transport, with
+each object already written `TYPE:NAME`. SAP keeps this list per user, so it shows only yours.
 
 `edit set-xml` replaces a whole DDIC document, and SAP keeps no retrievable version history for
 those objects, so pass `--expected-sha256` (from `fractal object xml`) to refuse the write if the

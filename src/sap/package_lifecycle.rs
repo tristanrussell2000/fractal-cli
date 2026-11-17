@@ -634,7 +634,10 @@ mod tests {
 
     #[test]
     fn validates_package_names() {
-        assert_eq!(validate_package_name(" zfrt_test ").unwrap(), "ZFRT_TEST");
+        assert_eq!(
+            validate_package_name(" zsample_pkg ").unwrap(),
+            "ZSAMPLE_PKG"
+        );
         assert_eq!(validate_package_name("$frt_local").unwrap(), "$FRT_LOCAL");
         for bad in ["", "$", "Z-BAD", &"Z".repeat(31)] {
             assert!(validate_package_name(bad).is_err(), "{bad}");
@@ -653,7 +656,7 @@ mod tests {
     fn local_packages_follow_the_profile_and_others_the_namespace() {
         let mut policy = EditPolicy::namespaces_only(&["Z*"]);
         assert!(authorize_package_name(&policy, "$FRT_LOCAL").is_ok());
-        assert!(authorize_package_name(&policy, "ZFRT").is_ok());
+        assert!(authorize_package_name(&policy, "ZSAMPLE").is_ok());
         assert_eq!(
             authorize_package_name(&policy, "SAPFOO")
                 .unwrap_err()
@@ -678,13 +681,20 @@ mod tests {
 
     #[test]
     fn the_body_names_the_parent_and_the_transport_attributes() {
-        let body = creation_body("ZFRT_SUB", "A & B", "trussell", Some("ZFRT"), "HOME", "SAP");
+        let body = creation_body(
+            "ZSAMPLE_SUB",
+            "A & B",
+            "developer",
+            Some("ZSAMPLE"),
+            "HOME",
+            "SAP",
+        );
         assert!(
-            body.contains(r#"<pak:superPackage adtcore:name="ZFRT"/>"#),
+            body.contains(r#"<pak:superPackage adtcore:name="ZSAMPLE"/>"#),
             "{body}"
         );
         assert!(body.contains(r#"adtcore:description="A &amp; B""#));
-        assert!(body.contains(r#"adtcore:responsible="TRUSSELL""#));
+        assert!(body.contains(r#"adtcore:responsible="DEVELOPER""#));
         assert!(body.contains(r#"<pak:softwareComponent pak:name="HOME"/>"#));
         assert!(body.contains(r#"<pak:transportLayer pak:name="SAP"/>"#));
         assert!(creation_body("$X", "d", "u", None, "LOCAL", "").contains("<pak:superPackage/>"));
@@ -692,9 +702,9 @@ mod tests {
 
     #[test]
     fn reads_attributes_from_a_package_document() {
-        let xml = r#"<pak:package adtcore:name="ZFRT_SUB" adtcore:description="Sub" xmlns:pak="http://www.sap.com/adt/packages" xmlns:adtcore="http://www.sap.com/adt/core"><pak:superPackage adtcore:name="ZFRT"/><pak:transport><pak:softwareComponent pak:name="HOME"/><pak:transportLayer pak:name="SAP"/></pak:transport></pak:package>"#;
-        let attributes = parse_package_attributes("ZFRT_SUB", xml);
-        assert_eq!(attributes.parent.as_deref(), Some("ZFRT"));
+        let xml = r#"<pak:package adtcore:name="ZSAMPLE_SUB" adtcore:description="Sub" xmlns:pak="http://www.sap.com/adt/packages" xmlns:adtcore="http://www.sap.com/adt/core"><pak:superPackage adtcore:name="ZSAMPLE"/><pak:transport><pak:softwareComponent pak:name="HOME"/><pak:transportLayer pak:name="SAP"/></pak:transport></pak:package>"#;
+        let attributes = parse_package_attributes("ZSAMPLE_SUB", xml);
+        assert_eq!(attributes.parent.as_deref(), Some("ZSAMPLE"));
         assert_eq!(attributes.software_component.as_deref(), Some("HOME"));
         assert_eq!(attributes.transport_layer.as_deref(), Some("SAP"));
         assert_eq!(attributes.description.as_deref(), Some("Sub"));
