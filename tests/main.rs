@@ -19,6 +19,8 @@ mod adt_edit_mock;
 mod abap_unit;
 #[path = "main/adt.rs"]
 mod adt;
+#[path = "main/cds_entity.rs"]
+mod cds_entity;
 #[path = "main/class_run.rs"]
 mod class_run;
 #[path = "main/ddic_type.rs"]

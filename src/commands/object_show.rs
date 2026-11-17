@@ -10,6 +10,7 @@ use crate::{
 };
 use fractal::reportable_error::ReportableError;
 use fractal::sap::{
+    cds_entity::{CdsEntityInfo, get_cds_entity, require_active},
     ddic_structure::{DdicStructureInfo, get_ddic_structure},
     ddic_type::{
         DataElementTypeSource, DdicTypeError, DdicTypeInfo, DdicTypeOptions, get_ddic_type,
@@ -32,11 +33,12 @@ pub struct ObjectShowOutput {
 pub enum ShowInfo {
     Type(Box<DdicTypeInfo>),
     Structure(Box<DdicStructureInfo>),
+    Cds(Box<CdsEntityInfo>),
 }
 
 /// A name that is none of the three kinds this command reads.
 #[derive(Debug, thiserror::Error)]
-#[error("'{name}' is not a data element, domain, structure, table or view")]
+#[error("'{name}' is not a data element, domain, structure, table, view or CDS entity")]
 pub struct UnknownDdicObject {
     name: String,
 }
@@ -65,12 +67,20 @@ pub async fn object_show(
         Some(ObjectShowTypeArg::Stru) => ShowInfo::Structure(Box::new(
             get_ddic_structure(&mut client, &args.name, version).await?,
         )),
+        Some(ObjectShowTypeArg::Ddls) => {
+            require_active(version)?;
+            ShowInfo::Cds(Box::new(
+                get_cds_entity(&client, &args.name, args.annotations).await?,
+            ))
+        }
         Some(object_type) => {
             let options = DdicTypeOptions {
                 object_type: Some(match object_type {
                     ObjectShowTypeArg::Dtel => MetadataAdtObjectType::DataElement,
                     ObjectShowTypeArg::Doma => MetadataAdtObjectType::Domain,
-                    ObjectShowTypeArg::Stru => unreachable!("handled above"),
+                    ObjectShowTypeArg::Stru | ObjectShowTypeArg::Ddls => {
+                        unreachable!("handled above")
+                    }
                 }),
                 resolve_domain: !args.no_resolve,
                 version,
@@ -89,10 +99,11 @@ pub async fn object_show(
     })
 }
 
-/// Tries a data element, then a domain, then a field list.
+/// Tries a data element, then a domain, then a field list, then a CDS entity.
 ///
-/// The field-list read is last because it is the expensive one — a document
-/// read plus a query — and because the first two settle most names.
+/// The field-list read comes after the first two because it is the expensive
+/// one — a document read plus a query — and they settle most names. A CDS
+/// entity is last so that every name that already resolved costs nothing more.
 /// Only a "none of those" answer falls through to it; any other failure is
 /// the caller's real problem and is reported as it stands.
 async fn detect(
@@ -112,9 +123,20 @@ async fn detect(
     }
 
     match get_ddic_structure(client, &args.name, version).await {
-        Ok(info) => Ok(ShowInfo::Structure(Box::new(info))),
+        Ok(info) => return Ok(ShowInfo::Structure(Box::new(info))),
+        Err(error) if error.is_not_found() => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    match get_cds_entity(client, &args.name, args.annotations).await {
+        // Element info has no inactive layer. Refused only once the name is
+        // known to be a CDS entity, so a name that is nothing still says so.
+        Ok(info) => {
+            require_active(version)?;
+            Ok(ShowInfo::Cds(Box::new(info)))
+        }
         // The name was none of the kinds tried. Say that, rather than
-        // reporting the last attempt's 404 as though a table had been meant.
+        // reporting the last attempt's answer as though a view had been meant.
         Err(error) if error.is_not_found() => Err(UnknownDdicObject {
             name: args.name.clone(),
         }
@@ -132,6 +154,146 @@ pub fn print_object_show(result: &ObjectShowOutput, output: OutputFormat) {
     match &result.info {
         ShowInfo::Type(info) => print!("{}", render_object_show_readable(info)),
         ShowInfo::Structure(info) => print!("{}", render_structure_readable(info)),
+        ShowInfo::Cds(info) => print!("{}", render_cds_readable(info)),
+    }
+}
+
+fn render_cds_readable(info: &CdsEntityInfo) -> String {
+    let mut output = String::new();
+    let _ = writeln!(
+        output,
+        "{} (DDLS {}{})",
+        info.name,
+        info.entity_type,
+        if info.root { ", root" } else { "" }
+    );
+    if let Some(description) = &info.description {
+        let _ = writeln!(output, "description: {description}");
+    }
+    if let Some(package) = &info.package {
+        let _ = writeln!(output, "package: {package}");
+    }
+    if let Some(uri) = &info.uri {
+        let _ = writeln!(output, "uri: {uri}");
+    }
+    let _ = writeln!(output, "version: {}", info.version);
+    let _ = writeln!(
+        output,
+        "fields: {} (key fields: {})",
+        info.field_count, info.key_field_count
+    );
+    render_cds_annotations(&mut output, "", info.annotations.as_deref());
+
+    let columns = [
+        tabular::plain_column("KEY"),
+        tabular::plain_column("FIELD"),
+        tabular::plain_column("TYPE"),
+        tabular::plain_column("DATA ELEMENT"),
+        tabular::plain_column("REFERENCE"),
+        tabular::plain_column("DESCRIPTION"),
+    ];
+    let rows: Vec<_> = info
+        .fields
+        .iter()
+        .map(|field| {
+            vec![
+                if field.is_key { "yes" } else { "" }.to_owned(),
+                field.name.clone(),
+                render_cds_type(field.data_type.as_deref(), field.length, field.decimals),
+                field.data_element.clone().unwrap_or_default(),
+                field.reference_field.clone().unwrap_or_default(),
+                field.description.clone().unwrap_or_default(),
+            ]
+        })
+        .collect();
+    output.push_str(&tabular::render_grid(&columns, &rows));
+
+    if !info.associations.is_empty() {
+        let _ = writeln!(output);
+        let columns = [
+            tabular::plain_column("ASSOCIATION"),
+            tabular::plain_column("TARGET"),
+            tabular::plain_column("CARDINALITY"),
+            tabular::plain_column("KIND"),
+        ];
+        let rows: Vec<_> = info
+            .associations
+            .iter()
+            .map(|association| {
+                vec![
+                    association.name.clone(),
+                    association.target.clone().unwrap_or_default(),
+                    association.cardinality.clone().unwrap_or_default(),
+                    association.kind.replace('_', " "),
+                ]
+            })
+            .collect();
+        output.push_str(&tabular::render_grid(&columns, &rows));
+    }
+
+    if !info.parameters.is_empty() {
+        let _ = writeln!(output);
+        let columns = [
+            tabular::plain_column("PARAMETER"),
+            tabular::plain_column("TYPE"),
+            tabular::plain_column("DATA ELEMENT"),
+        ];
+        let rows: Vec<_> = info
+            .parameters
+            .iter()
+            .map(|parameter| {
+                vec![
+                    parameter.name.clone(),
+                    render_cds_type(
+                        parameter.data_type.as_deref(),
+                        parameter.length,
+                        parameter.decimals,
+                    ),
+                    parameter.data_element.clone().unwrap_or_default(),
+                ]
+            })
+            .collect();
+        output.push_str(&tabular::render_grid(&columns, &rows));
+    }
+
+    if info.annotations.is_some() {
+        for field in &info.fields {
+            render_cds_annotations(&mut output, &field.name, field.annotations.as_deref());
+        }
+    }
+    output
+}
+
+/// `CURR 15,2`; the length only where the type has one.
+fn render_cds_type(data_type: Option<&str>, length: Option<u32>, decimals: Option<u32>) -> String {
+    let Some(data_type) = data_type else {
+        return String::new();
+    };
+    match (
+        length.filter(|value| *value > 0),
+        decimals.filter(|value| *value > 0),
+    ) {
+        (Some(length), Some(decimals)) => format!("{data_type} {length},{decimals}"),
+        (Some(length), None) => format!("{data_type} {length}"),
+        _ => data_type.to_owned(),
+    }
+}
+
+fn render_cds_annotations(
+    output: &mut String,
+    field: &str,
+    annotations: Option<&[fractal::sap::cds_entity::CdsAnnotation]>,
+) {
+    let Some(annotations) = annotations.filter(|annotations| !annotations.is_empty()) else {
+        return;
+    };
+    if field.is_empty() {
+        let _ = writeln!(output, "annotations:");
+    } else {
+        let _ = writeln!(output, "\n{field} annotations:");
+    }
+    for annotation in annotations {
+        let _ = writeln!(output, "  @{} {}", annotation.name, annotation.value);
     }
 }
 

@@ -568,12 +568,20 @@ pub enum ObjectCommand {
     Xml(XmlArgs),
     /// Read the authoritative short description for an ADT object URI.
     Info(UriArgs),
-    /// Show one data element, domain, structure, table or view by name.
+    /// Show one data element, domain, structure, table, view or CDS entity by
+    /// name.
     ///
     /// A data element resolves to its domain. A structure lists its fields,
     /// with anything an include or append contributed already in place — and
     /// so do tables and views, which are labelled as what they are rather than
     /// as structures.
+    ///
+    /// A CDS entity (a view entity, a projection) lists its fields with their
+    /// keys, types and currency or unit references, its associations with
+    /// their targets, cardinality and kind (association, composition, to
+    /// parent), and its parameters. Its annotations are left out unless
+    /// --annotations is passed. A CDS entity is described as it is active:
+    /// one never activated has no field list yet.
     ///
     /// Reads the active version by default, and reports which version it got.
     /// Those are two separate answers: SAP serves the other layer rather than
@@ -588,7 +596,7 @@ pub enum ObjectCommand {
 
 #[derive(Debug, Args)]
 pub struct ObjectShowArgs {
-    /// Data element, domain, structure, table or view name.
+    /// Data element, domain, structure, table, view or CDS entity name.
     pub(crate) name: String,
     /// Skip detection and read this type directly.
     #[arg(long = "type", value_enum)]
@@ -597,6 +605,11 @@ pub struct ObjectShowArgs {
     /// nothing for a domain or a structure.
     #[arg(long, default_value_t = false)]
     pub(crate) no_resolve: bool,
+    /// Also report a CDS entity's annotations, for the entity and for each
+    /// field. Left out unless this is passed: a standard view carries dozens
+    /// per field. Means nothing for other kinds.
+    #[arg(long, default_value_t = false)]
+    pub(crate) annotations: bool,
     /// Stored version to read. A resolved domain is read at the same version.
     /// If the requested version does not exist, SAP serves the other one, and
     /// the reported version says which arrived.
@@ -612,6 +625,8 @@ pub enum ObjectShowTypeArg {
     Doma,
     /// Structure.
     Stru,
+    /// CDS entity: a view entity, projection or other DDL-defined entity.
+    Ddls,
 }
 
 #[derive(Debug, Subcommand)]

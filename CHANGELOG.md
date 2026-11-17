@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`object show` reads CDS entities**: a view entity, a projection, or a classic CDS view. It
+  lists the fields with their keys, types, data elements and currency or unit references; the
+  associations with their target, cardinality and kind (association, composition, to parent);
+  and any parameters. Detection tries it after the existing kinds, and `--type ddls` goes to it
+  directly. Annotations are left out unless `--annotations` is passed.
+  - It describes the active entity only, so `--version inactive` is refused
+    (`cds_inactive_version_not_served`).
+  - An entity that exists but was never activated is reported as `cds_entity_not_active`, with
+    the activation command, rather than as missing.
+
 ## 0.12.0
 
 ### Added
