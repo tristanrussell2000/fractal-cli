@@ -69,8 +69,8 @@ pub async fn connect(
     // Not the keychain directly: an environment variable, a password command
     // or an opted-in plain file all supply the password on machines that have
     // no credential store.
-    let (password, _source) = credentials::resolve_password(profile_name, profile)?;
-    let client = SapClient::new(profile, password)?;
+    let (password, source) = credentials::resolve_password(profile_name, profile)?;
+    let client = SapClient::new(profile, password)?.with_password_source(source);
     Ok((profile_name.to_owned(), profile.clone(), client))
 }
 

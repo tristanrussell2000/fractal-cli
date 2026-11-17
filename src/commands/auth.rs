@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use fractal::reportable_error::ReportableError;
 
-use crate::cli::{AuthSetArgs, LoginArgs, ProfileArgs};
+use crate::cli::{AuthPasswordArgs, AuthSetArgs, LoginArgs, ProfileArgs};
 use crate::output::{OutputFormat, print_json};
 use crate::reported::Reported;
 use fractal::{config, credentials};
@@ -40,6 +40,10 @@ pub enum AuthCommandError {
     PasswordPrompt(#[source] std::io::Error),
     #[error("password cannot be empty")]
     EmptyPassword,
+    #[error(
+        "profile '{0}' takes its password from a password command; Fractal stores none to change"
+    )]
+    PasswordFromCommand(String),
     #[error("could not save profile config: {0}")]
     ConfigWrite(#[source] config::ConfigError),
     #[error("profile config saved, but the credential could not be stored: {source}")]
@@ -65,6 +69,7 @@ impl ReportableError for AuthCommandError {
             Self::Prompt { .. } => "prompt_read_error",
             Self::PasswordPrompt(_) => "password_prompt_error",
             Self::EmptyPassword => "empty_password",
+            Self::PasswordFromCommand(_) => "password_from_command",
             Self::ConfigWrite(_) => "config_write_error",
             Self::CredentialStoreAfterConfigSave { .. } => {
                 "credential_store_error_after_config_save"
@@ -97,6 +102,10 @@ impl ReportableError for AuthCommandError {
                 "Provide a non-empty password through the secure prompt or --password-stdin."
                     .to_owned(),
             ),
+            Self::PasswordFromCommand(_) => Some(
+                "Change the password wherever the command reads it, or run `fractal auth login` without --password-command to have Fractal store one."
+                    .to_owned(),
+            ),
             Self::ConfigWrite(_) => {
                 Some("Check that Fractal's application config directory is writable.".to_owned())
             }
@@ -121,9 +130,21 @@ pub struct AuthLoginResult {
     /// Where the password now lives: `os_keychain`, `plaintext_file`, or
     /// `password_command` when Fractal keeps nothing at all.
     password_storage: String,
-    /// Present when the password was stored somewhere unencrypted.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    warning: Option<String>,
+    /// The password was stored unencrypted, or will not be used.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AuthPasswordResult {
+    ok: bool,
+    profile: String,
+    /// `os_keychain` or `plaintext_file`.
+    password_storage: String,
+    /// The password was stored unencrypted, or will not be used.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
     message: String,
 }
 
@@ -147,7 +168,13 @@ struct AuthProfileSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     edit_packages: Option<Vec<String>>,
     allow_temporary_package: bool,
+    /// Where a connection would take the password from: `environment`,
+    /// `password_command`, `plaintext_file`, `os_keychain`, `missing`, or
+    /// `unavailable` when the store could not be read.
     credential: String,
+    /// The variable, when `credential` is `environment`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credential_variable: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     credential_error: Option<String>,
 }
@@ -168,13 +195,20 @@ pub fn auth_list() -> Result<AuthListResult, Reported> {
         .profiles
         .iter()
         .map(|(name, profile)| {
-            let (credential, credential_error) = match credentials::get_password(name) {
-                Ok(_) => ("stored".to_owned(), None),
-                Err(error @ credentials::CredentialError::Missing(_)) => {
-                    ("missing".to_owned(), Some(error.to_string()))
-                }
-                Err(error) => ("unavailable".to_owned(), Some(error.to_string())),
-            };
+            let (credential, credential_variable, credential_error) =
+                match credentials::password_source(name, profile) {
+                    Ok(Some(source)) => (
+                        source.code().to_owned(),
+                        source.variable().map(str::to_owned),
+                        None,
+                    ),
+                    Ok(None) => (
+                        "missing".to_owned(),
+                        None,
+                        Some(credentials::CredentialError::Missing(name.clone()).to_string()),
+                    ),
+                    Err(error) => ("unavailable".to_owned(), None, Some(error.to_string())),
+                };
 
             AuthProfileSummary {
                 name: name.clone(),
@@ -186,6 +220,7 @@ pub fn auth_list() -> Result<AuthListResult, Reported> {
                 edit_packages: profile.edit_packages.clone(),
                 allow_temporary_package: profile.allow_temporary_package,
                 credential,
+                credential_variable,
                 credential_error,
             }
         })
@@ -455,27 +490,9 @@ pub fn auth_login(args: &LoginArgs) -> Result<AuthLoginResult, Reported> {
     // that is then never read.
     let password = if args.password_command.is_some() {
         None
-    } else if args.password_stdin {
-        let mut password = String::new();
-        std::io::stdin()
-            .read_to_string(&mut password)
-            .map_err(AuthCommandError::PasswordStdin)?;
-        Some(password.trim_end_matches(['\r', '\n']).to_owned())
-    } else if interactive {
-        Some(rpassword::prompt_password("Password: ").map_err(AuthCommandError::PasswordPrompt)?)
     } else {
-        // The secure prompt needs a terminal. Saying so beats letting it fail
-        // with whatever error reading a pipe produces.
-        return Err(AuthCommandError::MissingValue {
-            value: "a password",
-            flag: "--password-stdin",
-        }
-        .into());
+        Some(read_new_password(args.password_stdin, interactive)?)
     };
-
-    if password.as_ref().is_some_and(String::is_empty) {
-        return Err(AuthCommandError::EmptyPassword.into());
-    }
 
     let mut loaded = config::load()?;
     let profile = config::Profile {
@@ -512,7 +529,7 @@ pub fn auth_login(args: &LoginArgs) -> Result<AuthLoginResult, Reported> {
         config_path: config_path.display().to_string(),
         became_default,
         password_storage: storage.description.to_owned(),
-        warning: storage.warning,
+        warnings: storage.warnings,
         message: if became_default {
             "Profile saved and selected as the default profile.".to_owned()
         } else {
@@ -524,7 +541,97 @@ pub fn auth_login(args: &LoginArgs) -> Result<AuthLoginResult, Reported> {
 /// Where the password went, and whether that is worth warning about.
 struct PasswordStorage {
     description: &'static str,
-    warning: Option<String>,
+    warnings: Vec<String>,
+}
+
+/// Reads a new password from stdin or the secure prompt. Never empty.
+fn read_new_password(password_stdin: bool, interactive: bool) -> Result<String, AuthCommandError> {
+    let password = if password_stdin {
+        let mut password = String::new();
+        std::io::stdin()
+            .read_to_string(&mut password)
+            .map_err(AuthCommandError::PasswordStdin)?;
+        password.trim_end_matches(['\r', '\n']).to_owned()
+    } else if interactive {
+        rpassword::prompt_password("Password: ").map_err(AuthCommandError::PasswordPrompt)?
+    } else {
+        // The secure prompt needs a terminal. Saying so beats letting it fail
+        // with whatever error reading a pipe produces.
+        return Err(AuthCommandError::MissingValue {
+            value: "a password",
+            flag: "--password-stdin",
+        });
+    };
+    if password.is_empty() {
+        return Err(AuthCommandError::EmptyPassword);
+    }
+    Ok(password)
+}
+
+/// Changes a profile's stored password and nothing else.
+///
+/// The password stays where it was kept: the plaintext file if the profile has
+/// an entry there, otherwise the OS credential store. `--store-plaintext`
+/// moves it to the file.
+pub fn auth_password(
+    explicit_profile: Option<&str>,
+    args: &AuthPasswordArgs,
+) -> Result<AuthPasswordResult, Reported> {
+    let loaded = config::load()?;
+    let name = match args.name.as_deref() {
+        Some(name) => name.to_owned(),
+        None => config::resolve_profile(&loaded.config, explicit_profile)?
+            .0
+            .to_owned(),
+    };
+    let profile = loaded
+        .config
+        .profiles
+        .get(&name)
+        .ok_or_else(|| AuthCommandError::ProfileNotFound(name.clone()))?;
+    if profile.password_command.is_some() {
+        return Err(AuthCommandError::PasswordFromCommand(name).into());
+    }
+
+    let password = read_new_password(args.password_stdin, std::io::stdin().is_terminal())?;
+    let store_plaintext = args.store_plaintext || credentials::has_plaintext_password(&name)?;
+    let storage = store_password(&name, Some(&password), store_plaintext)?;
+    Ok(AuthPasswordResult {
+        ok: true,
+        profile: name,
+        password_storage: storage.description.to_owned(),
+        warnings: storage.warnings,
+        message: "Password changed; the rest of the profile is unchanged.".to_owned(),
+    })
+}
+
+pub fn print_auth_password(result: &AuthPasswordResult, output: OutputFormat) {
+    if matches!(output, OutputFormat::Json) {
+        print_json(result);
+        return;
+    }
+    print!("{}", render_auth_password_readable(result));
+}
+
+fn render_auth_password_readable(result: &AuthPasswordResult) -> String {
+    let mut output = String::new();
+    let _ = writeln!(output, "profile: {}", result.profile);
+    let _ = writeln!(output, "password: {}", result.password_storage);
+    for warning in &result.warnings {
+        let _ = writeln!(output, "warning: {warning}");
+    }
+    let _ = writeln!(output, "{}", result.message);
+    output
+}
+
+/// Warns when an environment variable will be used instead of what was just
+/// stored. Nothing else reports it, and the stale value keeps failing.
+fn overridden_warning(profile_name: &str) -> Option<String> {
+    credentials::overriding_password_variable(profile_name).map(|variable| {
+        format!(
+            "{variable} is set and takes precedence, so this password will not be used until it is unset or corrected."
+        )
+    })
 }
 
 /// Puts the password wherever the caller chose.
@@ -539,10 +646,11 @@ fn store_password(
     password: Option<&str>,
     store_plaintext: bool,
 ) -> Result<PasswordStorage, credentials::CredentialError> {
+    let overridden = overridden_warning(profile_name);
     let Some(password) = password else {
         return Ok(PasswordStorage {
             description: "password_command",
-            warning: None,
+            warnings: overridden.into_iter().collect(),
         });
     };
 
@@ -550,17 +658,22 @@ fn store_password(
         let path = credentials::save_plaintext_password(profile_name, password)?;
         return Ok(PasswordStorage {
             description: "plaintext_file",
-            warning: Some(format!(
+            warnings: std::iter::once(format!(
                 "The password is stored unencrypted in {}, readable only by your user. Anything that can read your files can read it.",
                 path.display()
-            )),
+            ))
+            .chain(overridden)
+            .collect(),
         });
     }
 
     credentials::save_password(profile_name, password)?;
+    // A plaintext entry outranks the credential store, so leaving one behind
+    // would keep the old password in use.
+    credentials::delete_plaintext_password(profile_name)?;
     Ok(PasswordStorage {
         description: "os_keychain",
-        warning: None,
+        warnings: overridden.into_iter().collect(),
     })
 }
 
@@ -579,7 +692,7 @@ fn render_auth_login_readable(result: &AuthLoginResult) -> String {
     let _ = writeln!(output, "config: {}", result.config_path);
     let _ = writeln!(output, "default profile: {}", yes_no(result.became_default));
     let _ = writeln!(output, "password: {}", result.password_storage);
-    if let Some(warning) = &result.warning {
+    for warning in &result.warnings {
         let _ = writeln!(output, "warning: {warning}");
     }
     let _ = writeln!(output, "{}", result.message);
@@ -632,8 +745,14 @@ fn render_auth_list_readable(result: &AuthListResult) -> String {
         );
         let _ = writeln!(
             output,
-            "      credential: {}{}",
+            "      credential: {}{}{}",
             profile.credential,
+            profile
+                .credential_variable
+                .as_deref()
+                .map_or_else(String::new, |variable| format!(
+                    " ({variable}, ahead of anything stored)"
+                )),
             profile
                 .credential_error
                 .as_deref()
@@ -766,7 +885,8 @@ mod tests {
                     customer_namespaces: vec!["Z*".to_owned(), "Y*".to_owned()],
                     edit_packages: Some(vec!["ZAPP*".to_owned()]),
                     allow_temporary_package: true,
-                    credential: "stored".to_owned(),
+                    credential: "environment".to_owned(),
+                    credential_variable: Some("FRACTAL_PASSWORD_DEV".to_owned()),
                     credential_error: None,
                 },
                 AuthProfileSummary {
@@ -779,6 +899,7 @@ mod tests {
                     edit_packages: None,
                     allow_temporary_package: false,
                     credential: "missing".to_owned(),
+                    credential_variable: None,
                     credential_error: Some("no password stored for profile 'qas'".to_owned()),
                 },
             ],
@@ -791,6 +912,11 @@ mod tests {
         assert!(rendered.contains("edit packages: ZAPP*"));
         assert!(rendered.contains("edit packages: any package"));
         assert!(rendered.contains("credential: missing - no password stored"));
+        assert!(
+            rendered.contains(
+                "credential: environment (FRACTAL_PASSWORD_DEV, ahead of anything stored)"
+            )
+        );
         assert!(rendered.contains("(TLS verification off)"));
         assert!(rendered.contains("namespaces: Z*, Y*"));
     }
@@ -840,7 +966,7 @@ mod tests {
             config_path: "/home/u/.config/fractal/config.toml".to_owned(),
             became_default: true,
             password_storage: "plaintext_file".to_owned(),
-            warning: Some("The password is stored unencrypted.".to_owned()),
+            warnings: vec!["The password is stored unencrypted.".to_owned()],
             message: "Profile saved and selected as the default profile.".to_owned(),
         };
 
@@ -1187,6 +1313,32 @@ mod tests {
         assert_eq!(args.namespace, vec!["Z*", "Y*"]);
         assert!(args.default);
         assert!(args.password_stdin);
+    }
+
+    #[test]
+    fn auth_password_takes_only_the_password_flags() {
+        let cli = Cli::try_parse_from(["fractal", "auth", "password", "dev", "--password-stdin"])
+            .unwrap();
+        let Command::Auth {
+            command: AuthCommand::Password(args),
+        } = cli.command
+        else {
+            panic!("expected auth password command");
+        };
+        assert_eq!(args.name.as_deref(), Some("dev"));
+        assert!(args.password_stdin);
+        assert!(!args.store_plaintext);
+        assert!(
+            Cli::try_parse_from(["fractal", "auth", "password", "--url", "https://x"]).is_err(),
+            "nothing but the password changes"
+        );
+    }
+
+    #[test]
+    fn a_profile_with_a_password_command_says_where_to_change_it() {
+        let error = AuthCommandError::PasswordFromCommand("dev".to_owned());
+        assert_eq!(error.code(), "password_from_command");
+        assert!(error.hint().unwrap().contains("--password-command"));
     }
 
     #[test]

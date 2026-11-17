@@ -1,5 +1,6 @@
 use fractal::{
     config::Profile,
+    credentials::PasswordSource,
     sap::client::{SapClient, SapClientError},
 };
 use reqwest::header::{HeaderMap, HeaderValue};
@@ -167,6 +168,48 @@ async fn discovery_request_returns_sap_xml_error_message() {
         }
         other => panic!("expected HTTP error, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn a_rejected_password_names_where_it_came_from() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/core/discovery"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "stale".to_owned())
+        .unwrap()
+        .with_password_source(PasswordSource::Environment(
+            "FRACTAL_PASSWORD_DEV".to_owned(),
+        ));
+    let error = client.test_connection().await.unwrap_err();
+
+    let SapClientError::Http { message, .. } = &error else {
+        panic!("expected HTTP error, got {error:?}");
+    };
+    assert_eq!(
+        message,
+        "Unauthorized. The password came from the FRACTAL_PASSWORD_DEV environment variable."
+    );
+}
+
+#[tokio::test]
+async fn only_a_rejected_password_names_its_source() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/sap/bc/adt/core/discovery"))
+        .respond_with(ResponseTemplate::new(403))
+        .mount(&server)
+        .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned())
+        .unwrap()
+        .with_password_source(PasswordSource::Keychain);
+    let error = client.test_connection().await.unwrap_err();
+
+    assert!(!error.to_string().contains("password came from"), "{error}");
 }
 
 #[tokio::test]

@@ -141,10 +141,21 @@ storing a password in the clear is always a choice you made.
 
 `fractal auth remove <name>` clears both the plaintext file and the keychain.
 
+### Changing a password
+
+```sh
+fractal auth password dev                 # prompts; or pipe it in with --password-stdin
+```
+
+This changes only the password, and keeps it where it was stored. `fractal auth list` shows
+which source each profile actually uses. A `FRACTAL_PASSWORD_*` variable wins over anything
+stored, so if one is set, `auth password` warns that the new password will not be used, and a
+rejected login names the variable.
+
 ## Commands
 
 ```text
-fractal auth       login | set | list | remove
+fractal auth       login | set | password | list | remove
 fractal system     list | test
 fractal package    tree | items | create
 fractal object     search | source | xml | info | show | usages | kinds

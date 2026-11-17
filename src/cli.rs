@@ -271,6 +271,8 @@ pub enum AuthCommand {
     /// Change what a profile may edit, or make it the default, without
     /// touching its stored password.
     Set(AuthSetArgs),
+    /// Change a profile's stored password, and nothing else.
+    Password(AuthPasswordArgs),
     /// Remove a saved profile and its keychain credential.
     Remove(ProfileArgs),
 }
@@ -326,6 +328,19 @@ pub struct LoginArgs {
 pub struct ProfileArgs {
     /// Saved profile name.
     pub(crate) name: String,
+}
+
+#[derive(Debug, Args)]
+pub struct AuthPasswordArgs {
+    /// Profile whose password to change. Defaults to the selected profile.
+    pub(crate) name: Option<String>,
+    /// Read the password from standard input instead of prompting.
+    #[arg(long, default_value_t = false)]
+    pub(crate) password_stdin: bool,
+    /// Store the password in the plain, unencrypted file instead of the OS
+    /// credential store. Without this it stays where it was kept.
+    #[arg(long, default_value_t = false)]
+    pub(crate) store_plaintext: bool,
 }
 
 #[derive(Debug, Args)]

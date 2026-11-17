@@ -20,8 +20,27 @@
   - Harmless and dangerous tests, short and medium, run by default; `--risk` and `--duration` add
     critical and long. The run waits up to `--timeout` seconds (default 300).
   - `guard install` asks before it.
+- **`fractal auth password [profile]`** changes a profile's stored password and nothing else,
+  where `auth login` would ask for every value again. The password stays where it was kept;
+  `--store-plaintext` and `--password-stdin` work as they do for `auth login`.
+
+### Changed
+
+- **`auth list` reports where each profile's password would come from**: `environment` (with
+  the variable), `password_command`, `plaintext_file`, `os_keychain`, or `missing`. It used to
+  look only in the keychain, and said `stored` even when an environment variable won.
+- **`auth login` and `auth password` return `warnings` (a list)** in place of `warning`, and warn
+  when a `FRACTAL_PASSWORD_*` variable is set that will be used instead of the password just
+  stored.
 
 ### Fixed
+
+- **A rejected password did not say where it came from.** A stale `FRACTAL_PASSWORD_<PROFILE>`
+  outranks the keychain, so a password updated with `auth login` went unused with nothing to say
+  why. An `authentication_failed` message now ends with the source, for example "The password
+  came from the FRACTAL_PASSWORD_DEV environment variable."
+- **Storing a password in the keychain left an older one in the plaintext file**, which
+  outranks the keychain and so stayed in use. `auth login` and `auth password` now remove it.
 
 - **`delete` refused a class whose own local tests use it** (`edit_delete_object_in_use`, naming
   "Local Test Classes"). The 0.11.0 where-used change counted a hit inside the object's own

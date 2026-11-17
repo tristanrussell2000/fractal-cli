@@ -9,8 +9,8 @@ use cli::{
     JournalCommand, ObjectCommand, PackageCommand, SystemCommand, TableCommand, TransportCommand,
 };
 use commands::auth::{
-    auth_list, auth_login, auth_remove, auth_set, print_auth_list, print_auth_login,
-    print_auth_remove, print_auth_set,
+    auth_list, auth_login, auth_password, auth_remove, auth_set, print_auth_list, print_auth_login,
+    print_auth_password, print_auth_remove, print_auth_set,
 };
 use commands::edit_activate::{edit_object_activate, print_edit_object_activate};
 use commands::edit_check::{edit_source_check, print_edit_source_check};
@@ -71,6 +71,13 @@ async fn main() {
         } => run_and_print_with(
             || auth_set(cli.profile.as_deref(), args),
             print_auth_set,
+            output,
+        ),
+        Command::Auth {
+            command: AuthCommand::Password(args),
+        } => run_and_print_with(
+            || auth_password(cli.profile.as_deref(), args),
+            print_auth_password,
             output,
         ),
         Command::Auth {

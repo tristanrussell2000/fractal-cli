@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{fmt::Write as _, sync::Arc, time::Duration};
 
 use reqwest::{
     Client, RequestBuilder, Response, StatusCode, Url,
@@ -8,6 +8,7 @@ use reqwest::{
 use serde::Serialize;
 use thiserror::Error;
 
+use crate::credentials::PasswordSource;
 use crate::reportable_error::{ReportableError, sap_http_status};
 use crate::{config::Profile, suggested_command};
 
@@ -39,7 +40,7 @@ impl SapHttpErrorKind {
     pub const fn hint(self) -> &'static str {
         match self {
             Self::AuthenticationFailed => {
-                "Check the selected profile, SAP username, password, and client."
+                "Check the selected profile, SAP username, password, and client. A password in an environment variable or from a password command takes precedence over the one `fractal auth password` stores; the message names which was used."
             }
             Self::Forbidden => {
                 "The credentials were understood but access was refused; check SAP permissions or CSRF/session state."
@@ -177,6 +178,7 @@ pub struct SapClient {
     client_id: String,
     username: String,
     password: String,
+    password_source: Option<PasswordSource>,
     csrf_token: Option<String>,
     insecure_tls: bool,
 }
@@ -211,9 +213,34 @@ impl SapClient {
             client_id: profile.client.clone(),
             username: profile.username.clone(),
             password,
+            password_source: None,
             csrf_token: None,
             insecure_tls: profile.insecure_tls,
         })
+    }
+
+    /// Records where the password came from, so a 401 can name it: a stale
+    /// environment variable outranks the keychain without saying so.
+    #[must_use]
+    pub fn with_password_source(mut self, source: PasswordSource) -> Self {
+        self.password_source = Some(source);
+        self
+    }
+
+    async fn http_error(&self, url: Url, response: Response) -> SapClientError {
+        let mut error = http_error(url, response).await;
+        if let (
+            SapClientError::Http {
+                kind: SapHttpErrorKind::AuthenticationFailed,
+                message,
+                ..
+            },
+            Some(source),
+        ) = (&mut error, &self.password_source)
+        {
+            name_password_source(message, source);
+        }
+        error
     }
 
     /// Abandons the SAP session and opens a new one.
@@ -353,7 +380,7 @@ impl SapClient {
                 message: describe_network_error(&error),
             })?;
         if !response.status().is_success() {
-            return Err(http_error(url, response).await);
+            return Err(self.http_error(url, response).await);
         }
         self.capture_csrf_token(&response);
         response
@@ -392,7 +419,7 @@ impl SapClient {
                 message: describe_network_error(&error),
             })?;
         if !response.status().is_success() {
-            return Err(http_error(url, response).await);
+            return Err(self.http_error(url, response).await);
         }
         self.capture_csrf_token(&response);
         Ok(())
@@ -493,7 +520,7 @@ impl SapClient {
                 message: describe_network_error(&error),
             })?;
         if !response.status().is_success() {
-            return Err(http_error(url, response).await);
+            return Err(self.http_error(url, response).await);
         }
         self.capture_csrf_token(&response);
         let location = response
@@ -558,7 +585,7 @@ impl SapClient {
                 message: describe_network_error(&error),
             })?;
         if !response.status().is_success() {
-            return Err(http_error(url, response).await);
+            return Err(self.http_error(url, response).await);
         }
         response
             .text()
@@ -633,7 +660,7 @@ impl SapClient {
             })?;
 
         if !response.status().is_success() {
-            return Err(http_error(url, response).await);
+            return Err(self.http_error(url, response).await);
         }
 
         Ok((url, response))
@@ -661,7 +688,7 @@ impl SapClient {
             })?;
 
         if !response.status().is_success() {
-            return Err(http_error(url, response).await);
+            return Err(self.http_error(url, response).await);
         }
 
         self.capture_csrf_token(&response);
@@ -710,6 +737,15 @@ fn classify_http_status(status: StatusCode) -> SapHttpErrorKind {
         status if status.is_server_error() => SapHttpErrorKind::ServerError,
         _ => SapHttpErrorKind::Other,
     }
+}
+
+fn name_password_source(message: &mut String, source: &PasswordSource) {
+    let message_end = if message.ends_with('.') { "" } else { "." };
+    let _ = write!(
+        message,
+        "{message_end} The password came from {}.",
+        source.describe()
+    );
 }
 
 async fn http_error(url: Url, response: Response) -> SapClientError {

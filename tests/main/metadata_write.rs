@@ -104,7 +104,7 @@ async fn write_error(
         &MetadataObjectWriteRequest {
             object_type: MetadataAdtObjectType::DataElement,
             name: "zsample_de",
-            xml: xml,
+            xml,
             transport: None,
             expected_sha256: None,
             staged_edits: &StagedEditPolicy::Protect("developer".to_owned()),
@@ -122,7 +122,7 @@ async fn write(server: &MockServer, xml: &str) -> Result<String, String> {
         &MetadataObjectWriteRequest {
             object_type: MetadataAdtObjectType::DataElement,
             name: "zsample_de",
-            xml: xml,
+            xml,
             transport: None,
             expected_sha256: None,
             staged_edits: &StagedEditPolicy::Protect("developer".to_owned()),

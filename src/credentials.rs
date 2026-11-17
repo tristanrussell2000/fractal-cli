@@ -81,6 +81,25 @@ impl PasswordSource {
             Self::Keychain => "the OS credential store".to_owned(),
         }
     }
+
+    /// The same names `auth login` reports for where it stored a password.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Environment(_) => "environment",
+            Self::Command => "password_command",
+            Self::PlaintextFile => "plaintext_file",
+            Self::Keychain => "os_keychain",
+        }
+    }
+
+    #[must_use]
+    pub fn variable(&self) -> Option<&str> {
+        match self {
+            Self::Environment(variable) => Some(variable),
+            _ => None,
+        }
+    }
 }
 
 impl ReportableError for CredentialError {
@@ -202,11 +221,9 @@ fn resolve_password_from<E: Fn(&str) -> Option<String>>(
     profile: &crate::config::Profile,
     environment: E,
 ) -> Result<(String, PasswordSource), CredentialError> {
-    let profile_variable = password_environment_variable(profile_name);
-    for variable in [profile_variable.as_str(), "FRACTAL_PASSWORD"] {
-        if let Some(password) = environment(variable).filter(|password| !password.is_empty()) {
-            return Ok((password, PasswordSource::Environment(variable.to_owned())));
-        }
+    if let Some(variable) = password_variable_in_use(profile_name, &environment) {
+        let password = environment(&variable).unwrap_or_default();
+        return Ok((password, PasswordSource::Environment(variable)));
     }
 
     if let Some(command) = profile.password_command.as_deref() {
@@ -223,6 +240,61 @@ fn resolve_password_from<E: Fn(&str) -> Option<String>>(
     }
 
     get_password(profile_name).map(|password| (password, PasswordSource::Keychain))
+}
+
+/// Which source [`resolve_password`] would use, without running a password
+/// command. `None` when nothing supplies a password.
+///
+/// # Errors
+///
+/// Returns [`CredentialError`] when the plaintext file or the credential store
+/// cannot be read.
+pub fn password_source(
+    profile_name: &str,
+    profile: &crate::config::Profile,
+) -> Result<Option<PasswordSource>, CredentialError> {
+    password_source_from(profile_name, profile, |variable| {
+        std::env::var(variable).ok()
+    })
+}
+
+fn password_source_from<E: Fn(&str) -> Option<String>>(
+    profile_name: &str,
+    profile: &crate::config::Profile,
+    environment: E,
+) -> Result<Option<PasswordSource>, CredentialError> {
+    if let Some(variable) = password_variable_in_use(profile_name, &environment) {
+        return Ok(Some(PasswordSource::Environment(variable)));
+    }
+    if profile.password_command.is_some() {
+        return Ok(Some(PasswordSource::Command));
+    }
+    if read_plaintext_password(profile_name)?.is_some() {
+        return Ok(Some(PasswordSource::PlaintextFile));
+    }
+    match get_password(profile_name) {
+        Ok(_) => Ok(Some(PasswordSource::Keychain)),
+        Err(CredentialError::Missing(_)) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// The environment variable that would supply this profile's password, if one
+/// is set. It outranks everything stored.
+#[must_use]
+pub fn overriding_password_variable(profile_name: &str) -> Option<String> {
+    password_variable_in_use(profile_name, |variable| std::env::var(variable).ok())
+}
+
+fn password_variable_in_use<E: Fn(&str) -> Option<String>>(
+    profile_name: &str,
+    environment: E,
+) -> Option<String> {
+    let profile_variable = password_environment_variable(profile_name);
+    [profile_variable.as_str(), "FRACTAL_PASSWORD"]
+        .into_iter()
+        .find(|variable| environment(variable).is_some_and(|password| !password.is_empty()))
+        .map(str::to_owned)
 }
 
 /// Runs a profile's password command and takes its output as the password.
@@ -373,6 +445,16 @@ pub fn save_plaintext_password(
     let mut stored = read_plaintext_file()?;
     stored.insert(profile_name.to_owned(), password.to_owned());
     write_plaintext_file(&stored)
+}
+
+/// Whether the plaintext file holds a password for this profile.
+///
+/// # Errors
+///
+/// Returns [`CredentialError`] when the file exists but cannot be read or
+/// parsed.
+pub fn has_plaintext_password(profile_name: &str) -> Result<bool, CredentialError> {
+    Ok(read_plaintext_password(profile_name)?.is_some())
 }
 
 /// Removes one profile's password from the plaintext file, if it is there.
@@ -678,6 +760,24 @@ mod tests {
             edit_packages: None,
             allow_temporary_package: true,
         }
+    }
+
+    #[test]
+    fn the_source_is_named_without_running_the_password_command() {
+        let failing = profile_with_command(Some("exit 1"));
+        let source = super::password_source_from("dev", &failing, |_| None).unwrap();
+        assert_eq!(source, Some(super::PasswordSource::Command));
+
+        let source = super::password_source_from("dev", &failing, |variable| {
+            (variable == "FRACTAL_PASSWORD").then(|| "shared".to_owned())
+        })
+        .unwrap();
+        assert_eq!(
+            source,
+            Some(super::PasswordSource::Environment(
+                "FRACTAL_PASSWORD".to_owned()
+            ))
+        );
     }
 
     #[test]
