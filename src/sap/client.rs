@@ -436,6 +436,40 @@ impl SapClient {
         body: Option<&str>,
         headers: HeaderMap,
     ) -> Result<(String, Option<String>), SapClientError> {
+        self.post_text_within(path, query, body, headers, None)
+            .await
+    }
+
+    /// Sends a text POST that may take longer than the client's usual
+    /// request timeout, such as a test run, which SAP answers only when every
+    /// test has finished.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SapClientError`] when the CSRF handshake, request, or response
+    /// fails, including a [`SapClientError::Network`] when `timeout` passes.
+    pub async fn post_text_with_timeout(
+        &mut self,
+        path: &str,
+        query: &[(&str, &str)],
+        body: Option<&str>,
+        headers: HeaderMap,
+        timeout: Duration,
+    ) -> Result<String, SapClientError> {
+        let (body, _) = self
+            .post_text_within(path, query, body, headers, Some(timeout))
+            .await?;
+        Ok(body)
+    }
+
+    async fn post_text_within(
+        &mut self,
+        path: &str,
+        query: &[(&str, &str)],
+        body: Option<&str>,
+        headers: HeaderMap,
+        timeout: Option<Duration>,
+    ) -> Result<(String, Option<String>), SapClientError> {
         self.ensure_csrf().await?;
         let url = self.request_url(path, query)?;
         let mut request = self
@@ -443,6 +477,10 @@ impl SapClient {
             .post(url.clone())
             .headers(headers)
             .basic_auth(&self.username, Some(&self.password));
+        if let Some(timeout) = timeout {
+            // Overrides the client's timeout for this request only.
+            request = request.timeout(timeout);
+        }
         if let Some(body) = body {
             request = request.body(body.to_owned());
         }

@@ -126,6 +126,7 @@ fn what_it_changes(rule: &str) -> &'static str {
         "fractal table set" | "fractal table insert" | "fractal table remove" => {
             "changes rows of a SAP table, committed with --execute and rolled back otherwise"
         }
+        "fractal test" => "runs ABAP Unit tests in SAP, and dangerous tests may change data",
         "fractal internal class-run" => {
             "runs a class's ABAP code in SAP, which can change any data the user may"
         }
@@ -186,7 +187,7 @@ const VALUE_FLAGS: &[&str] = &["--profile", "--output"];
 ///
 /// Compares whole words, so `fractal delete` does not match a rule for
 /// `fractal deletex`, and global flags before the subcommand are skipped —
-/// including their values, so `fractal --profile de3 delete` still reads as a
+/// including their values, so `fractal --profile qas delete` still reads as a
 /// delete.
 fn matching_rule<'a>(invocation: &[String], rules: &[&'a str]) -> Option<&'a str> {
     let mut words: Vec<&str> = Vec::new();
@@ -290,7 +291,7 @@ mod tests {
                 "rows of a SAP table",
             ),
             (
-                "fractal --profile de3 internal class-run ZCL_SAMPLE",
+                "fractal --profile qas internal class-run ZCL_SAMPLE",
                 "runs a class's ABAP",
             ),
         ] {
@@ -338,7 +339,7 @@ mod tests {
         for command in [
             "fractal binding publish --name ZSAMPLE_UI_O4",
             "fractal binding unpublish --name ZSAMPLE_UI_O4",
-            "fractal package create --name ZSAMPLE_PKG --description x --transport DE3K900123",
+            "fractal package create --name ZSAMPLE_PKG --description x --transport A4HK900123",
         ] {
             assert!(
                 matches!(decide(command, false), HookDecision::Ask(_)),
@@ -403,8 +404,8 @@ mod tests {
             "cd /repo && fractal delete --type CLAS --name ZCL_SAMPLE",
             "./target/debug/fractal delete --type CLAS --name ZCL_SAMPLE",
             "/usr/local/bin/fractal delete --type CLAS --name ZCL_SAMPLE",
-            "FRACTAL_PROFILE=de3 fractal delete --type CLAS --name ZCL_SAMPLE",
-            "fractal --profile de3 delete --type CLAS --name ZCL_SAMPLE",
+            "FRACTAL_PROFILE=qas fractal delete --type CLAS --name ZCL_SAMPLE",
+            "fractal --profile qas delete --type CLAS --name ZCL_SAMPLE",
             "echo hi; fractal delete --type CLAS --name ZCL_SAMPLE",
         ] {
             assert!(
@@ -442,10 +443,10 @@ mod tests {
     #[test]
     fn global_flags_before_the_subcommand_do_not_hide_it() {
         for command in [
-            "fractal --profile de3 delete --name X",
+            "fractal --profile qas delete --name X",
             "fractal --output json delete --name X",
-            "fractal --profile=de3 delete --name X",
-            "fractal --profile de3 --output json delete --name X",
+            "fractal --profile=qas delete --name X",
+            "fractal --profile qas --output json delete --name X",
         ] {
             assert!(
                 matches!(decide(command, false), HookDecision::Deny(_)),

@@ -13,6 +13,7 @@ use fractal::{
     credentials::CredentialError,
     reportable_error::ReportableError,
     sap::{
+        abap_unit::UnitTestError,
         adt_object_uri::AdtObjectUriError,
         adt_version::AdtVersion,
         class_include::ClassInclude,
@@ -554,6 +555,29 @@ fn contract() -> Vec<Expectation> {
             suggested_command: Some(
                 "fractal edit check --type DDLS --name ZSAMPLE_CHILD --version inactive",
             ),
+        },
+        Expectation {
+            error: Box::new(UnitTestError::TargetNotFound {
+                target: "CLAS ZSAMPLE_AU".to_owned(),
+            }),
+            code: "unit_test_target_not_found",
+            status: None,
+            message_contains: "CLAS ZSAMPLE_AU does not exist",
+            has_hint: true,
+            suggested_command: None,
+        },
+        Expectation {
+            error: Box::new(UnitTestError::SelectionUnknown {
+                target: "CLAS ZSAMPLE_AU LTC_ADD".to_owned(),
+                what: "NOPE".to_owned(),
+                kind: "method",
+                available: vec!["PASSES".to_owned()],
+            }),
+            code: "unit_test_selection_unknown",
+            status: None,
+            message_contains: "it has: PASSES",
+            has_hint: true,
+            suggested_command: None,
         },
     ]
 }

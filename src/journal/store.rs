@@ -352,7 +352,7 @@ mod tests {
 
     fn store() -> (EntryStore, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
-        (EntryStore::new(dir.path().join("de3")), dir)
+        (EntryStore::new(dir.path().join("qas")), dir)
     }
 
     fn entry(uri: &str) -> JournalEntry {

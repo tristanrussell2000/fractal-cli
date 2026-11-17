@@ -2,7 +2,9 @@ use std::fmt::Write as _;
 
 use serde::Serialize;
 
-use super::{connect, edit_object_identity::EditObjectIdentityOutput};
+use super::{
+    ObjectSpecError, connect, edit_object_identity::EditObjectIdentityOutput, parse_object_spec,
+};
 use crate::{
     cli::EditActivateArgs,
     output::{OutputFormat, print_json},
@@ -160,33 +162,6 @@ fn single_object(args: &EditActivateArgs) -> Result<(String, String), ObjectSpec
         (Some(object_type), Some(name)) => Ok((object_type.clone(), name.clone())),
         // clap requires both unless --object is given.
         _ => Err(ObjectSpecError(String::new())),
-    }
-}
-
-/// Splits `TYPE:NAME` at the first colon. A namespaced name keeps its slashes.
-fn parse_object_spec(spec: &str) -> Result<(String, String), ObjectSpecError> {
-    match spec.split_once(':') {
-        Some((object_type, name)) if !object_type.trim().is_empty() && !name.trim().is_empty() => {
-            Ok((object_type.trim().to_owned(), name.trim().to_owned()))
-        }
-        _ => Err(ObjectSpecError(spec.to_owned())),
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("'{0}' is not TYPE:NAME")]
-pub struct ObjectSpecError(String);
-
-impl fractal::reportable_error::ReportableError for ObjectSpecError {
-    fn code(&self) -> &'static str {
-        "invalid_object_spec"
-    }
-
-    fn hint(&self) -> Option<String> {
-        Some(
-            "Write each --object as the type, a colon, and the name, with no spaces: --object DDLS:ZRAP_R_TRAVEL --object DDLS:ZRAP_R_BOOKING."
-                .to_owned(),
-        )
     }
 }
 
@@ -651,11 +626,6 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(args.objects, ["DDLS:ZSAMPLE_PARENT", "DDLS:/ACME/CHILD"]);
-        // A namespaced name keeps its slashes; only the first colon splits.
-        assert_eq!(
-            parse_object_spec("DDLS:/ACME/CHILD").unwrap(),
-            ("DDLS".to_owned(), "/ACME/CHILD".to_owned())
-        );
     }
 
     #[test]
@@ -666,20 +636,6 @@ mod tests {
             activate_args(&["--type", "DDLS"]).is_err(),
             "a type needs a name"
         );
-    }
-
-    #[test]
-    fn a_malformed_object_says_how_to_write_it() {
-        for bad in ["ZSAMPLE_PARENT", "DDLS:", ":ZSAMPLE", "DDLS ZSAMPLE"] {
-            let error = parse_object_spec(bad).unwrap_err();
-            assert_eq!(
-                fractal::reportable_error::ReportableError::code(&error),
-                "invalid_object_spec",
-                "{bad}"
-            );
-            let hint = fractal::reportable_error::ReportableError::hint(&error).unwrap();
-            assert!(hint.contains("--object DDLS:ZRAP_R_TRAVEL"), "{hint}");
-        }
     }
 
     #[test]

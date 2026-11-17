@@ -332,7 +332,7 @@ mod tests {
     fn readable_tree_output_nests_a_package_under_its_parent() {
         let result = PackageTreeResultOutput {
             ok: true,
-            profile: "de2".to_owned(),
+            profile: "dev".to_owned(),
             root: "ZAPP".to_owned(),
             recursive: true,
             packages_walked: 3,
@@ -361,7 +361,7 @@ mod tests {
     fn a_package_whose_parent_was_never_walked_is_still_listed() {
         let result = PackageTreeResultOutput {
             ok: true,
-            profile: "de2".to_owned(),
+            profile: "dev".to_owned(),
             root: "ZAPP_CORE".to_owned(),
             recursive: false,
             packages_walked: 1,
@@ -380,7 +380,7 @@ mod tests {
     fn readable_items_output_tabulates_the_items() {
         let result = PackageItemsResultOutput {
             ok: true,
-            profile: "de2".to_owned(),
+            profile: "dev".to_owned(),
             root: "ZAPP".to_owned(),
             recursive: true,
             total_matching: 9,

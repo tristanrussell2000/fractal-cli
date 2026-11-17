@@ -328,6 +328,15 @@ async fn main() {
             )
             .await
         }
+        Command::Test(args) => {
+            output::run_and_print_with_exit_async(
+                || commands::unit_test::unit_test(cli.profile.as_deref(), args),
+                commands::unit_test::print_unit_test,
+                commands::unit_test::exit_code,
+                output,
+            )
+            .await
+        }
         Command::Undo(args) => {
             run_and_print_with_async(
                 || object_undo(cli.profile.as_deref(), args),

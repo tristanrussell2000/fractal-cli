@@ -377,7 +377,7 @@ mod tests {
         let mine = blobs.put("mine").unwrap();
         let theirs = blobs.put("theirs").unwrap();
 
-        let first = EntryStore::new(journal.join("de3"));
+        let first = EntryStore::new(journal.join("qas"));
         first.create(entry("/a", &mine)).unwrap();
         let second = EntryStore::new(journal.join("qe2"));
         second.create(entry("/a", &theirs)).unwrap();
@@ -415,7 +415,7 @@ mod tests {
         let blobs = BlobStore::new(dir.path().join("blobs"));
         let shared = blobs.put("shared").unwrap();
 
-        let store = EntryStore::new(journal.join("de3"));
+        let store = EntryStore::new(journal.join("qas"));
         store.create(entry("/a", &shared)).unwrap();
         store.create(entry("/b", &shared)).unwrap();
 
@@ -474,7 +474,7 @@ mod tests {
         let orphan = blobs.put("never referenced").unwrap();
         std::fs::write(blobs.path_of(&format!(".tmp-{}", hash('d'))), "half").unwrap();
 
-        let store = EntryStore::new(journal.join("de3"));
+        let store = EntryStore::new(journal.join("qas"));
         store.create(entry("/a", &old)).unwrap();
         store.create(entry("/a", &current)).unwrap();
 
@@ -502,7 +502,7 @@ mod tests {
         let mine = blobs.put("mine").unwrap();
         let theirs = blobs.put("theirs").unwrap();
 
-        EntryStore::new(journal.join("de3"))
+        EntryStore::new(journal.join("qas"))
             .create(entry("/a", &mine))
             .unwrap();
         EntryStore::new(journal.join("qe2"))

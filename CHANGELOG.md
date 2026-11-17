@@ -2,7 +2,30 @@
 
 ## Unreleased
 
+### Added
+
+- **`fractal test`** runs ABAP Unit tests and says whether they are green, for a class, program,
+  function group or package (with its sub-packages), several at once with repeated
+  `--object TYPE:NAME`. On a class, `--test-class` and `--method` narrow the run to one local test
+  class or some of its methods.
+  - **Green** means at least one test passed and nothing failed, errored, was skipped, or blocked a
+    whole test class (a failing `class_setup`) or program (syntax errors). A run narrowed to a
+    selection also has to have run exactly that.
+  - **Exit codes:** 0 when green; 1 when the run completed and is not green, with the failures in
+    the output; 2 when it could not be run.
+  - Each failure carries the include URI and line, which `edit read --include testclasses` opens.
+  - A missing object is refused up front (`unit_test_target_not_found`), because SAP answers it
+    exactly like an object without tests. An unknown `--test-class` or `--method` is refused with
+    the class's real ones listed.
+  - Harmless and dangerous tests, short and medium, run by default; `--risk` and `--duration` add
+    critical and long. The run waits up to `--timeout` seconds (default 300).
+  - `guard install` asks before it.
+
 ### Fixed
+
+- **`delete` refused a class whose own local tests use it** (`edit_delete_object_in_use`, naming
+  "Local Test Classes"). The 0.11.0 where-used change counted a hit inside the object's own
+  includes as a usage. References from within the object itself are now ignored.
 
 - **`guard install` let agents write table rows and run classes without asking.** `table set`,
   `insert` and `remove` and `internal class-run` are now on the ask list, in both the Claude Code

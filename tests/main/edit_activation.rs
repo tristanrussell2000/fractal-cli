@@ -682,7 +682,7 @@ const PREVIOUS_ACTIVE: &str = "CLASS zcl_sample DEFINITION.\n\" old\nENDCLASS.\n
 fn journal(dir: &tempfile::TempDir) -> Journal {
     Journal::with_roots(
         dir.path().join("blobs"),
-        dir.path().join("journal/de3"),
+        dir.path().join("journal/qas"),
         EntrySystem {
             base_url: "https://sap.example:8001".to_owned(),
             profile: "dev".to_owned(),
@@ -902,7 +902,7 @@ async fn without_a_journal_the_extra_active_read_never_happens() {
 fn unwritable_journal(dir: &tempfile::TempDir) -> Journal {
     use std::os::unix::fs::PermissionsExt as _;
 
-    let entries = dir.path().join("journal/de3");
+    let entries = dir.path().join("journal/qas");
     std::fs::create_dir_all(&entries).unwrap();
     std::fs::set_permissions(&entries, std::fs::Permissions::from_mode(0o500)).unwrap();
     Journal::with_roots(

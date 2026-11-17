@@ -898,7 +898,7 @@ mod tests {
     fn readable_search_output_tabulates_the_hits() {
         let result = ObjectSearchResultOutput {
             ok: true,
-            profile: "de2".to_owned(),
+            profile: "dev".to_owned(),
             query: "SAMPLE".to_owned(),
             package_patterns: vec!["ZAPP*".to_owned()],
             package_patterns_source: "default".to_owned(),
@@ -943,7 +943,7 @@ mod tests {
         };
         let mut result = ObjectUsagesResultOutput {
             ok: true,
-            profile: "de2".to_owned(),
+            profile: "dev".to_owned(),
             uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
             direct_results_only: false,
             total: 1,
@@ -968,7 +968,7 @@ mod tests {
     fn readable_source_output_keeps_the_source_verbatim() {
         let result = ObjectSourceResultOutput {
             ok: true,
-            profile: "de2".to_owned(),
+            profile: "dev".to_owned(),
             uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
             include: Some("implementations"),
             source_uri: "/sap/bc/adt/oo/classes/zcl_sample/includes/implementations".to_owned(),
@@ -998,7 +998,7 @@ mod tests {
     fn readable_source_output_omits_truncation_when_the_whole_source_is_returned() {
         let result = ObjectSourceResultOutput {
             ok: true,
-            profile: "de2".to_owned(),
+            profile: "dev".to_owned(),
             uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
             include: Some("implementations"),
             source_uri: "/sap/bc/adt/oo/classes/zcl_sample/includes/implementations".to_owned(),
@@ -1029,7 +1029,7 @@ mod tests {
     fn readable_xml_output_keeps_the_document_verbatim() {
         let result = ObjectXmlResultOutput {
             ok: true,
-            profile: "de2".to_owned(),
+            profile: "dev".to_owned(),
             uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
             requested_version: "active",
             version: Some("inactive".to_owned()),

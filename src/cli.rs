@@ -114,6 +114,28 @@ pub enum Command {
         #[command(subcommand)]
         command: BindingCommand,
     },
+    /// Run ABAP Unit tests and say whether they are green.
+    ///
+    ///   fractal test --type CLAS --name ZRAP_BP_TRAVEL
+    ///   fractal test --type CLAS --name ZRAP_BP_TRAVEL --test-class LTC_TRAVEL
+    ///   fractal test --type CLAS --name ZRAP_BP_TRAVEL --test-class LTC_TRAVEL --method VALIDATES_DATES
+    ///   fractal test --object CLAS:ZRAP_BP_TRAVEL --object DEVC:ZRAP_TRAVEL
+    ///
+    /// Targets are classes (CLAS), programs (PROG), function groups (FUGR) or
+    /// packages (DEVC, with their sub-packages). Several targets use one
+    /// --object TYPE:NAME each (type, a colon, the name; no spaces).
+    ///
+    /// Green means at least one test passed and nothing failed, errored, was
+    /// skipped, or blocked a whole test class (a failing class_setup) or
+    /// program (syntax errors). Exit code 0 is green; 1 is a run that
+    /// completed and is not green, with the failures in the output; 2 is a
+    /// run that could not be done.
+    ///
+    /// Tests run as your SAP user. Harmless and dangerous tests, short and
+    /// medium, run by default; dangerous tests may change data. Critical and
+    /// long tests run only when named in --risk and --duration.
+    #[command(verbatim_doc_comment)]
+    Test(TestArgs),
     /// Read and safely edit supported source-based repository objects.
     Edit {
         #[command(subcommand)]
@@ -191,6 +213,53 @@ pub struct BindingPublishArgs {
     /// Read the current state and report the request without sending it.
     #[arg(long, default_value_t = false)]
     pub(crate) dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct TestArgs {
+    /// What to test: CLAS, PROG, FUGR or DEVC. Not with --object.
+    #[arg(
+        long = "type",
+        required_unless_present = "objects",
+        conflicts_with = "objects"
+    )]
+    pub(crate) object_type: Option<String>,
+    /// Object or package name. Not with --object.
+    #[arg(long, required_unless_present = "objects", conflicts_with = "objects")]
+    pub(crate) name: Option<String>,
+    /// One target of several, written TYPE:NAME, such as CLAS:ZRAP_BP_TRAVEL.
+    /// Repeat it once per target.
+    #[arg(long = "object", value_name = "TYPE:NAME")]
+    pub(crate) objects: Vec<String>,
+    /// Run only this local test class of the class named by --name.
+    #[arg(long, requires = "name")]
+    pub(crate) test_class: Option<String>,
+    /// Run only this method of --test-class. Repeat it for more.
+    #[arg(long = "method", requires = "test_class")]
+    pub(crate) methods: Vec<String>,
+    /// Risk levels to run, comma-separated: harmless, dangerous, critical.
+    #[arg(long, value_delimiter = ',', default_value = "harmless,dangerous")]
+    pub(crate) risk: Vec<RiskArg>,
+    /// Durations to run, comma-separated: short, medium, long.
+    #[arg(long, value_delimiter = ',', default_value = "short,medium")]
+    pub(crate) duration: Vec<DurationArg>,
+    /// Seconds to wait for SAP to finish every test.
+    #[arg(long, default_value_t = 300)]
+    pub(crate) timeout: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum RiskArg {
+    Harmless,
+    Dangerous,
+    Critical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum DurationArg {
+    Short,
+    Medium,
+    Long,
 }
 
 #[derive(Debug, Subcommand)]

@@ -155,24 +155,24 @@ mod tests {
     fn one_system_reached_two_ways_keeps_one_history() {
         // Different scheme, port, path and case — same host, so the same
         // history. A profile rename or a second profile must not orphan it.
-        let key = system_key("https://de3.example.com:8001").unwrap();
-        assert_eq!(system_key("https://DE3.example.com:44300/").unwrap(), key);
-        assert_eq!(system_key("http://de3.example.com").unwrap(), key);
+        let key = system_key("https://qas.example.com:8001").unwrap();
+        assert_eq!(system_key("https://QAS.example.com:44300/").unwrap(), key);
+        assert_eq!(system_key("http://qas.example.com").unwrap(), key);
     }
 
     #[test]
     fn different_hosts_are_different_systems() {
         assert_ne!(
-            system_key("https://de3.example.com:8001").unwrap(),
+            system_key("https://qas.example.com:8001").unwrap(),
             system_key("https://qe2.example.com:8001").unwrap()
         );
     }
 
     #[test]
     fn the_key_is_readable_and_still_unambiguous() {
-        let key = system_key("https://de3.example.com:8001").unwrap();
-        assert!(key.starts_with("de3.example.com-"), "{key}");
-        assert_eq!(key.len(), "de3.example.com-".len() + HOST_DIGEST_LENGTH);
+        let key = system_key("https://qas.example.com:8001").unwrap();
+        assert!(key.starts_with("qas.example.com-"), "{key}");
+        assert_eq!(key.len(), "qas.example.com-".len() + HOST_DIGEST_LENGTH);
     }
 
     #[test]

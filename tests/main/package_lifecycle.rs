@@ -83,7 +83,7 @@ async fn a_subpackage_inherits_its_parents_transport_attributes() {
         .await;
     Mock::given(method("POST"))
         .and(path("/sap/bc/adt/packages"))
-        .and(query_param("corrNr", "DE3K900123"))
+        .and(query_param("corrNr", "A4HK900123"))
         .and(body_string_contains(
             r#"<pak:superPackage adtcore:name="ZSAMPLE_ROOT"/>"#,
         ))
@@ -101,13 +101,13 @@ async fn a_subpackage_inherits_its_parents_transport_attributes() {
     let result = create_package(
         &mut client(&server).await,
         &policy(),
-        &request("zsample_pkg", Some("de3k900123"), Some("zsample_root")),
+        &request("zsample_pkg", Some("a4hk900123"), Some("zsample_root")),
     )
     .await
     .unwrap();
 
     assert_eq!(result.package.name, "ZSAMPLE_PKG");
-    assert_eq!(result.transport.as_deref(), Some("DE3K900123"));
+    assert_eq!(result.transport.as_deref(), Some("A4HK900123"));
     assert!(!result.local);
     server.verify().await;
 }
@@ -231,7 +231,7 @@ async fn deleted_objects_still_registered_to_the_package_are_named_and_the_lock_
     Mock::given(method("DELETE"))
         .and(path(PACKAGE_PATH))
         .and(query_param("lockHandle", "package-lock"))
-        .and(query_param("corrNr", "DE3K900123"))
+        .and(query_param("corrNr", "A4HK900123"))
         .respond_with(ResponseTemplate::new(400).set_body_string(
             "<exc:exception><message>Package ZSAMPLE_PKG still contains development objects or other packages</message></exc:exception>",
         ))
@@ -246,7 +246,7 @@ async fn deleted_objects_still_registered_to_the_package_are_named_and_the_lock_
         &mut client(&server).await,
         &policy(),
         "zsample_pkg",
-        Some("DE3K900123"),
+        Some("A4HK900123"),
         false,
     )
     .await

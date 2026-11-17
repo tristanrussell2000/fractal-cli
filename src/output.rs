@@ -60,6 +60,33 @@ where
     }
 }
 
+/// [`run_and_print_with_async`] for a command whose successful result still
+/// decides the exit code, such as a test run that ran and was not green.
+pub async fn run_and_print_with_exit_async<T, F, Fut, P, E>(
+    operation: F,
+    print: P,
+    exit_code: E,
+    output: OutputFormat,
+) -> i32
+where
+    T: Serialize,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<T, Reported>>,
+    P: FnOnce(&T, OutputFormat),
+    E: FnOnce(&T) -> i32,
+{
+    match operation().await {
+        Ok(result) => {
+            print(&result, output);
+            exit_code(&result)
+        }
+        Err(error) => {
+            print_error(&error, output);
+            2
+        }
+    }
+}
+
 pub fn print_json<T: Serialize>(result: &T) {
     println!(
         "{}",

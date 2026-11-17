@@ -1863,7 +1863,7 @@ mod tests {
         )
         .unwrap();
         let entry = TransportEntry {
-            task: "DE3K900671".to_owned(),
+            task: "A4HK900671".to_owned(),
         };
         let abap = generate_abap("ZCL_X", &write, WriteMode::Execute, Some(&entry));
 
@@ -1877,7 +1877,7 @@ mod tests {
         assert!(update < real, "the entry is recorded after the commit");
 
         assert!(abap.contains("ls_e071-obj_name = 'ZSAMPLE_RECORD'"));
-        assert!(abap.contains("wi_trkorr             = 'DE3K900671'"));
+        assert!(abap.contains("wi_trkorr             = 'A4HK900671'"));
         // The client leads the key of a client-dependent table.
         assert!(
             abap.contains("lv_tabkey+lv_off(lv_len) = sy-mandt"),
@@ -1945,7 +1945,7 @@ mod tests {
         };
         let write = validate(&uuid_metadata(), &insert, &BTreeMap::new()).unwrap();
         let entry = TransportEntry {
-            task: "DE3K900671".to_owned(),
+            task: "A4HK900671".to_owned(),
         };
         let abap = generate_abap("ZCL_X", &write, WriteMode::Execute, Some(&entry));
 
@@ -2014,7 +2014,7 @@ mod tests {
         )
         .unwrap();
         let entry = TransportEntry {
-            task: "DE3K900671".to_owned(),
+            task: "A4HK900671".to_owned(),
         };
         let abap = generate_abap("ZCL_X", &write, WriteMode::DryRun, Some(&entry));
 

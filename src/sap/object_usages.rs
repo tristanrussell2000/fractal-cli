@@ -147,7 +147,11 @@ fn parse_usage_references(
         .filter(|node| node.tag_name().name() == "referencedObject")
         .filter_map(|node| {
             let uri = node.attribute("uri")?.to_owned();
-            if normalize_reference_uri(&uri) == target {
+            // The object itself, or a hit inside one of its own includes
+            // (`…/includes/testclasses#start=1,0`): an object's local tests
+            // using it are not something deleting it would break.
+            let reference = normalize_reference_uri(&uri);
+            if reference == target || reference.starts_with(&format!("{target}/")) {
                 return None;
             }
 
@@ -203,6 +207,25 @@ mod tests {
         let refs =
             parse_usage_references(xml, "/sap/bc/adt/ddic/dataelements/zexample_element").unwrap();
         assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn a_hit_inside_the_object_itself_is_not_a_usage() {
+        // A class whose local test classes create it: SAP reports that hit,
+        // graded, under the class's own testclasses include.
+        let xml = r#"<usageReferences:usageReferenceResult numberOfResults="1" xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences"><usageReferences:referencedObjects>
+            <usageReferences:referencedObject uri="/sap/bc/adt/oo/classes/zsample_au/includes/testclasses#start=1,0" parentUri="/sap/bc/adt/oo/classes/zsample_au" isResult="false" usageInformation="gradeDirect,includeTest">
+                <usageReferences:adtObject adtcore:name="Local Test Classes" adtcore:type="CLAS/OCN" xmlns:adtcore="http://www.sap.com/adt/core"/>
+            </usageReferences:referencedObject>
+            <usageReferences:referencedObject uri="/sap/bc/adt/oo/classes/zsample_au_other" isResult="false" usageInformation="gradeDirect,includeProductive">
+                <usageReferences:adtObject adtcore:name="ZSAMPLE_AU_OTHER" adtcore:type="CLAS/OC" xmlns:adtcore="http://www.sap.com/adt/core"/>
+            </usageReferences:referencedObject>
+        </usageReferences:referencedObjects></usageReferences:usageReferenceResult>"#;
+
+        let refs = parse_usage_references(xml, "/sap/bc/adt/oo/classes/zsample_au").unwrap();
+        // A sibling whose name only starts the same is still a real usage.
+        let names: Vec<_> = refs.iter().filter_map(|r| r.name.as_deref()).collect();
+        assert_eq!(names, ["ZSAMPLE_AU_OTHER"]);
     }
 
     #[test]

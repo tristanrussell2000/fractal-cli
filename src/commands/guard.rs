@@ -60,6 +60,8 @@ pub(super) const ASKED: &[&str] = &[
     "fractal table remove",
     // Runs an activated class's ABAP, which can change anything at all.
     "fractal internal class-run",
+    // Runs test code as the user; dangerous tests may change data.
+    "fractal test",
     "fractal auth",
 ];
 

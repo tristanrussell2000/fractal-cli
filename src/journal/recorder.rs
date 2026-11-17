@@ -433,7 +433,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let journal = Journal::with_roots(
             dir.path().join("blobs"),
-            dir.path().join("journal").join("de3"),
+            dir.path().join("journal").join("qas"),
             EntrySystem {
                 base_url: "https://sap.example:8001".to_owned(),
                 profile: "dev".to_owned(),

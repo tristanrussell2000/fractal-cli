@@ -233,7 +233,7 @@ impl ReportableError for PackageLifecycleError {
             }
             Self::PackageNotAllowed(error) => return error.hint(),
             Self::InvalidTransport(_) => {
-                "Use a request number such as DE3K900123.".to_owned()
+                "Use a request number such as A4HK900123.".to_owned()
             }
             Self::TransportOnLocal { .. } => "Drop --transport.".to_owned(),
             Self::TransportRequired { .. } => {

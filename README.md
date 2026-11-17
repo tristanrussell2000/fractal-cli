@@ -156,6 +156,7 @@ fractal binding    show | publish | unpublish | get
 fractal delete     <one destructive verb, kept out of `edit` on purpose>
 fractal journal    list | show | clear
 fractal undo       <reverse a recorded activation or table write>
+fractal test       <run ABAP Unit tests: exit 0 green, 1 not green, 2 could not run>
 fractal guard      install
 ```
 

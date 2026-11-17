@@ -15,6 +15,8 @@
 #[path = "main/adt_edit_mock/mod.rs"]
 mod adt_edit_mock;
 
+#[path = "main/abap_unit.rs"]
+mod abap_unit;
 #[path = "main/adt.rs"]
 mod adt;
 #[path = "main/class_run.rs"]

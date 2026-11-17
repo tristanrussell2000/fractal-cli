@@ -351,7 +351,7 @@ async fn a_failed_activation_on_an_already_active_object_is_not_success() {
 fn journal(dir: &tempfile::TempDir) -> Journal {
     Journal::with_roots(
         dir.path().join("blobs"),
-        dir.path().join("journal/de3"),
+        dir.path().join("journal/qas"),
         EntrySystem {
             base_url: "https://sap.example:8001".to_owned(),
             profile: "dev".to_owned(),

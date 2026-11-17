@@ -255,7 +255,7 @@ async fn an_object_with_nothing_staged_is_left_out_of_the_request() {
 fn journal(dir: &tempfile::TempDir) -> fractal::journal::recorder::Journal {
     fractal::journal::recorder::Journal::with_roots(
         dir.path().join("blobs"),
-        dir.path().join("journal/de3"),
+        dir.path().join("journal/qas"),
         fractal::journal::entry::EntrySystem {
             base_url: "https://sap.example:8001".to_owned(),
             profile: "dev".to_owned(),
