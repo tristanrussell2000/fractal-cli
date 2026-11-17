@@ -755,10 +755,10 @@ mod tests {
         let result = AuthListResult {
             ok: true,
             config_path: "/home/u/.config/fractal/config.toml".to_owned(),
-            default_profile: Some("de2".to_owned()),
+            default_profile: Some("dev".to_owned()),
             profiles: vec![
                 AuthProfileSummary {
-                    name: "de2".to_owned(),
+                    name: "dev".to_owned(),
                     base_url: "https://sap.example:44300".to_owned(),
                     client: "900".to_owned(),
                     username: "ZSAMPLE".to_owned(),
@@ -770,7 +770,7 @@ mod tests {
                     credential_error: None,
                 },
                 AuthProfileSummary {
-                    name: "de3".to_owned(),
+                    name: "qas".to_owned(),
                     base_url: "https://sap3.example:44300".to_owned(),
                     client: "900".to_owned(),
                     username: "ZSAMPLE".to_owned(),
@@ -779,15 +779,15 @@ mod tests {
                     edit_packages: None,
                     allow_temporary_package: false,
                     credential: "missing".to_owned(),
-                    credential_error: Some("no password stored for profile 'de3'".to_owned()),
+                    credential_error: Some("no password stored for profile 'qas'".to_owned()),
                 },
             ],
         };
 
         let rendered = render_auth_list_readable(&result);
 
-        assert!(rendered.contains("  * de2"));
-        assert!(rendered.contains("    de3"));
+        assert!(rendered.contains("  * dev"));
+        assert!(rendered.contains("    qas"));
         assert!(rendered.contains("edit packages: ZAPP*"));
         assert!(rendered.contains("edit packages: any package"));
         assert!(rendered.contains("credential: missing - no password stored"));
@@ -799,13 +799,13 @@ mod tests {
     fn readable_set_output_says_when_a_profile_may_edit_nothing() {
         let result = AuthSetResult {
             ok: true,
-            profile: "de2".to_owned(),
+            profile: "dev".to_owned(),
             config_path: "/home/u/.config/fractal/config.toml".to_owned(),
             customer_namespaces: vec!["Z*".to_owned()],
             edit_packages: Some(Vec::new()),
             allow_temporary_package: false,
             restricts_packages: true,
-            default_profile: Some("de2".to_owned()),
+            default_profile: Some("dev".to_owned()),
             is_new_default: false,
         };
 
@@ -819,13 +819,13 @@ mod tests {
     fn readable_set_output_says_when_the_default_moved() {
         let result = AuthSetResult {
             ok: true,
-            profile: "DE2".to_owned(),
+            profile: "DEV".to_owned(),
             config_path: "/home/u/.config/fractal/config.toml".to_owned(),
             customer_namespaces: vec!["Z*".to_owned()],
             edit_packages: None,
             allow_temporary_package: true,
             restricts_packages: false,
-            default_profile: Some("DE2".to_owned()),
+            default_profile: Some("DEV".to_owned()),
             is_new_default: true,
         };
 
@@ -836,7 +836,7 @@ mod tests {
     fn readable_login_output_keeps_the_plaintext_warning() {
         let result = AuthLoginResult {
             ok: true,
-            profile: "de2".to_owned(),
+            profile: "dev".to_owned(),
             config_path: "/home/u/.config/fractal/config.toml".to_owned(),
             became_default: true,
             password_storage: "plaintext_file".to_owned(),
@@ -865,23 +865,23 @@ mod tests {
 
     #[test]
     fn makes_a_profile_the_default() {
-        let mut current = Some("de3".to_owned());
-        assert!(set_default_profile(&mut current, "DE2"));
-        assert_eq!(current.as_deref(), Some("DE2"));
+        let mut current = Some("qas".to_owned());
+        assert!(set_default_profile(&mut current, "DEV"));
+        assert_eq!(current.as_deref(), Some("DEV"));
     }
 
     #[test]
     fn setting_the_default_it_already_has_changes_nothing() {
-        let mut current = Some("DE2".to_owned());
-        assert!(!set_default_profile(&mut current, "DE2"));
-        assert_eq!(current.as_deref(), Some("DE2"));
+        let mut current = Some("DEV".to_owned());
+        assert!(!set_default_profile(&mut current, "DEV"));
+        assert_eq!(current.as_deref(), Some("DEV"));
     }
 
     #[test]
     fn sets_the_first_default_when_there_is_none() {
         let mut current = None;
-        assert!(set_default_profile(&mut current, "DE2"));
-        assert_eq!(current.as_deref(), Some("DE2"));
+        assert!(set_default_profile(&mut current, "DEV"));
+        assert_eq!(current.as_deref(), Some("DEV"));
     }
 
     fn configured_profile() -> config::Profile {
