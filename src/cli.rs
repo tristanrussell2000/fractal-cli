@@ -141,6 +141,58 @@ pub enum Command {
         #[command(subcommand)]
         command: EditCommand,
     },
+    /// Read ABAP short dumps (ST22): what an empty HTTP 500 left behind.
+    ///
+    ///   fractal dump list
+    ///   fractal dump show --latest
+    Dump {
+        #[command(subcommand)]
+        command: DumpCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DumpCommand {
+    /// List short dumps, newest first. Your own from the last 24 hours unless
+    /// told otherwise. Each comes with the `dump show` command that reads it.
+    List(DumpListArgs),
+    /// Show one dump: the runtime error, where it stopped (as a source URI and
+    /// line `edit read` can open), the developer chapters and the call stack.
+    ///
+    /// The Selected Variables chapter, which is usually most of a dump and
+    /// holds the program's data, and the memory, kernel and system chapters
+    /// are left out unless --full is passed.
+    Show(DumpShowArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct DumpListArgs {
+    /// How far back to look: minutes, hours or days such as 30m, 2h or 7d, or
+    /// a date such as 2026-11-17 (UTC midnight).
+    #[arg(long, default_value = "24h")]
+    pub(crate) since: String,
+    /// Most dumps to list.
+    #[arg(long, default_value_t = 20)]
+    pub(crate) limit: usize,
+    /// Another user's dumps instead of your own.
+    #[arg(long, conflicts_with = "all_users")]
+    pub(crate) user: Option<String>,
+    /// Every user's dumps.
+    #[arg(long, default_value_t = false)]
+    pub(crate) all_users: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct DumpShowArgs {
+    /// The dump's id, as `dump list` prints it. Quote it: it contains spaces.
+    #[arg(required_unless_present = "latest", conflicts_with = "latest")]
+    pub(crate) id: Option<String>,
+    /// Your newest dump, however old.
+    #[arg(long, default_value_t = false)]
+    pub(crate) latest: bool,
+    /// Every chapter of the dump, including Selected Variables.
+    #[arg(long, default_value_t = false)]
+    pub(crate) full: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1212,6 +1264,7 @@ mod tests {
             ),
             suggested_command::binding_show("ZSAMPLE_UI_O4"),
             suggested_command::package_items("ZSAMPLE_PKG"),
+            suggested_command::dump_show_latest(),
         ];
 
         for command in commands {

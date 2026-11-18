@@ -13,6 +13,17 @@
     (`cds_inactive_version_not_served`).
   - An entity that exists but was never activated is reported as `cds_entity_not_active`, with
     the activation command, rather than as missing.
+- **`fractal dump list` and `fractal dump show`** read ABAP short dumps (ST22).
+  - `dump list` lists your dumps from the last 24 hours, newest first, each with the `dump show`
+    command that reads it. `--since` (`30m`, `2h`, `7d` or a date), `--limit`, `--user` and
+    `--all-users` change what is listed.
+  - `dump show <ID>`, or `dump show --latest` for your newest, prints the runtime error, the
+    exception, the termination point as a source URI and line that `edit read` opens, the
+    developer chapters (what happened, error analysis, how to correct, the exception chain, where
+    it stopped, the source extract) and the call stack. Selected Variables, which hold the
+    program's data, and the memory, kernel and system chapters come only with `--full`.
+  - A `class-run` that fails with a server error, and a `binding get` answered with one, now
+    suggest `fractal dump show --latest`.
 
 ## 0.12.0
 

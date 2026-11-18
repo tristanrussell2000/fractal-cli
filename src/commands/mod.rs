@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod binding;
+pub mod dump;
 pub mod edit_activate;
 pub mod edit_check;
 pub mod edit_create;

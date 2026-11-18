@@ -11,7 +11,7 @@ use thiserror::Error;
 use super::{
     class_include::ClassInclude,
     client::{SapClient, SapClientError},
-    find_attribute_value, find_non_empty_attribute,
+    find_attribute_value, find_child, find_non_empty_attribute,
 };
 use crate::reportable_error::ReportableError;
 
@@ -196,10 +196,10 @@ fn parse_inactive_objects(response: &str) -> Result<Vec<InactiveObject>, Inactiv
         // An entry without an object heads a transport group. SAP does not
         // list the group's objects after it, so each object's own transport
         // is what places it.
-        let Some(object) = child(entry, "object") else {
+        let Some(object) = find_child(entry, "object") else {
             continue;
         };
-        let Some(reference) = child(object, "ref") else {
+        let Some(reference) = find_child(object, "ref") else {
             continue;
         };
         let Some(uri) = find_non_empty_attribute(reference, "uri") else {
@@ -208,8 +208,8 @@ fn parse_inactive_objects(response: &str) -> Result<Vec<InactiveObject>, Inactiv
         let adt_type = find_non_empty_attribute(reference, "type").unwrap_or_default();
         let name = find_non_empty_attribute(reference, "name").unwrap_or_default();
         let deleted = find_attribute_value(object, "deleted") == Some("true");
-        let transport = child(entry, "transport")
-            .and_then(|transport| child(transport, "ref"))
+        let transport = find_child(entry, "transport")
+            .and_then(|transport| find_child(transport, "ref"))
             .and_then(transport_of);
 
         let (object_uri, part) = match ClassInclude::split_source_uri(&uri) {
@@ -258,14 +258,6 @@ fn parse_inactive_objects(response: &str) -> Result<Vec<InactiveObject>, Inactiv
         (&left.object_type, &left.name).cmp(&(&right.object_type, &right.name))
     });
     Ok(objects)
-}
-
-fn child<'a, 'input>(
-    node: roxmltree::Node<'a, 'input>,
-    name: &str,
-) -> Option<roxmltree::Node<'a, 'input>> {
-    node.children()
-        .find(|child| child.is_element() && child.tag_name().name() == name)
 }
 
 fn transport_of(reference: roxmltree::Node<'_, '_>) -> Option<InactiveTransport> {

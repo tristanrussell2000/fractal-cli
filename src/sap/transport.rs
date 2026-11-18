@@ -12,7 +12,7 @@ use thiserror::Error;
 
 use super::{
     client::{SapClient, SapClientError},
-    find_attribute_value, find_non_empty_attribute,
+    find_attribute_value, find_children, find_non_empty_attribute,
 };
 use crate::{
     reportable_error::{ReportableError, sap_http_status},
@@ -313,7 +313,7 @@ fn read_tasks(document: &roxmltree::Document<'_>) -> Vec<TransportTaskDetail> {
             status: find_non_empty_attribute(task, "status"),
             status_text: find_non_empty_attribute(task, "status_text"),
             task_type: find_non_empty_attribute(task, "type"),
-            objects: child_elements(task, "abap_object")
+            objects: find_children(task, "abap_object")
                 .map(read_object)
                 .collect(),
         })
@@ -330,9 +330,9 @@ fn read_tasks(document: &roxmltree::Document<'_>) -> Vec<TransportTaskDetail> {
 /// returns: SAP sends the parent's header with no aggregate at all. That is
 /// not the same as a request holding nothing.
 fn aggregated_objects(request: roxmltree::Node<'_, '_>) -> Option<Vec<TransportObject>> {
-    let wrapper = child_elements(request, "all_objects").next()?;
+    let wrapper = find_children(request, "all_objects").next()?;
     Some(
-        child_elements(wrapper, "abap_object")
+        find_children(wrapper, "abap_object")
             .map(read_object)
             .collect(),
     )
@@ -367,14 +367,6 @@ fn read_object(node: roxmltree::Node<'_, '_>) -> TransportObject {
             .to_owned(),
         workbench_type: find_non_empty_attribute(node, "wbtype"),
     }
-}
-
-fn child_elements<'a>(
-    node: roxmltree::Node<'a, 'a>,
-    name: &'static str,
-) -> impl Iterator<Item = roxmltree::Node<'a, 'a>> {
-    node.children()
-        .filter(move |child| child.is_element() && child.tag_name().name() == name)
 }
 
 /// A failure while reading the transport organizer.

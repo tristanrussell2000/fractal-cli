@@ -24,6 +24,12 @@ pub fn system_test() -> String {
     "fractal system test".to_owned()
 }
 
+/// Shows the caller's newest short dump: what an empty HTTP 500 left behind.
+#[must_use]
+pub fn dump_show_latest() -> String {
+    "fractal dump show --latest".to_owned()
+}
+
 /// Reads one stored source version of an editable object.
 #[must_use]
 pub fn edit_read(object_type: &str, name: &str, version: &str) -> String {

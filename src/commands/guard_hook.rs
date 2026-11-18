@@ -259,6 +259,8 @@ mod tests {
         for command in [
             "fractal edit read --type PROG --name ZSAMPLE",
             "fractal edit inactive",
+            "fractal dump list --all-users",
+            "fractal dump show --latest",
             "fractal object search 'Z*'",
             "fractal object show ZSAMPLE_STATUS",
             "fractal table data ZSAMPLE",

@@ -1,0 +1,300 @@
+----------------------------------------------------------------------------------------------------
+Category               ABAP programming error                                                 
+Runtime Errors         COMPUTE_INT_ZERODIVIDE                                                       
+Except.                CX_SY_ZERODIVIDE                                                             
+ABAP: Program          ZSAMPLE_DUMPER================CP                                             
+Application Component  Not assigned                                                                 
+Date and Time          17.11.2026 22:56:56 (CET)                                                 
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Short Text                                                                                        |
+|    Division by 0 (type I or INT8)                                                                |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|What happened?                                                                                    |
+|    Error in the ABAP application program.                                                        |
+|                                                                                                  |
+|    The current ABAP program "ZSAMPLE_DUMPER================CP" had to be                         |
+|     terminated because it found a                                                                |
+|    statement that could not be executed.                                                         |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|What can you do?                                                                                  |
+|    Note which actions and entries caused the error to occur.                                     |
+|                                                                                                  |
+|    Consult your SAP administrator.                                                               |
+|                                                                                                  |
+|    Using transaction ST22 for ABAP dump analysis, you can view, manage,                          |
+|    and retain termination messages for longer periods.                                           |
+|    Note which actions and entries caused the error to occur.                                     |
+|                                                                                                  |
+|    Consult your SAP administrator.                                                               |
+|                                                                                                  |
+|    Using transaction ST22 for ABAP dump analysis, you can view, manage,                          |
+|    and retain termination messages for longer periods.                                           |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Error analysis                                                                                    |
+|    An exception has occurred in class "CX_SY_ZERODIVIDE". This exception was not                 |
+|     caught                                                                                       |
+|    in procedure "DIVIDE" "(METHOD)" or propagated by a RAISING clause.                           |
+|    Since the caller of the procedure could not have anticipated this                             |
+|    exception, the current program was terminated.                                                |
+|    The reason for the exception occurring was:                                                   |
+|    The reason for the exception is:                                                              |
+|    In the current program "ZSAMPLE_DUMPER================CP", a division                         |
+|     ('DIVIDE', '/', 'DIV' or 'MOD')                                                              |
+|    attempted to use operands of type I or INT8 to divide by 0.                                   |
+|    by 0.                                                                                         |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|How to correct the error                                                                          |
+|    If the exception cannot be prevented, "CX_SY_ZERODIVIDE" must be caught within                |
+|    procedure "DIVIDE" "(METHOD)" or declared in the procedure's RAISING clause.                  |
+|    To prevent the exception, note the following:                                                 |
+|                                                                                                  |
+|    If the error occurs in one of your own ABAP programs or an SAP program                        |
+|    that you have modified, try to remedy the error.                                              |
+|    If the error occurs in a non-modfied SAP program, you might be able to                        |
+|    find a solution in the SAP Notes system. If you have access to the SAP                        |
+|    Notes system, check there first using the following keywords:                                 |
+|                                                                                                  |
+|    "COMPUTE_INT_ZERODIVIDE" CX_SY_ZERODIVIDE                                                     |
+|    "ZSAMPLE_DUMPER================CP" bzw. ZSAMPLE_DUMPER================CM001                   |
+|    "DIVIDE"                                                                                      |
+|    If you cannot solve the problem yourself, please send the following                           |
+|    information to SAP:                                                                           |
+|                                                                                                  |
+|    1. The description of the problem (short dump)                                                |
+|    Please press the "Local File” button in the current display.                                  |
+|                                                                                                  |
+|    2. The relevant system log                                                                    |
+|    To do this, call the system log in transaction SM21. Restrict the time                        |
+|    interval to ten minutes before the short dump and five minutes after                          |
+|    it. In the display, choose System -> List -> Save -> Local File                               |
+|    (unconverted).                                                                                |
+|                                                                                                  |
+|    3. If these are programs of your own, or modified SAP programs: The                           |
+|    source text of the programs                                                                   |
+|    To do this, please choose                                                                     |
+|    "Other Utilities -> Upload/Download -> Download".                                             |
+|                                                                                                  |
+|    4. Details regarding the conditionsunder which the error occurred or                          |
+|    which actions and input caused the error.                                                     |
+|    which actions and input caused the error.                                                     |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|System environment                                                                                |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|User and Transaction                                                                              |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Server-Side Connection Information                                                                |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+|                                                                                                  |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Chain of Exception Objects                                                                        |
+----------------------------------------------------------------------------------------------------
+|Level        Class                                                                                |
+|Attrib. Name                   Value                                                              |
+----------------------------------------------------------------------------------------------------
+|1            CX_SY_ZERODIVIDE                                                                     |
+|(Program)                      ZSAMPLE_DUMPER================CP                                   |
+|(Include)                      ZSAMPLE_DUMPER================CM001                                |
+|(Row)                          2                                                                  |
+|(Short Text)                   Division by zero                                                   |
+|(Long Text)                    You tried to divide by zero during the operation '/'.              |
+|IS_RESUMABLE                                                                                      |
+|KERNEL_ERRID                   COMPUTE_INT_ZERODIVIDE                                             |
+|OPERATION                      /                                                                  |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Information on where terminated                                                                   |
+|    The termination occurred in ABAP program or include                                           |
+|     "ZSAMPLE_DUMPER================CP", in "DIVIDE". The                                         |
+|    main program was "SAPMHTTP".                                                                  |
+|                                                                                                  |
+|    In the source code, the termination point is in line 2 of include                             |
+|     "ZSAMPLE_DUMPER================CM001".                                                       |
+|    include "ZSAMPLE_DUMPER================CM001".                                                |
+|    The termination is due toexception "CX_SY_ZERODIVIDE" occurring in procedure                  |
+|     "DIVIDE" "(METHOD)",                                                                         |
+|    but not being handled locally there or being declared in the RAISING                          |
+|    clause.                                                                                       |
+|    The procedure is in program "ZSAMPLE_DUMPER================CP". Its source                    |
+|     code begins in line 1 of                                                                     |
+|    include "ZSAMPLE_DUMPER================CM001".                                                |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Source Code Extract                                                                               |
+----------------------------------------------------------------------------------------------------
+|Line |Code                                                                                        |
+----------------------------------------------------------------------------------------------------
+|    1|  METHOD divide.                                                                            |
+|>>>>>|    result = 100 / divisor.                                                                 |
+|    3|  ENDMETHOD.                                                                                |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Contents of system fields                                                                         |
+----------------------------------------------------------------------------------------------------
+|Name    |Val.                                                                                     |
+----------------------------------------------------------------------------------------------------
+|SY-SUBRC|0                                                                                        |
+|SY-INDEX|1                                                                                        |
+|SY-TABIX|0                                                                                        |
+|SY-DBCNT|0                                                                                        |
+|SY-FDPOS|80                                                                                       |
+|SY-LSIND|0                                                                                        |
+|SY-PAGNO|0                                                                                        |
+|SY-LINNO|1                                                                                        |
+|SY-COLNO|1                                                                                        |
+|SY-PFKEY|                                                                                         |
+|SY-UCOMM|                                                                                         |
+|SY-TITLE|HTTP Control                                                                             |
+|SY-MSGTY|                                                                                         |
+|SY-MSGID|                                                                                         |
+|SY-MSGNO|000                                                                                      |
+|SY-MSGV1|                                                                                         |
+|SY-MSGV2|                                                                                         |
+|SY-MSGV3|                                                                                         |
+|SY-MSGV4|                                                                                         |
+|SY-MODNO|0                                                                                        |
+|SY-DATUM|20261117                                                                                 |
+|SY-UZEIT|225656                                                                                   |
+|SY-XPROG|                                                                                         |
+|SY-XFORM|                                                                                         |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Active Calls/Events                                                                               |
+----------------------------------------------------------------------------------------------------
+|No.   Ty.          Program                             Include                             Line   |
+|      Name                                                                                        |
+----------------------------------------------------------------------------------------------------
+|   13 METHOD       ZSAMPLE_DUMPER================CP    ZSAMPLE_DUMPER================CM001     2  |
+|      ZSAMPLE_DUMPER=>DIVIDE                                                                      |
+|   12 METHOD       ZSAMPLE_DUMPER================CP    ZSAMPLE_DUMPER================CM002     2  |
+|      ZSAMPLE_DUMPER=>IF_OO_ADT_CLASSRUN~MAIN                                                     |
+|   11 METHOD       CL_OO_ADT_RES_CLASSRUN========CP    CL_OO_ADT_RES_CLASSRUN========CM003   105  |
+|      CL_OO_ADT_RES_CLASSRUN=>EXECUTE_CLAS                                                        |
+|   10 METHOD       CL_OO_ADT_RES_CLASSRUN========CP    CL_OO_ADT_RES_CLASSRUN========CM004    29  |
+|      CL_OO_ADT_RES_CLASSRUN=>POST                                                                |
+|    9 METHOD       CL_ADT_REST_RESOURCE==========CP    CL_ADT_REST_RESOURCE==========CM004    24  |
+|      CL_ADT_REST_RESOURCE=>IF_REST_HANDLER~HANDLE                                                |
+|    8 METHOD       CL_REST_ROUTER================CP    CL_REST_ROUTER================CM003    60  |
+|      CL_REST_ROUTER=>IF_REST_HANDLER~HANDLE                                                      |
+|    7 METHOD       CL_REST_HTTP_HANDLER==========CP    CL_REST_HTTP_HANDLER==========CM001    99  |
+|      CL_REST_HTTP_HANDLER=>IF_HTTP_EXTENSION~HANDLE_REQUEST                                      |
+|    6 METHOD       CL_ADT_WB_RES_APP=============CP    CL_ADT_WB_RES_APP=============CCIMP    19  |
+|      LCL_REQUEST_HANDLER=>LIF_REQUEST_HANDLER~HANDLE_REQUEST                                     |
+|    5 METHOD       CL_ADT_WB_RES_APP=============CP    CL_ADT_WB_RES_APP=============CCIMP   319  |
+|      LCL_HTTP_REQUEST_PROXY=>HANDLE_REQUEST                                                      |
+|    4 METHOD       CL_ADT_WB_RES_APP=============CP    CL_ADT_WB_RES_APP=============CM002    23  |
+|      CL_ADT_WB_RES_APP=>IF_HTTP_EXTENSION~HANDLE_REQUEST                                         |
+|    3 METHOD       CL_HTTP_SERVER================CP    CL_HTTP_SERVER================CM00D   814  |
+|      CL_HTTP_SERVER=>EXECUTE_REQUEST                                                             |
+|    2 FUNCTION     SAPLHTTP_RUNTIME                    LHTTP_RUNTIMEU02                     1627  |
+|      HTTP_DISPATCH_REQUEST                                                                       |
+|    1 MODULE (PBO) SAPMHTTP                            SAPMHTTP                   12              |
+|      %_HTTP_START                                                                                |
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+|Selected Variables                                                                                |
+----------------------------------------------------------------------------------------------------
+|Name                                                                                              |
+|    Val.                                                                                          |
+----------------------------------------------------------------------------------------------------
+|No.      13 Ty.          METHOD                                                                   |
+|Name  ZSAMPLE_DUMPER=>DIVIDE                                                                      |
+----------------------------------------------------------------------------------------------------
+|DIVISOR                                                                                           |

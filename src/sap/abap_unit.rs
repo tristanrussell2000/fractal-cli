@@ -43,7 +43,7 @@ use thiserror::Error;
 use super::{
     adt_response::parse_adt_document,
     client::{SapClient, SapClientError},
-    find_attribute_value,
+    find_attribute_value, find_children,
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
 
@@ -575,36 +575,28 @@ struct Program {
     classes: Vec<Class>,
 }
 
-fn children<'a, 'i>(
-    node: roxmltree::Node<'a, 'i>,
-    name: &'a str,
-) -> impl Iterator<Item = roxmltree::Node<'a, 'i>> + 'a {
-    node.children()
-        .filter(move |child| child.is_element() && child.tag_name().name() == name)
-}
-
 /// The alerts directly under `<alerts>` of this node, not of its descendants.
 fn alerts_of(node: roxmltree::Node) -> Vec<UnitAlert> {
-    children(node, "alerts")
-        .flat_map(|alerts| children(alerts, "alert").collect::<Vec<_>>())
+    find_children(node, "alerts")
+        .flat_map(|alerts| find_children(alerts, "alert").collect::<Vec<_>>())
         .map(parse_alert)
         .collect()
 }
 
 fn parse_alert(node: roxmltree::Node) -> UnitAlert {
-    let title = children(node, "title")
+    let title = find_children(node, "title")
         .next()
         .and_then(|title| title.text())
         .unwrap_or_default()
         .trim()
         .to_owned();
     let mut details = Vec::new();
-    if let Some(list) = children(node, "details").next() {
+    if let Some(list) = find_children(node, "details").next() {
         flatten_details(list, 0, &mut details);
     }
-    let location = children(node, "stack")
+    let location = find_children(node, "stack")
         .next()
-        .and_then(|stack| children(stack, "stackEntry").next())
+        .and_then(|stack| find_children(stack, "stackEntry").next())
         .and_then(|entry| find_attribute_value(entry, "uri"))
         .map(|uri| {
             let (base, fragment) = uri.split_once('#').unwrap_or((uri, ""));
@@ -633,13 +625,13 @@ fn parse_alert(node: roxmltree::Node) -> UnitAlert {
 }
 
 fn flatten_details(list: roxmltree::Node, depth: usize, out: &mut Vec<String>) {
-    for detail in children(list, "detail") {
+    for detail in find_children(list, "detail") {
         if let Some(text) = find_attribute_value(detail, "text").map(str::trim)
             && !text.is_empty()
         {
             out.push(format!("{}{text}", "  ".repeat(depth)));
         }
-        if let Some(nested) = children(detail, "details").next() {
+        if let Some(nested) = find_children(detail, "details").next() {
             flatten_details(nested, depth + 1, out);
         }
     }
@@ -662,14 +654,14 @@ fn parse_result(xml: &str) -> Result<(Vec<UnitAlert>, Vec<Program>), String> {
         ));
     }
     let mut programs: Vec<Program> = Vec::new();
-    for node in children(root, "program") {
+    for node in find_children(root, "program") {
         let mut program = Program {
             name: name_of(node),
             alerts: alerts_of(node),
             classes: Vec::new(),
         };
-        for class_node in children(node, "testClasses")
-            .flat_map(|list| children(list, "testClass").collect::<Vec<_>>())
+        for class_node in find_children(node, "testClasses")
+            .flat_map(|list| find_children(list, "testClass").collect::<Vec<_>>())
         {
             let name = name_of(class_node);
             let index = match program
@@ -689,8 +681,8 @@ fn parse_result(xml: &str) -> Result<(Vec<UnitAlert>, Vec<Program>), String> {
             };
             let class = &mut program.classes[index];
             add_alerts(&mut class.alerts, alerts_of(class_node));
-            for method_node in children(class_node, "testMethods")
-                .flat_map(|list| children(list, "testMethod").collect::<Vec<_>>())
+            for method_node in find_children(class_node, "testMethods")
+                .flat_map(|list| find_children(list, "testMethod").collect::<Vec<_>>())
             {
                 let method_name = name_of(method_node);
                 let alerts = alerts_of(method_node);

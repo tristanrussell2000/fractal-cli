@@ -31,6 +31,7 @@ pub mod package;
 pub mod package_authorization;
 pub mod package_lifecycle;
 pub mod repository_kind;
+pub mod runtime_dump;
 pub mod service_binding;
 pub mod source_activation;
 pub mod source_check;
@@ -85,4 +86,13 @@ pub(crate) fn find_child<'a, 'i>(
 ) -> Option<roxmltree::Node<'a, 'i>> {
     node.children()
         .find(|child| child.is_element() && child.tag_name().name() == name)
+}
+
+/// Every direct child element with this local name, in document order.
+pub(crate) fn find_children<'a, 'i>(
+    node: roxmltree::Node<'a, 'i>,
+    name: &'a str,
+) -> impl Iterator<Item = roxmltree::Node<'a, 'i>> + 'a {
+    node.children()
+        .filter(move |child| child.is_element() && child.tag_name().name() == name)
 }

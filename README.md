@@ -168,10 +168,16 @@ fractal delete     <one destructive verb, kept out of `edit` on purpose>
 fractal journal    list | show | clear
 fractal undo       <reverse a recorded activation or table write>
 fractal test       <run ABAP Unit tests: exit 0 green, 1 not green, 2 could not run>
+fractal dump       list | show
 fractal guard      install
 ```
 
 Every command and subcommand accepts `--help`.
+
+When a `class-run` or a published service fails with a bare HTTP 500, the short dump is the
+explanation. `fractal dump show --latest` reads your newest one: the runtime error, the source URI
+and line it stopped at, the error analysis and the call stack. `fractal dump list` lists your
+dumps from the last 24 hours, each with the command that reads it.
 
 ### Output
 

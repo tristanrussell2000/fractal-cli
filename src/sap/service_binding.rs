@@ -322,6 +322,9 @@ impl ReportableError for ServiceBindingError {
                 SapClientError::Http { status, .. } if status.as_u16() == 404 => {
                     "Check the entity set and key against the service's `$metadata`.".to_owned()
                 }
+                SapClientError::Http { status, .. } if status.is_server_error() => {
+                    "The service failed inside SAP; nothing was changed. If it left a short dump, the suggested command shows it.".to_owned()
+                }
                 _ => "The message is the service's own; nothing was changed.".to_owned(),
             },
             Self::ServiceVersionAmbiguous { .. } | Self::ServiceVersionUnknown { .. } => {
@@ -346,6 +349,10 @@ impl ReportableError for ServiceBindingError {
             | Self::TypeUnsupported { .. }
             | Self::Parse { .. }
             | Self::PathInvalid { .. } => None,
+            Self::GetFailed {
+                source: SapClientError::Http { status, .. },
+                ..
+            } if status.is_server_error() => Some(suggested_command::dump_show_latest()),
             Self::Read { name, .. }
             | Self::ServiceVersionAmbiguous { name, .. }
             | Self::ServiceVersionUnknown { name, .. }
@@ -857,6 +864,25 @@ fn parse_publish_response(xml: &str) -> Option<SapPublishMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_service_that_fails_inside_sap_points_at_the_dump() {
+        let error = ServiceBindingError::GetFailed {
+            name: "ZSAMPLE_UI_O4".to_owned(),
+            url: "https://sap.example/x".to_owned(),
+            source: SapClientError::Http {
+                kind: crate::sap::client::SapHttpErrorKind::ServerError,
+                status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                url: "https://sap.example/x".to_owned(),
+                message: "Internal Server Error".to_owned(),
+            },
+        };
+        assert_eq!(
+            error.suggested_command().as_deref(),
+            Some("fractal dump show --latest")
+        );
+        assert!(error.hint().unwrap().contains("short dump"));
+    }
 
     const V4_BINDING: &str = r#"<?xml version="1.0" encoding="utf-8"?><srvb:serviceBinding srvb:published="false" adtcore:name="ZSAMPLE_UI_O4" adtcore:type="SRVB/SVB" adtcore:version="active" xmlns:srvb="http://www.sap.com/adt/ddic/ServiceBindings" xmlns:adtcore="http://www.sap.com/adt/core"><srvb:services srvb:name="ZSAMPLE_UI_O4"><srvb:content srvb:version="0001"><srvb:serviceDefinition adtcore:name="ZSAMPLE_SD"/></srvb:content></srvb:services><srvb:binding srvb:type="ODATA" srvb:version="V4" srvb:category="0"/></srvb:serviceBinding>"#;
 

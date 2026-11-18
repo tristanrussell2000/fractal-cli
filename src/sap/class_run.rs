@@ -62,6 +62,21 @@ impl ReportableError for ClassRunError {
             Self::Sap { source, .. } => source.hint()?,
         })
     }
+
+    /// A server error during a run is the class failing, and the dump says why.
+    fn suggested_command(&self) -> Option<String> {
+        match self {
+            Self::Sap { source, .. } if is_server_error(source) => {
+                Some(crate::suggested_command::dump_show_latest())
+            }
+            Self::Sap { source, .. } => source.suggested_command(),
+            Self::InvalidName { .. } => None,
+        }
+    }
+}
+
+fn is_server_error(error: &SapClientError) -> bool {
+    matches!(error, SapClientError::Http { status, .. } if status.is_server_error())
 }
 
 /// Runs an activated ABAP class through the ADT console endpoint.
@@ -124,6 +139,23 @@ fn normalized_class_name(name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_run_that_fails_inside_sap_points_at_the_dump() {
+        let error = ClassRunError::Sap {
+            class_name: "ZCL_SAMPLE".to_owned(),
+            source: SapClientError::Http {
+                kind: crate::sap::client::SapHttpErrorKind::ServerError,
+                status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                url: "https://sap.example/x".to_owned(),
+                message: "Internal Server Error".to_owned(),
+            },
+        };
+        assert_eq!(
+            error.suggested_command().as_deref(),
+            Some("fractal dump show --latest")
+        );
+    }
 
     #[test]
     fn upper_cases_a_legal_name() {

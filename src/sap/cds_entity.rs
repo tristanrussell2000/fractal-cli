@@ -15,7 +15,7 @@ use thiserror::Error;
 use super::{
     client::{SapClient, SapClientError},
     editable_source::{EditableAdtObjectType, editable_source_identity},
-    find_attribute_value, find_non_empty_attribute,
+    find_attribute_value, find_children, find_non_empty_attribute,
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
 
@@ -216,7 +216,7 @@ fn parse_element_info(
     let mut associations = Vec::new();
     let mut parameters = Vec::new();
     let mut package = None;
-    for element in children(root, "elementInfo") {
+    for element in find_children(root, "elementInfo") {
         let element_name = find_non_empty_attribute(element, "name").unwrap_or_default();
         let element_properties = Properties::of(element);
         match find_attribute_value(element, "type").unwrap_or_default() {
@@ -298,16 +298,8 @@ fn cardinality(properties: &Properties) -> Option<String> {
     }
 }
 
-fn children<'a, 'input>(
-    node: roxmltree::Node<'a, 'input>,
-    name: &'a str,
-) -> impl Iterator<Item = roxmltree::Node<'a, 'input>> {
-    node.children()
-        .filter(move |child| child.is_element() && child.tag_name().name() == name)
-}
-
 fn short_text(element: roxmltree::Node<'_, '_>) -> Option<String> {
-    children(element, "documentation")
+    find_children(element, "documentation")
         .find(|documentation| find_attribute_value(*documentation, "rel") == Some("shorttext"))
         .and_then(|documentation| documentation.text())
         .map(str::trim)
@@ -321,8 +313,8 @@ struct Properties(Vec<(String, String)>);
 impl Properties {
     fn of(element: roxmltree::Node<'_, '_>) -> Self {
         Self(
-            children(element, "properties")
-                .flat_map(|properties| children(properties, "entry"))
+            find_children(element, "properties")
+                .flat_map(|properties| find_children(properties, "entry"))
                 .filter_map(|entry| {
                     let key = find_attribute_value(entry, "key")?;
                     Some((key.to_owned(), entry.text().unwrap_or_default().to_owned()))

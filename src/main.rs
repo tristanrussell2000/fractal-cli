@@ -5,13 +5,15 @@ mod reported;
 
 use clap::Parser;
 use cli::{
-    AuthCommand, BindingCommand, Cli, Command, EditCommand, GuardCommand, InternalCommand,
-    JournalCommand, ObjectCommand, PackageCommand, SystemCommand, TableCommand, TransportCommand,
+    AuthCommand, BindingCommand, Cli, Command, DumpCommand, EditCommand, GuardCommand,
+    InternalCommand, JournalCommand, ObjectCommand, PackageCommand, SystemCommand, TableCommand,
+    TransportCommand,
 };
 use commands::auth::{
     auth_list, auth_login, auth_password, auth_remove, auth_set, print_auth_list, print_auth_login,
     print_auth_password, print_auth_remove, print_auth_set,
 };
+use commands::dump::{dump_list, dump_show, print_dump_list, print_dump_show};
 use commands::edit_activate::{edit_object_activate, print_edit_object_activate};
 use commands::edit_check::{edit_source_check, print_edit_source_check};
 use commands::edit_create::{edit_object_create, print_edit_object_create};
@@ -349,6 +351,26 @@ async fn main() {
             run_and_print_with_async(
                 || object_undo(cli.profile.as_deref(), args),
                 print_object_undo,
+                output,
+            )
+            .await
+        }
+        Command::Dump {
+            command: DumpCommand::List(args),
+        } => {
+            run_and_print_with_async(
+                || dump_list(cli.profile.as_deref(), args),
+                print_dump_list,
+                output,
+            )
+            .await
+        }
+        Command::Dump {
+            command: DumpCommand::Show(args),
+        } => {
+            run_and_print_with_async(
+                || dump_show(cli.profile.as_deref(), args),
+                print_dump_show,
                 output,
             )
             .await
