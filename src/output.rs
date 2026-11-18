@@ -48,7 +48,8 @@ where
     Fut: Future<Output = Result<T, Reported>>,
     P: FnOnce(&T, OutputFormat),
 {
-    match operation().await {
+    // Boxed so `main`'s dispatch holds a pointer, not every command's future.
+    match Box::pin(operation()).await {
         Ok(result) => {
             print(&result, output);
             0
@@ -75,7 +76,8 @@ where
     P: FnOnce(&T, OutputFormat),
     E: FnOnce(&T) -> i32,
 {
-    match operation().await {
+    // Boxed so `main`'s dispatch holds a pointer, not every command's future.
+    match Box::pin(operation()).await {
         Ok(result) => {
             print(&result, output);
             exit_code(&result)

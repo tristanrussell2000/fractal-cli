@@ -215,6 +215,9 @@ struct Prepared {
 /// Returns [`GroupActivationError`] when any object fails validation or
 /// preparation (nothing is activated then), when none has anything staged,
 /// when the request fails, or when not every object ends up activated.
+// One ordered protocol (validate, journal, activate, verify each); splitting
+// it would scatter the steps that must happen in sequence.
+#[allow(clippy::too_many_lines)]
 pub async fn activate_adt_sources_together(
     sap: &mut SapClient,
     policy: &EditPolicy,

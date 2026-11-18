@@ -748,6 +748,8 @@ fn class_wide(class: &Class) -> Vec<UnitAlert> {
 ///
 /// Returns [`UnitTestError::ResultInvalid`] when the result is not a run
 /// result at all.
+// Each green-rule check reads the same tallies; kept together on purpose.
+#[allow(clippy::too_many_lines)]
 pub fn summarize(xml: &str, targets: &[UnitTarget]) -> Result<UnitRunSummary, UnitTestError> {
     let (run_alerts, programs) = parse_result(xml).map_err(UnitTestError::ResultInvalid)?;
     let mut summary = UnitRunSummary::default();
