@@ -116,17 +116,17 @@ pub enum Command {
     },
     /// Run ABAP Unit tests and say whether they are green.
     ///
-    ///   fractal test --type CLAS --name ZRAP_BP_TRAVEL
-    ///   fractal test --type CLAS --name ZRAP_BP_TRAVEL --test-class LTC_TRAVEL
-    ///   fractal test --type CLAS --name ZRAP_BP_TRAVEL --test-class LTC_TRAVEL --method VALIDATES_DATES
-    ///   fractal test --object CLAS:ZRAP_BP_TRAVEL --object DEVC:ZRAP_TRAVEL
+    ///     fractal test --type CLAS --name ZRAP_BP_TRAVEL
+    ///     fractal test --type CLAS --name ZRAP_BP_TRAVEL --test-class LTC_TRAVEL
+    ///     fractal test --type CLAS --name ZRAP_BP_TRAVEL --test-class LTC_TRAVEL --method VALIDATES_DATES
+    ///     fractal test --object CLAS:ZRAP_BP_TRAVEL --object DEVC:ZRAP_TRAVEL
     ///
     /// Targets are classes (CLAS), programs (PROG), function groups (FUGR) or
     /// packages (DEVC, with their sub-packages). Several targets use one
     /// --object TYPE:NAME each (type, a colon, the name; no spaces).
     ///
     /// Green means at least one test passed and nothing failed, errored, was
-    /// skipped, or blocked a whole test class (a failing class_setup) or
+    /// skipped, or blocked a whole test class (a failing `class_setup`) or
     /// program (syntax errors). Exit code 0 is green; 1 is a run that
     /// completed and is not green, with the failures in the output; 2 is a
     /// run that could not be done.
@@ -143,8 +143,8 @@ pub enum Command {
     },
     /// Read ABAP short dumps (ST22): what an empty HTTP 500 left behind.
     ///
-    ///   fractal dump list
-    ///   fractal dump show --latest
+    ///     fractal dump list
+    ///     fractal dump show --latest
     Dump {
         #[command(subcommand)]
         command: DumpCommand,
@@ -215,14 +215,14 @@ pub enum BindingCommand {
     /// Read from a binding's published service: GET only.
     ///
     /// PATH is the part of the URL after the service root, written as in
-    /// /IWFND/GW_CLIENT; the root is taken from the service's registration.
+    /// `/IWFND/GW_CLIENT`; the root is taken from the service's registration.
     /// Single-quote it so the shell leaves `$` alone. Any binding can be read,
     /// not only one in the customer namespaces.
     ///
-    ///   fractal binding get --name ZSAMPLE_UI_O4 '$metadata'
-    ///   fractal binding get --name ZSAMPLE_UI_O4 'Items?$top=5&$count=true'
-    ///   fractal binding get --name ZSAMPLE_UI_O4 "Items('A1')?\$expand=_Child"
-    ///   fractal binding get --name ZSAMPLE_UI_O2 'Items?$top=5&$format=json'
+    ///     fractal binding get --name ZSAMPLE_UI_O4 '$metadata'
+    ///     fractal binding get --name ZSAMPLE_UI_O4 'Items?$top=5&$count=true'
+    ///     fractal binding get --name ZSAMPLE_UI_O4 "Items('A1')?\$expand=_Child"
+    ///     fractal binding get --name ZSAMPLE_UI_O2 'Items?$top=5&$format=json'
     ///
     /// OData V2 answers Atom XML unless the path asks for `$format=json`; V4
     /// answers JSON. Reads go through the service, so its access control
@@ -279,7 +279,7 @@ pub struct TestArgs {
     /// Object or package name. Not with --object.
     #[arg(long, required_unless_present = "objects", conflicts_with = "objects")]
     pub(crate) name: Option<String>,
-    /// One target of several, written TYPE:NAME, such as CLAS:ZRAP_BP_TRAVEL.
+    /// One target of several, written TYPE:NAME, such as `CLAS:ZRAP_BP_TRAVEL`.
     /// Repeat it once per target.
     #[arg(long = "object", value_name = "TYPE:NAME")]
     pub(crate) objects: Vec<String>,
@@ -579,7 +579,7 @@ pub enum PackageCommand {
 
 #[derive(Debug, Args)]
 pub struct PackageCreateArgs {
-    /// Package name: a customer name such as ZPROJ_UTIL, or $NAME for a local package.
+    /// Package name: a customer name such as `ZPROJ_UTIL`, or `$NAME` for a local package.
     #[arg(long)]
     pub(crate) name: String,
     /// Short description SAP stores as the package's text.
@@ -794,12 +794,12 @@ pub enum EditCommand {
     ///
     /// One object:
     ///
-    ///   fractal edit activate --type DDLS --name ZRAP_R_TRAVEL
+    ///     fractal edit activate --type DDLS --name ZRAP_R_TRAVEL
     ///
     /// Several objects in one request, with one --object per object, each
     /// written TYPE:NAME (type, a colon, then the name; no spaces):
     ///
-    ///   fractal edit activate --object DDLS:ZRAP_R_TRAVEL --object DDLS:ZRAP_R_BOOKING
+    ///     fractal edit activate --object DDLS:ZRAP_R_TRAVEL --object DDLS:ZRAP_R_BOOKING
     ///
     /// Use the group form for objects that need each other to activate, such
     /// as a new root view with a composition and its child view with an
@@ -956,8 +956,8 @@ pub struct EditActivateArgs {
     #[arg(long, required_unless_present = "objects", conflicts_with = "objects")]
     pub(crate) name: Option<String>,
     /// One object of a group to activate together, written TYPE:NAME, such as
-    /// DDLS:ZRAP_R_TRAVEL. Repeat it once per object. A namespaced name keeps
-    /// its slashes: DDLS:/ACME/R_TRAVEL. Source-based types only.
+    /// `DDLS:ZRAP_R_TRAVEL`. Repeat it once per object. A namespaced name keeps
+    /// its slashes: `DDLS:/ACME/R_TRAVEL`. Source-based types only.
     #[arg(long = "object", value_name = "TYPE:NAME")]
     pub(crate) objects: Vec<String>,
     /// Parent CTS change request to attach before activation, for example AB1K900575.

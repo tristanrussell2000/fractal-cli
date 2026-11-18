@@ -1,0 +1,2 @@
+# ".." keeps clippy's default list; OData is a product name, not code.
+doc-valid-idents = ["..", "OData"]
