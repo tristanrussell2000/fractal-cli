@@ -114,8 +114,8 @@ impl TableWriteRequest {
     fn named(&self) -> impl Iterator<Item = &FieldValue> {
         match self {
             Self::Update { keys, sets, .. } => keys.iter().chain(sets.iter()),
-            Self::Insert { fields, .. } => fields.iter().chain([].iter()),
-            Self::Delete { keys, .. } => keys.iter().chain([].iter()),
+            Self::Insert { fields, .. } => fields.iter().chain(&[]),
+            Self::Delete { keys, .. } => keys.iter().chain(&[]),
         }
     }
 }

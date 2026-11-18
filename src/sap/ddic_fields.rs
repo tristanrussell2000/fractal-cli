@@ -219,10 +219,10 @@ fn field_query(name: &str, version: AdtVersion) -> String {
 }
 
 /// `DD03L` names its layers `A` and `N`, not the words ADT uses.
-fn field_layer(version: AdtVersion) -> &'static str {
+const fn field_layer(version: AdtVersion) -> &'static str {
     match version {
         AdtVersion::Inactive => "N",
-        _ => "A",
+        AdtVersion::Active => "A",
     }
 }
 

@@ -35,6 +35,7 @@
 //! run when asked for.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue};
@@ -487,7 +488,7 @@ async fn check_selection(sap: &SapClient, target: &UnitTarget) -> Result<(), Uni
 fn test_structure(xml: &str) -> Result<BTreeMap<String, Vec<String>>, String> {
     let document = parse_adt_document(xml).map_err(|error| error.to_string())?;
     let mut classes: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for node in document.descendants().filter(|node| node.is_element()) {
+    for node in document.descendants().filter(roxmltree::Node::is_element) {
         let kind = find_attribute_value(node, "type").unwrap_or_default();
         let name = find_attribute_value(node, "name")
             .unwrap_or_default()
@@ -521,8 +522,14 @@ fn run_configuration(request: &UnitRunRequest) -> String {
             unique
         })
         .iter()
-        .map(|uri| format!("<adtcore:objectReference adtcore:uri=\"{}\"/>", escape(uri)))
-        .collect();
+        .fold(String::new(), |mut references, uri| {
+            let _ = write!(
+                references,
+                "<adtcore:objectReference adtcore:uri=\"{}\"/>",
+                escape(uri)
+            );
+            references
+        });
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
 <aunit:runConfiguration xmlns:aunit=\"http://www.sap.com/adt/aunit\">\
@@ -664,21 +671,18 @@ fn parse_result(xml: &str) -> Result<(Vec<UnitAlert>, Vec<Program>), String> {
             .flat_map(|list| find_children(list, "testClass").collect::<Vec<_>>())
         {
             let name = name_of(class_node);
-            let index = match program
+            let index = program
                 .classes
                 .iter()
                 .position(|class| class.name == name && !name.is_empty())
-            {
-                Some(index) => index,
-                None => {
+                .unwrap_or_else(|| {
                     program.classes.push(Class {
                         name: name.clone(),
                         alerts: Vec::new(),
                         methods: Vec::new(),
                     });
                     program.classes.len() - 1
-                }
-            };
+                });
             let class = &mut program.classes[index];
             add_alerts(&mut class.alerts, alerts_of(class_node));
             for method_node in find_children(class_node, "testMethods")

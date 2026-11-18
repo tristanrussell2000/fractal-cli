@@ -77,7 +77,7 @@ pub async fn connect(
 }
 
 /// Splits `TYPE:NAME` at the first colon. A namespaced name keeps its slashes.
-pub(crate) fn parse_object_spec(spec: &str) -> Result<(String, String), ObjectSpecError> {
+pub fn parse_object_spec(spec: &str) -> Result<(String, String), ObjectSpecError> {
     match spec.split_once(':') {
         Some((object_type, name)) if !object_type.trim().is_empty() && !name.trim().is_empty() => {
             Ok((object_type.trim().to_owned(), name.trim().to_owned()))

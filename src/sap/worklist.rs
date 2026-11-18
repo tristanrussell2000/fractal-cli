@@ -216,12 +216,10 @@ fn parse_inactive_objects(response: &str) -> Result<Vec<InactiveObject>, Inactiv
             Some((class_uri, include)) => (class_uri.to_owned(), Some(include)),
             None => (uri.clone(), None),
         };
-        let index = match objects
+        let index = objects
             .iter()
             .position(|known| known.uri.eq_ignore_ascii_case(&object_uri))
-        {
-            Some(index) => index,
-            None => {
+            .unwrap_or_else(|| {
                 let object_type = adt_type.split('/').next().unwrap_or_default().to_owned();
                 objects.push(InactiveObject {
                     object_type,
@@ -237,8 +235,7 @@ fn parse_inactive_objects(response: &str) -> Result<Vec<InactiveObject>, Inactiv
                     transport: None,
                 });
                 objects.len() - 1
-            }
-        };
+            });
         let known = &mut objects[index];
         if let Some(part) = part {
             known.parts.push(part);

@@ -432,13 +432,10 @@ pub async fn get_from_service(
     let binding = read_active_binding(sap, &identity).await?;
     let service = choose_service(&identity.name, binding.services, service_version)?;
     let details = read_details(sap, &identity.name, binding.protocol, &service).await?;
-    let root = match (details.published, details.service_url) {
-        (true, Some(root)) => root,
-        _ => {
-            return Err(ServiceBindingError::NotPublished {
-                name: identity.name,
-            });
-        }
+    let (true, Some(root)) = (details.published, details.service_url) else {
+        return Err(ServiceBindingError::NotPublished {
+            name: identity.name,
+        });
     };
     let url = join_service_path(&root, path)?;
 

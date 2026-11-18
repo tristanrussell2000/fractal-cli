@@ -136,15 +136,15 @@ pub(super) async fn acquire_adt_object_lock(
             transport: transport.map(str::to_owned),
             source,
         })?;
-    into_lock(response, transport)
+    into_lock(&response, transport)
 }
 
 fn into_lock(
-    response: String,
+    response: &str,
     transport: Option<&str>,
 ) -> Result<AdtObjectLock, AdtEditSessionError> {
     let handle =
-        parse_lock_handle(&response).ok_or_else(|| AdtEditSessionError::LockHandleMissing {
+        parse_lock_handle(response).ok_or_else(|| AdtEditSessionError::LockHandleMissing {
             response_excerpt: response.chars().take(400).collect(),
         })?;
     Ok(AdtObjectLock {
@@ -185,7 +185,7 @@ pub(super) async fn attach_adt_object_to_transport(
             transport: Some(transport.to_owned()),
             source,
         })?;
-    let lock = into_lock(response, Some(transport))?;
+    let lock = into_lock(&response, Some(transport))?;
     release_adt_object_lock(sap, object_uri, &lock).await
 }
 

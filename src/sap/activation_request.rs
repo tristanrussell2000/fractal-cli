@@ -6,6 +6,8 @@
 //! beforehand, and how success is proved afterwards, and those stay with each
 //! family.
 
+use std::fmt::Write as _;
+
 use reqwest::header::{HeaderMap, HeaderValue};
 
 use super::{
@@ -83,14 +85,15 @@ pub(super) async fn post_activation_of(
 }
 
 fn build_activation_request_of(objects: &[(&str, &str)]) -> String {
-    let references: String = objects
+    let references = objects
         .iter()
-        .map(|(object_uri, name)| {
-            format!(
+        .fold(String::new(), |mut references, (object_uri, name)| {
+            let _ = write!(
+                references,
                 "<adtcore:objectReference adtcore:uri=\"{object_uri}\" adtcore:name=\"{name}\"/>"
-            )
-        })
-        .collect();
+            );
+            references
+        });
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?><adtcore:objectReferences xmlns:adtcore=\"http://www.sap.com/adt/core\">{references}</adtcore:objectReferences>"
     )

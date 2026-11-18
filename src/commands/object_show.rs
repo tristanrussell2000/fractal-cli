@@ -364,10 +364,10 @@ fn render_length(field: &fractal::sap::ddic_fields::DdicField) -> String {
     let Some(length) = field.length.filter(|value| *value > 0) else {
         return String::new();
     };
-    match field.decimals.filter(|value| *value > 0) {
-        Some(decimals) => format!("{length},{decimals}"),
-        None => length.to_string(),
-    }
+    field.decimals.filter(|value| *value > 0).map_or_else(
+        || length.to_string(),
+        |decimals| format!("{length},{decimals}"),
+    )
 }
 
 fn render_object_show_readable(info: &DdicTypeInfo) -> String {

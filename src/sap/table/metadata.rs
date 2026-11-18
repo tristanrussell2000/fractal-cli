@@ -45,10 +45,12 @@ fn declared_type(field: &DdicField) -> String {
     if let Some(data_element) = &field.data_element {
         return data_element.clone();
     }
-    match &field.col_type {
-        Some(col_type) => format!("abap.{}", col_type.to_ascii_lowercase()),
-        None => String::new(),
-    }
+    field
+        .col_type
+        .as_ref()
+        .map_or_else(String::new, |col_type| {
+            format!("abap.{}", col_type.to_ascii_lowercase())
+        })
 }
 
 #[cfg(test)]

@@ -278,9 +278,11 @@ fn render(result: &UnitTestOutput) -> String {
         let location = alert
             .location
             .as_ref()
-            .map(|location| match location.line {
-                Some(line) => format!(" ({}:{line})", location.uri),
-                None => format!(" ({})", location.uri),
+            .map(|location| {
+                location.line.map_or_else(
+                    || format!(" ({})", location.uri),
+                    |line| format!(" ({}:{line})", location.uri),
+                )
             })
             .unwrap_or_default();
         let _ = writeln!(text, "{label} {at}: {}{location}", alert.title);
