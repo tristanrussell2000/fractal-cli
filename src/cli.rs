@@ -136,6 +136,23 @@ pub enum Command {
     /// long tests run only when named in --risk and --duration.
     #[command(verbatim_doc_comment)]
     Test(TestArgs),
+    /// Run the ABAP Test Cockpit on objects or a package and list its findings.
+    ///
+    ///     fractal atc --type CLAS --name ZRAP_BP_TRAVEL
+    ///     fractal atc --object CLAS:ZRAP_BP_TRAVEL --object DDLS:ZRAP_R_TRAVEL
+    ///     fractal atc --object DEVC:ZRAP_TRAVEL
+    ///
+    /// Uses the system's own check variant, the one transport release uses,
+    /// unless --variant names another. Each finding comes with its priority,
+    /// the check, the message, and the source line it is at, which
+    /// `edit read` opens; a class finding also names its method.
+    ///
+    /// Exit code 0 when nothing at priority 1 or 2 was found (or 3 with
+    /// --fail-on 3) and every check ran; 1 when something was found or a
+    /// check could not run; 2 when ATC could not be run at all. ATC checks the
+    /// active version: staged changes are not checked until activated.
+    #[command(verbatim_doc_comment)]
+    Atc(AtcArgs),
     /// Read and safely edit supported source-based repository objects.
     Edit {
         #[command(subcommand)]
@@ -163,6 +180,36 @@ pub enum DumpCommand {
     /// holds the program's data, and the memory, kernel and system chapters
     /// are left out unless --full is passed.
     Show(DumpShowArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct AtcArgs {
+    /// What to check: a source type such as CLAS or DDLS, FUGR, or DEVC for
+    /// a package. Not with --object.
+    #[arg(
+        long = "type",
+        required_unless_present = "objects",
+        conflicts_with = "objects"
+    )]
+    pub(crate) object_type: Option<String>,
+    /// Object or package name. Not with --object.
+    #[arg(long, required_unless_present = "objects", conflicts_with = "objects")]
+    pub(crate) name: Option<String>,
+    /// One target of several, written TYPE:NAME, such as `CLAS:ZRAP_BP_TRAVEL`.
+    /// Repeat it once per target.
+    #[arg(long = "object", value_name = "TYPE:NAME")]
+    pub(crate) objects: Vec<String>,
+    /// Check variant to run instead of the system's own.
+    #[arg(long)]
+    pub(crate) variant: Option<String>,
+    /// Also fetch each finding's documentation: what the check looks for and,
+    /// usually, the pragma that suppresses it. One request per finding.
+    #[arg(long, default_value_t = false)]
+    pub(crate) explain: bool,
+    /// The lowest priority that fails the run: 2 by default, 3 to fail on
+    /// every finding.
+    #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u8).range(1..=3))]
+    pub(crate) fail_on: u8,
 }
 
 #[derive(Debug, Args)]

@@ -338,6 +338,15 @@ async fn main() {
             )
             .await
         }
+        Command::Atc(args) => {
+            output::run_and_print_with_exit_async(
+                || commands::atc::atc(cli.profile.as_deref(), args),
+                commands::atc::print_atc,
+                commands::atc::exit_code,
+                output,
+            )
+            .await
+        }
         Command::Test(args) => {
             output::run_and_print_with_exit_async(
                 || commands::unit_test::unit_test(cli.profile.as_deref(), args),

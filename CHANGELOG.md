@@ -4,6 +4,18 @@
 
 ### Added
 
+- **`fractal atc`** runs the ABAP Test Cockpit on objects (`--type`/`--name`, or repeated
+  `--object TYPE:NAME`) or a package (`--object DEVC:NAME`), with the system's own check variant
+  unless `--variant` names another.
+  - Each finding has its priority, check, message, and the source line it is at; a class finding
+    also names its method and the line within it.
+  - Exit 0 when nothing at priority 1 or 2 was found and every check ran; 1 when something was
+    found, or SAP reported a check it could not run; 2 when ATC could not be run. `--fail-on 3`
+    fails on every finding.
+  - Every object asked about is listed, including those with no findings, and a name that does
+    not exist is refused, since ATC would report it as clean.
+  - `--explain` adds each finding's documentation. A target with staged changes is noted: ATC
+    checks the active version.
 - **`object show` reads CDS entities**: a view entity, a projection, or a classic CDS view. It
   lists the fields with their keys, types, data elements and currency or unit references; the
   associations with their target, cardinality and kind (association, composition, to parent);

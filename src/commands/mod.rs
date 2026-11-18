@@ -1,3 +1,4 @@
+pub mod atc;
 pub mod auth;
 pub mod binding;
 pub mod dump;

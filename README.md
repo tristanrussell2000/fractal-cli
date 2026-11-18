@@ -169,6 +169,7 @@ fractal journal    list | show | clear
 fractal undo       <reverse a recorded activation or table write>
 fractal test       <run ABAP Unit tests: exit 0 green, 1 not green, 2 could not run>
 fractal dump       list | show
+fractal atc        <run the ABAP Test Cockpit: exit 0 passed, 1 findings or incomplete, 2 could not run>
 fractal guard      install
 ```
 
@@ -178,6 +179,12 @@ When a `class-run` or a published service fails with a bare HTTP 500, the short 
 explanation. `fractal dump show --latest` reads your newest one: the runtime error, the source URI
 and line it stopped at, the error analysis and the call stack. `fractal dump list` lists your
 dumps from the last 24 hours, each with the command that reads it.
+
+`fractal atc --type CLAS --name <CLASS>` (or repeated `--object TYPE:NAME`, or `--object DEVC:<PACKAGE>`)
+runs the ABAP Test Cockpit with the system's own check variant, the one transport release uses,
+and lists each finding at the source line it is at. It fails on priority 1 and 2 findings
+(`--fail-on 3` for all), and when SAP could not run one of the checks. `--explain` adds each
+check's documentation, which usually names the pragma that suppresses it.
 
 ### Output
 

@@ -5,6 +5,7 @@ pub mod adt_object_identity;
 pub mod adt_object_uri;
 pub mod adt_response;
 pub mod adt_version;
+pub mod atc;
 pub mod cds_entity;
 pub mod class_include;
 pub mod class_run;
