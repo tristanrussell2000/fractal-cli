@@ -158,7 +158,7 @@ rejected login names the variable.
 fractal auth       login | set | password | list | remove
 fractal system     list | test
 fractal package    tree | items | create
-fractal object     search | source | xml | info | show | outline | definition | usages | kinds
+fractal object     search | source | xml | info | show | outline | definition | versions | version | usages | kinds
 fractal table      data | metadata | set | insert | remove
 fractal query      <complete SELECT, or - for stdin>
 fractal transport  list | show | create
@@ -185,6 +185,11 @@ classes with the lines each is declared and implemented at, and `fractal object 
 --method NAME` reads just that method (`LCL_Y=>NAME` for a local class's), numbered with the
 lines of its source. `fractal object definition <URI> --line 38 --symbol sum_of` says where a
 name used on that line is declared, and `--implementation` where it is implemented.
+
+`fractal object versions <URI>` lists an object's versions with the request, its description and
+the author of each; `fractal object version <URI> 00005 --diff active` shows what changed since.
+SAP writes a version when a transport is released or imported, so an object still in development
+has only `active` and, when something is staged, `inactive`.
 
 `fractal atc --type CLAS --name <CLASS>` (or repeated `--object TYPE:NAME`, or `--object DEVC:<PACKAGE>`)
 runs the ABAP Test Cockpit with the system's own check variant, the one transport release uses,

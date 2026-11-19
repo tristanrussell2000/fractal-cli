@@ -701,6 +701,21 @@ pub enum ObjectCommand {
     /// method's METHOD line.
     #[command(verbatim_doc_comment)]
     Definition(DefinitionArgs),
+    /// List an object's versions, newest first, with the request, its
+    /// description and the author of each.
+    ///
+    /// SAP writes a version when a transport is released or imported, so an
+    /// object still in development lists only `active` (00000) and, when
+    /// something is staged, `inactive` (99999).
+    Versions(VersionsArgs),
+    /// Print one version, or compare two with --diff.
+    ///
+    ///     fractal object version /sap/bc/adt/oo/classes/zcl_x 00005
+    ///     fractal object version /sap/bc/adt/oo/classes/zcl_x 00005 --diff active
+    ///
+    /// The diff is unified, as `git diff` prints it, and ignores line endings.
+    #[command(verbatim_doc_comment)]
+    Version(VersionArgs),
     /// Find objects that reference an ADT object URI (where-used).
     Usages(UsagesArgs),
     /// List known repository kinds with plain-text descriptions.
@@ -1265,6 +1280,31 @@ pub struct SourceArgs {
     /// `LCL_Y=>NAME` for a local class's. Classes only.
     #[arg(long, conflicts_with_all = ["include", "offset", "limit"])]
     pub(crate) method: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct VersionsArgs {
+    /// ADT object URI.
+    pub(crate) uri: String,
+    /// Which of a class's source streams; each has its own history.
+    /// Defaults to the global class.
+    #[arg(long, value_enum)]
+    pub(crate) include: Option<ClassIncludeArg>,
+}
+
+#[derive(Debug, Args)]
+pub struct VersionArgs {
+    /// ADT object URI.
+    pub(crate) uri: String,
+    /// A version number from `object versions`, or `active` or `inactive`.
+    pub(crate) version: String,
+    /// Compare it with this version instead of printing it: a number,
+    /// `active` or `inactive`.
+    #[arg(long)]
+    pub(crate) diff: Option<String>,
+    /// Which of a class's source streams. Defaults to the global class.
+    #[arg(long, value_enum)]
+    pub(crate) include: Option<ClassIncludeArg>,
 }
 
 #[derive(Debug, Args)]

@@ -26,7 +26,7 @@ use time::{
 
 use super::{
     client::{SapClient, SapClientError},
-    find_attribute_value, find_children, find_non_empty_attribute,
+    find_attribute_value, find_child_text, find_children, find_non_empty_attribute,
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
 
@@ -328,22 +328,13 @@ fn normalize_id(id: &str) -> Result<String, RuntimeDumpError> {
     }
 }
 
-fn child_text(node: roxmltree::Node<'_, '_>, name: &str) -> Option<String> {
-    find_children(node, name)
-        .next()
-        .and_then(|child| child.text())
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map(str::to_owned)
-}
-
 /// The entries, and the feed's own `updated` time: SAP's clock.
 fn parse_feed(feed: &str) -> Result<(Vec<DumpSummary>, Option<String>), RuntimeDumpError> {
     let document = roxmltree::Document::parse(feed)?;
-    let updated = child_text(document.root_element(), "updated");
+    let updated = find_child_text(document.root_element(), "updated");
     let mut dumps: Vec<DumpSummary> = Vec::new();
     for entry in find_children(document.root_element(), "entry") {
-        let Some(id) = child_text(entry, "id") else {
+        let Some(id) = find_child_text(entry, "id") else {
             continue;
         };
         let Ok(id) = normalize_id(&id) else {
@@ -359,14 +350,14 @@ fn parse_feed(feed: &str) -> Result<(Vec<DumpSummary>, Option<String>), RuntimeD
                 .unwrap_or_default()
         };
         dumps.push(DumpSummary {
-            time: child_text(entry, "published").unwrap_or_default(),
+            time: find_child_text(entry, "published").unwrap_or_default(),
             user: find_children(entry, "author")
                 .next()
-                .and_then(|author| child_text(author, "name"))
+                .and_then(|author| find_child_text(author, "name"))
                 .unwrap_or_default(),
             error: category("ABAP runtime error"),
             program: category("Terminated ABAP program"),
-            short_text: child_text(entry, "title"),
+            short_text: find_child_text(entry, "title"),
             id,
         });
     }

@@ -29,7 +29,7 @@ use super::{
     adt_version::AdtVersion,
     client::{SapClient, SapClientError, SapHttpErrorKind},
     editable_source::{AdtEditTargetValidationError, validate_object_name},
-    find_child, find_non_empty_attribute,
+    find_child, find_child_text, find_non_empty_attribute,
     metadata_activation::ACTIVE_VERSION,
     metadata_document::declared_version,
     metadata_object::{MetadataAdtObjectType, metadata_object_identity},
@@ -844,17 +844,10 @@ fn parse_publish_response(xml: &str) -> Option<SapPublishMessage> {
     let data = document
         .descendants()
         .find(|node| node.is_element() && node.tag_name().name() == "DATA")?;
-    let text = |tag: &str| {
-        find_child(data, tag)
-            .and_then(|node| node.text())
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-            .map(str::to_owned)
-    };
     Some(SapPublishMessage {
-        severity: text("SEVERITY")?,
-        short_text: text("SHORT_TEXT").unwrap_or_default(),
-        long_text: text("LONG_TEXT"),
+        severity: find_child_text(data, "SEVERITY")?,
+        short_text: find_child_text(data, "SHORT_TEXT").unwrap_or_default(),
+        long_text: find_child_text(data, "LONG_TEXT"),
     })
 }
 

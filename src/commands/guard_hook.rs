@@ -260,6 +260,8 @@ mod tests {
             "fractal edit read --type PROG --name ZSAMPLE",
             "fractal edit inactive",
             "fractal object outline /sap/bc/adt/oo/classes/zcl_sample",
+            "fractal object versions /sap/bc/adt/oo/classes/zcl_sample",
+            "fractal object version /sap/bc/adt/oo/classes/zcl_sample 00003 --diff active",
             "fractal object definition /sap/bc/adt/oo/classes/zcl_sample --line 3 --symbol add",
             "fractal dump list --all-users",
             "fractal dump show --latest",

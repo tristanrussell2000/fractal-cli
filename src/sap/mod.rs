@@ -46,6 +46,7 @@ pub mod table_undo;
 pub mod table_write;
 pub mod transport;
 pub mod undo;
+pub mod versions;
 pub mod worklist;
 
 /// Trims an XML attribute value and turns blank into `None`. Shared by every
@@ -88,6 +89,16 @@ pub(crate) fn find_child<'a, 'i>(
 ) -> Option<roxmltree::Node<'a, 'i>> {
     node.children()
         .find(|child| child.is_element() && child.tag_name().name() == name)
+}
+
+/// The trimmed text of the first child element with this local name, treating
+/// blank as absent.
+pub(crate) fn find_child_text(node: roxmltree::Node<'_, '_>, name: &str) -> Option<String> {
+    find_child(node, name)?
+        .text()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_owned)
 }
 
 /// Every direct child element with this local name, in document order.

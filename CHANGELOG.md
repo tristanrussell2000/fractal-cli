@@ -4,6 +4,14 @@
 
 ### Added
 
+- **`fractal object versions <URI>`** lists an object's versions, newest first, with the request,
+  its description and the author of each; `--include` picks a class include, since each has its
+  own history. `00000` is the active version and `99999` the staged one; numbered versions come
+  from released or imported transports, so an object still in development has no others.
+- **`fractal object version <URI> <VERSION>`** prints one version, or with `--diff <OTHER>` a
+  unified diff against another (`active` and `inactive` work in place of numbers). Line endings
+  are ignored. A data element's versions are listed but SAP will not serve their content, and
+  Fractal says so.
 - **`fractal object outline <URI>`** lists a class's or interface's interfaces, types,
   constants, attributes, methods and local classes, with visibility and the lines each is
   declared and implemented at, in whichever include holds it. `--version inactive` outlines

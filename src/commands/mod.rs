@@ -21,6 +21,7 @@ pub mod object;
 pub mod object_delete;
 pub mod object_outline;
 pub mod object_show;
+pub mod object_versions;
 pub mod package;
 pub mod package_lifecycle;
 pub mod query;

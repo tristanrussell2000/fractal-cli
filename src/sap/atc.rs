@@ -30,7 +30,7 @@ use super::{
     adt_version::AdtVersion,
     client::{SapClient, SapClientError},
     editable_source::{EditableAdtObjectType, editable_source_identity},
-    find_attribute_value, find_children, find_non_empty_attribute,
+    find_attribute_value, find_child_text, find_children, find_non_empty_attribute,
     object_source::{ByteRangeOptions, get_source, resolve_source_target},
     worklist::list_inactive_objects,
 };
@@ -342,16 +342,10 @@ fn parse_run(run: &str) -> Result<Vec<AtcInfo>, AtcError> {
         .descendants()
         .filter(|node| node.is_element() && node.tag_name().name() == "info")
         .filter_map(|info| {
-            let text = |name: &str| {
-                find_children(info, name)
-                    .next()
-                    .and_then(|node| node.text())
-                    .map(|text| text.trim().to_owned())
-            };
-            let kind = text("type")?;
+            let kind = find_child_text(info, "type")?;
             (kind != "FINDING_STATS").then(|| AtcInfo {
                 kind,
-                description: text("description").unwrap_or_default(),
+                description: find_child_text(info, "description").unwrap_or_default(),
             })
         })
         .collect())
