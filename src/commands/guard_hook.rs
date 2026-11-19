@@ -259,6 +259,8 @@ mod tests {
         for command in [
             "fractal edit read --type PROG --name ZSAMPLE",
             "fractal edit inactive",
+            "fractal object outline /sap/bc/adt/oo/classes/zcl_sample",
+            "fractal object definition /sap/bc/adt/oo/classes/zcl_sample --line 3 --symbol add",
             "fractal dump list --all-users",
             "fractal dump show --latest",
             "fractal object search 'Z*'",

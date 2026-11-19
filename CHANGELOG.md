@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`fractal object outline <URI>`** lists a class's or interface's interfaces, types,
+  constants, attributes, methods and local classes, with visibility and the lines each is
+  declared and implemented at, in whichever include holds it. `--version inactive` outlines
+  staged source. Programs are refused: SAP's structure for them has no lines.
+- **`fractal object source <URI> --method NAME`** reads one method's implementation, numbered
+  with the lines of its source: `NAME`, `IF_X~NAME`, or `LCL_Y=>NAME` for a local class's.
+- **`fractal object definition <URI> --line N --symbol NAME`** says where a name used on that
+  line is declared (another object's source, or a line of this one), with the line's text.
+  `--implementation` goes to the implementation instead, `--occurrence` picks a repeated name,
+  `--column` (counted from 1) replaces `--symbol`, and `--include` names a class include. It
+  reads the inactive version by default, since SAP looks the name up in the text it is sent.
+
 ## 0.13.0
 
 ### Added

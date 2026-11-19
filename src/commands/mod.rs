@@ -19,6 +19,7 @@ pub mod internal;
 pub mod journal;
 pub mod object;
 pub mod object_delete;
+pub mod object_outline;
 pub mod object_show;
 pub mod package;
 pub mod package_lifecycle;

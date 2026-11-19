@@ -158,7 +158,7 @@ rejected login names the variable.
 fractal auth       login | set | password | list | remove
 fractal system     list | test
 fractal package    tree | items | create
-fractal object     search | source | xml | info | show | usages | kinds
+fractal object     search | source | xml | info | show | outline | definition | usages | kinds
 fractal table      data | metadata | set | insert | remove
 fractal query      <complete SELECT, or - for stdin>
 fractal transport  list | show | create
@@ -179,6 +179,12 @@ When a `class-run` or a published service fails with a bare HTTP 500, the short 
 explanation. `fractal dump show --latest` reads your newest one: the runtime error, the source URI
 and line it stopped at, the error analysis and the call stack. `fractal dump list` lists your
 dumps from the last 24 hours, each with the command that reads it.
+
+In a large class, `fractal object outline <URI>` lists the types, attributes, methods and local
+classes with the lines each is declared and implemented at, and `fractal object source <URI>
+--method NAME` reads just that method (`LCL_Y=>NAME` for a local class's), numbered with the
+lines of its source. `fractal object definition <URI> --line 38 --symbol sum_of` says where a
+name used on that line is declared, and `--implementation` where it is implemented.
 
 `fractal atc --type CLAS --name <CLASS>` (or repeated `--object TYPE:NAME`, or `--object DEVC:<PACKAGE>`)
 runs the ABAP Test Cockpit with the system's own check variant, the one transport release uses,

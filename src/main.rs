@@ -100,6 +100,26 @@ async fn main() {
             .await
         }
         Command::Object {
+            command: ObjectCommand::Outline(args),
+        } => {
+            run_and_print_with_async(
+                || commands::object_outline::object_outline(cli.profile.as_deref(), args),
+                commands::object_outline::print_object_outline,
+                output,
+            )
+            .await
+        }
+        Command::Object {
+            command: ObjectCommand::Definition(args),
+        } => {
+            run_and_print_with_async(
+                || commands::object_outline::object_definition(cli.profile.as_deref(), args),
+                commands::object_outline::print_object_definition,
+                output,
+            )
+            .await
+        }
+        Command::Object {
             command: ObjectCommand::Show(args),
         } => {
             run_and_print_with_async(

@@ -28,6 +28,7 @@ pub mod object_info;
 pub mod object_search;
 pub mod object_source;
 pub mod object_usages;
+pub mod outline;
 pub mod package;
 pub mod package_authorization;
 pub mod package_lifecycle;

@@ -687,6 +687,20 @@ pub enum ObjectCommand {
     /// refusing when the requested one does not exist, and an object that has
     /// never been activated declares itself "new".
     Show(ObjectShowArgs),
+    /// List a class's or interface's types, constants, attributes, methods
+    /// and local classes, with the lines each is declared and implemented at.
+    ///
+    /// Read one method with `object source <URI> --method NAME`.
+    Outline(OutlineArgs),
+    /// Find where a name used in a source is declared.
+    ///
+    ///     fractal object definition /sap/bc/adt/oo/classes/zcl_x --line 38 --symbol sum_of
+    ///
+    /// Prints the source and line it is declared at, with that line's text.
+    /// --implementation goes to the implementation instead, such as a
+    /// method's METHOD line.
+    #[command(verbatim_doc_comment)]
+    Definition(DefinitionArgs),
     /// Find objects that reference an ADT object URI (where-used).
     Usages(UsagesArgs),
     /// List known repository kinds with plain-text descriptions.
@@ -1246,6 +1260,51 @@ pub struct SourceArgs {
     /// Maximum bytes to return. Omit to return the complete source.
     #[arg(long)]
     pub(crate) limit: Option<usize>,
+    /// Read only this method's implementation, numbered with the lines of the
+    /// source it is in. `NAME`, `IF_X~NAME` for an interface method, or
+    /// `LCL_Y=>NAME` for a local class's. Classes only.
+    #[arg(long, conflicts_with_all = ["include", "offset", "limit"])]
+    pub(crate) method: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct OutlineArgs {
+    /// ADT URI of a class or interface.
+    pub(crate) uri: String,
+    /// Stored version to outline.
+    #[arg(long, value_enum, default_value = "active")]
+    pub(crate) version: VersionArg,
+}
+
+#[derive(Debug, Args)]
+pub struct DefinitionArgs {
+    /// ADT URI of the object whose source holds the name.
+    pub(crate) uri: String,
+    /// Line the name is on, counted from 1.
+    #[arg(long)]
+    pub(crate) line: u32,
+    /// The name to look up, as written on the line. Found as a whole word,
+    /// ignoring case.
+    #[arg(long, required_unless_present = "column", conflicts_with = "column")]
+    pub(crate) symbol: Option<String>,
+    /// Which match of --symbol on the line, when it appears more than once.
+    #[arg(long, default_value_t = 1, requires = "symbol")]
+    pub(crate) occurrence: usize,
+    /// Column of the name instead of --symbol, counted from 1.
+    #[arg(long)]
+    pub(crate) column: Option<u32>,
+    /// Which of a class's source streams the line is in. Defaults to the
+    /// global class.
+    #[arg(long, value_enum)]
+    pub(crate) include: Option<ClassIncludeArg>,
+    /// Go to the implementation, such as a method's METHOD line, instead of
+    /// the declaration.
+    #[arg(long, default_value_t = false)]
+    pub(crate) implementation: bool,
+    /// Which stored version the line refers to. SAP looks the name up in that
+    /// text, so it should be the one you are reading.
+    #[arg(long, value_enum, default_value = "inactive")]
+    pub(crate) version: VersionArg,
 }
 
 #[derive(Debug, Args)]

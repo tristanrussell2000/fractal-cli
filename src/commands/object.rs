@@ -64,6 +64,13 @@ pub struct ObjectSourceResultOutput {
     version: Option<String>,
     /// Who last changed the layer that arrived.
     changed_by: Option<String>,
+    /// With --method: the method, and the lines of the source it spans.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    method: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start_line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end_line: Option<u32>,
     source: String,
 }
 
@@ -225,12 +232,15 @@ pub async fn object_source(
     explicit_profile: Option<&str>,
     args: &SourceArgs,
 ) -> Result<ObjectSourceResultOutput, Reported> {
+    let (profile_name, _profile, client) = connect(explicit_profile).await?;
+    let version = args.version.into();
+    if let Some(method) = &args.method {
+        return object_method_source(profile_name, &client, args, method, version).await;
+    }
     let target = fractal::sap::object_source::resolve_source_target(
         &args.uri,
         args.include.map(Into::into),
     )?;
-    let (profile_name, _profile, client) = connect(explicit_profile).await?;
-    let version = args.version.into();
     let result = fractal::sap::object_source::get_source(
         &client,
         &target,
@@ -261,6 +271,9 @@ pub async fn object_source(
         requested_version: version_name(args.version),
         version: layer.version,
         changed_by: layer.changed_by,
+        method: None,
+        start_line: None,
+        end_line: None,
         source: result.content,
     })
 }
@@ -512,6 +525,57 @@ pub fn print_object_info(result: &ObjectInfoResultOutput, output: OutputFormat) 
     println!("description: {}", result.description);
 }
 
+/// One method's lines, found through the outline.
+async fn object_method_source(
+    profile: String,
+    client: &fractal::sap::client::SapClient,
+    args: &SourceArgs,
+    method: &str,
+    version: fractal::sap::adt_version::AdtVersion,
+) -> Result<ObjectSourceResultOutput, Reported> {
+    use fractal::sap::{class_include::ClassInclude, object_source, outline};
+
+    let object = object_source::resolve_source_target(&args.uri, None)?;
+    let outline = outline::get_outline(client, &object.object_uri, version).await?;
+    let range = outline::method_lines(&outline, method)?;
+    let target = object_source::resolve_source_target(
+        &object.object_uri,
+        ClassInclude::parse(&range.include),
+    )?;
+    let result =
+        object_source::get_source(client, &target, version, ByteRangeOptions::default()).await?;
+    let layer = object_source::read_source_layer(client, &target, version).await?;
+    let source: String = result
+        .content
+        .lines()
+        .skip(range.start.saturating_sub(1) as usize)
+        .take((range.end + 1).saturating_sub(range.start) as usize)
+        .fold(String::new(), |mut lines, line| {
+            lines.push_str(line);
+            lines.push('\n');
+            lines
+        });
+    Ok(ObjectSourceResultOutput {
+        ok: true,
+        profile,
+        uri: target.object_uri,
+        include: target.include.map(ClassInclude::as_str),
+        source_uri: target.source_uri,
+        start_byte: 0,
+        end_byte: source.len(),
+        total_bytes: result.total_bytes,
+        truncated: false,
+        next_offset: None,
+        requested_version: version_name(args.version),
+        version: layer.version,
+        changed_by: layer.changed_by,
+        method: Some(method.to_ascii_uppercase()),
+        start_line: Some(range.start),
+        end_line: Some(range.end),
+        source,
+    })
+}
+
 pub fn print_object_source(result: &ObjectSourceResultOutput, output: OutputFormat) {
     if matches!(output, OutputFormat::Json) {
         print_json(result);
@@ -549,6 +613,17 @@ fn render_object_source_readable(result: &ObjectSourceResultOutput) -> String {
                 .next_offset
                 .map_or_else(|| "-".to_owned(), |offset| offset.to_string())
         );
+    }
+    if let (Some(method), Some(start), Some(end)) =
+        (&result.method, result.start_line, result.end_line)
+    {
+        let _ = writeln!(output, "method: {method}, lines {start}-{end}");
+        output.push_str("\nsource:\n");
+        let width = end.to_string().len();
+        for (line, text) in (start..).zip(result.source.lines()) {
+            let _ = writeln!(output, "{line:>width$}  {text}");
+        }
+        return output;
     }
     output.push_str("\nsource:\n");
     output.push_str(&result.source);
@@ -980,6 +1055,9 @@ mod tests {
             requested_version: "active",
             version: Some("active".to_owned()),
             changed_by: Some("DEVELOPER".to_owned()),
+            method: None,
+            start_line: None,
+            end_line: None,
             source: "CLASS zcl_sample DEFINITION.".to_owned(),
         };
 
@@ -994,6 +1072,34 @@ mod tests {
         assert!(!rendered.contains('{'));
     }
 
+    #[test]
+    fn a_method_is_printed_with_the_lines_of_its_source() {
+        let result = ObjectSourceResultOutput {
+            ok: true,
+            profile: "dev".to_owned(),
+            uri: "/sap/bc/adt/oo/classes/zcl_sample".to_owned(),
+            include: Some("main"),
+            source_uri: "/sap/bc/adt/oo/classes/zcl_sample/source/main".to_owned(),
+            start_byte: 0,
+            end_byte: 48,
+            total_bytes: 900,
+            truncated: false,
+            next_offset: None,
+            requested_version: "active",
+            version: Some("active".to_owned()),
+            changed_by: None,
+            method: Some("SUM".to_owned()),
+            start_line: Some(9),
+            end_line: Some(11),
+            source: "  METHOD sum.\n    result = 1.\n  ENDMETHOD.\n".to_owned(),
+        };
+        let text = render_object_source_readable(&result);
+        assert!(text.contains("method: SUM, lines 9-11"), "{text}");
+        assert!(
+            text.contains(" 9    METHOD sum.\n10      result = 1.\n11    ENDMETHOD.\n"),
+            "{text}"
+        );
+    }
     #[test]
     fn readable_source_output_omits_truncation_when_the_whole_source_is_returned() {
         let result = ObjectSourceResultOutput {
@@ -1011,6 +1117,9 @@ mod tests {
             // The fallback case: asked for one layer, served the other.
             version: Some("inactive".to_owned()),
             changed_by: None,
+            method: None,
+            start_line: None,
+            end_line: None,
             source: "REPORT".to_owned(),
         };
 
