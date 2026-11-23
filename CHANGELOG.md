@@ -37,6 +37,14 @@
   - Naming a task gets its request back, and naming another request says which one already
     holds the object, and whether it belongs to someone else.
   - An object no open request holds yet points at `fractal transport list`.
+- **`fractal query` explains more of SAP's refusals**, each with its own code:
+  `table_query_ambiguous_column`, `table_query_client_field_in_join`,
+  `table_query_type_mismatch`, `table_query_unknown_alias` and `table_query_missing_group_by`.
+  - After a refusal, Fractal reads the fields of the tables the statement names (at most four)
+    to say more: the closest real columns to an unknown one, qualified by table or alias when the
+    statement joins several; which tables hold an ambiguous column, as `TABLE~COLUMN`; and a
+    mismatched column's type. An unknown column in a single table suggests
+    `fractal table metadata` on it. A successful query makes no extra request.
 
 ## 0.13.0
 

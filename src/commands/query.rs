@@ -11,7 +11,7 @@ use crate::{
     output::{OutputFormat, print_json},
     reported::Reported,
 };
-use fractal::sap::table::{QueryOptions, TableDataResult, run_query};
+use fractal::sap::table::{QueryOptions, TableDataResult, run_caller_query};
 
 #[derive(Debug, Serialize)]
 pub struct QueryResultOutput {
@@ -42,7 +42,7 @@ pub async fn query(
         limit: args.limit,
     };
     let (profile_name, _profile, mut client) = connect(explicit_profile).await?;
-    let result = run_query(&mut client, &query, &options).await?;
+    let result = run_caller_query(&mut client, &query, &options).await?;
 
     Ok(map_query_result(
         profile_name,

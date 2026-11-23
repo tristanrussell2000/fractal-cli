@@ -2,11 +2,12 @@ mod error;
 mod fetch;
 mod metadata;
 mod parse;
+mod statement;
 
 pub use error::{TableError, TableQueryError, TableQueryErrorKind};
 pub use fetch::{
     QueryOptions, TableDataOptions, TableMetadataOptions, get_table_data, get_table_fields,
-    get_table_metadata, run_query,
+    get_table_metadata, run_caller_query, run_query,
 };
 pub use metadata::{TableFieldMetadata, TableMetadata};
 pub use parse::parse_table_data;

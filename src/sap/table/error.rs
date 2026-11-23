@@ -13,6 +13,11 @@ pub enum TableQueryErrorKind {
     UnknownColumn,
     InvalidSyntax,
     UnknownSource,
+    AmbiguousColumn,
+    ClientFieldInJoin,
+    TypeMismatch,
+    UnknownAlias,
+    MissingGroupBy,
 }
 
 impl TableQueryErrorKind {
@@ -22,6 +27,11 @@ impl TableQueryErrorKind {
             Self::UnknownColumn => "table_query_unknown_column",
             Self::InvalidSyntax => "table_query_invalid_syntax",
             Self::UnknownSource => "table_query_unknown_source",
+            Self::AmbiguousColumn => "table_query_ambiguous_column",
+            Self::ClientFieldInJoin => "table_query_client_field_in_join",
+            Self::TypeMismatch => "table_query_type_mismatch",
+            Self::UnknownAlias => "table_query_unknown_alias",
+            Self::MissingGroupBy => "table_query_missing_group_by",
         }
     }
 }
@@ -35,7 +45,11 @@ pub struct TableQueryError {
     /// entity can be named and field remedies are not derivable.
     pub entity: Option<String>,
     pub identifier: Option<String>,
+    /// Names to use instead: the closest columns to an unknown one, the
+    /// qualified forms of an ambiguous one, or the tables and aliases in scope.
     pub suggestions: Vec<String>,
+    /// The column's own type, for a type mismatch, when it could be read.
+    pub column_type: Option<String>,
     pub message: String,
 }
 
@@ -63,6 +77,16 @@ impl fmt::Display for TableQueryError {
                     self.message
                 )
             }
+            (TableQueryErrorKind::AmbiguousColumn, Some(column)) => {
+                write!(formatter, "ambiguous column '{column}': {}", self.message)
+            }
+            (TableQueryErrorKind::UnknownAlias, Some(alias)) => {
+                write!(
+                    formatter,
+                    "unknown table or alias '{alias}': {}",
+                    self.message
+                )
+            }
             _ => formatter.write_str(&self.message),
         }
     }
@@ -80,7 +104,7 @@ pub enum TableError {
     FieldListUnreadable { entity: String },
     #[error("{query}")]
     Query {
-        query: TableQueryError,
+        query: Box<TableQueryError>,
         #[source]
         source: Box<SapClientError>,
     },
@@ -194,16 +218,14 @@ impl ReportableError for TableError {
         match self {
             // The Levenshtein suggestions name likely columns; this names the
             // command that lists every valid one.
-            Self::Query {
-                query:
-                    TableQueryError {
-                        kind: TableQueryErrorKind::UnknownColumn,
-                        entity: Some(entity),
-                        ..
-                    },
-                ..
+            Self::Query { query, source } if query.kind == TableQueryErrorKind::UnknownColumn => {
+                query
+                    .entity
+                    .as_deref()
+                    .map(suggested_command::table_metadata)
+                    .or_else(|| source.suggested_command())
             }
-            | Self::InvalidFieldName { entity, .. } => {
+            Self::InvalidFieldName { entity, .. } => {
                 Some(suggested_command::table_metadata(entity))
             }
             Self::Sap(error) => error.suggested_command(),
@@ -219,8 +241,43 @@ fn query_hint(error: &TableQueryError) -> String {
             "Check the column name. Closest columns: {}.",
             error.suggestions.join(", ")
         ),
-        TableQueryErrorKind::UnknownColumn => {
-            "Check the selected fields and the columns exposed by the table or view.".to_owned()
+        TableQueryErrorKind::UnknownColumn => error.entity.as_ref().map_or_else(
+            || "Check the selected fields and the columns exposed by the table or view.".to_owned(),
+            |entity| {
+                format!(
+                    "{entity} has no column like that. Run `{}` for its columns.",
+                    suggested_command::table_metadata(entity)
+                )
+            },
+        ),
+        TableQueryErrorKind::AmbiguousColumn if !error.suggestions.is_empty() => format!(
+            "More than one joined table has this column; qualify it: {}.",
+            error.suggestions.join(" or ")
+        ),
+        TableQueryErrorKind::AmbiguousColumn => {
+            "More than one joined table has this column; qualify it as table~column or alias~column."
+                .to_owned()
+        }
+        TableQueryErrorKind::ClientFieldInJoin => {
+            "Leave the client field out of the ON condition: SAP joins on the logon client itself."
+                .to_owned()
+        }
+        TableQueryErrorKind::TypeMismatch => format!(
+            "{}Compare it with a value of that type: dates as 'YYYYMMDD', times as 'HHMMSS', numbers unquoted.",
+            error.column_type.as_ref().map_or_else(String::new, |column_type| format!(
+                "{} is {column_type}. ",
+                error.identifier.as_deref().unwrap_or("The column")
+            ))
+        ),
+        TableQueryErrorKind::UnknownAlias if !error.suggestions.is_empty() => format!(
+            "Qualify columns with a table or alias from the FROM clause: {}. Once a table has an alias, only the alias works.",
+            error.suggestions.join(", ")
+        ),
+        TableQueryErrorKind::UnknownAlias => {
+            "Qualify columns with a table or alias from the FROM clause.".to_owned()
+        }
+        TableQueryErrorKind::MissingGroupBy => {
+            "Add the field to GROUP BY, or wrap it in an aggregate such as MAX or COUNT.".to_owned()
         }
         TableQueryErrorKind::InvalidSyntax => {
             "Check the OpenSQL syntax around the reported token or expression.".to_owned()
@@ -237,7 +294,7 @@ struct QueryErrorPattern {
     regex: Regex,
 }
 
-static QUERY_ERROR_PATTERNS: LazyLock<[QueryErrorPattern; 3]> = LazyLock::new(|| {
+static QUERY_ERROR_PATTERNS: LazyLock<[QueryErrorPattern; 8]> = LazyLock::new(|| {
     [
         QueryErrorPattern {
             kind: TableQueryErrorKind::UnknownColumn,
@@ -253,6 +310,31 @@ static QUERY_ERROR_PATTERNS: LazyLock<[QueryErrorPattern; 3]> = LazyLock::new(||
             kind: TableQueryErrorKind::UnknownSource,
             regex: Regex::new(r"(?i)^Cannot find\s+'([^']+)'\.?$")
                 .expect("unknown-source regex is valid"),
+        },
+        QueryErrorPattern {
+            kind: TableQueryErrorKind::AmbiguousColumn,
+            regex: Regex::new(r#"(?i)^The column name or association\s+"([^"]+)"\s+is ambiguous"#)
+                .expect("ambiguous-column regex is valid"),
+        },
+        QueryErrorPattern {
+            kind: TableQueryErrorKind::ClientFieldInJoin,
+            regex: Regex::new(r#"(?i)^The client field\s+"([^"]+)"\s+cannot be specified in the ON condition"#)
+                .expect("client-field regex is valid"),
+        },
+        QueryErrorPattern {
+            kind: TableQueryErrorKind::TypeMismatch,
+            regex: Regex::new(r#"(?i)^The type of\s+"([^"]+)".*\bare not compatible\b"#)
+                .expect("type-mismatch regex is valid"),
+        },
+        QueryErrorPattern {
+            kind: TableQueryErrorKind::UnknownAlias,
+            regex: Regex::new(r#"(?i)^Incorrect table name or table alias name\s+"([^"]+)""#)
+                .expect("unknown-alias regex is valid"),
+        },
+        QueryErrorPattern {
+            kind: TableQueryErrorKind::MissingGroupBy,
+            regex: Regex::new(r#"(?i)^The field\s+"([^"]+)"\s+from the SELECT list is missing in the GROUP BY clause"#)
+                .expect("missing-group-by regex is valid"),
         },
     ]
 });
@@ -270,7 +352,12 @@ pub(super) fn classify_query_error(
     };
 
     let suggestions = if kind == TableQueryErrorKind::UnknownColumn {
-        closest_columns(&identifier, columns)
+        closest_names(
+            &identifier,
+            columns
+                .iter()
+                .map(|column| (column.name.as_str(), column.name.clone())),
+        )
     } else {
         Vec::new()
     };
@@ -279,10 +366,11 @@ pub(super) fn classify_query_error(
         entity: entity.map(str::to_owned),
         identifier: Some(identifier),
         suggestions,
+        column_type: None,
         message: message.clone(),
     };
     TableError::Query {
-        query,
+        query: Box::new(query),
         source: Box::new(error),
     }
 }
@@ -295,24 +383,24 @@ fn classify_query_message(message: &str) -> Option<(TableQueryErrorKind, String)
     })
 }
 
-fn closest_columns(target: &str, columns: &[TableColumn]) -> Vec<String> {
+/// The labels of up to three candidates whose names are closest to `target`.
+pub(super) fn closest_names<'a>(
+    target: &str,
+    candidates: impl IntoIterator<Item = (&'a str, String)>,
+) -> Vec<String> {
     let target = target.to_ascii_uppercase();
     let maximum_distance = (target.len() / 3).clamp(2, 5);
-    let mut matches: Vec<(usize, &str)> = columns
-        .iter()
-        .map(|column| {
-            (
-                levenshtein(&target, &column.name.to_ascii_uppercase()),
-                column.name.as_str(),
-            )
-        })
+    let mut matches: Vec<(usize, String)> = candidates
+        .into_iter()
+        .map(|(name, label)| (levenshtein(&target, &name.to_ascii_uppercase()), label))
         .filter(|(distance, _)| *distance <= maximum_distance)
         .collect();
-    matches.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(right.1)));
+    matches.sort();
+    matches.dedup_by(|left, right| left.1 == right.1);
     matches
         .into_iter()
         .take(3)
-        .map(|(_, name)| name.to_owned())
+        .map(|(_, label)| label)
         .collect()
 }
 
@@ -381,6 +469,36 @@ mod tests {
                 "ZUNKNOWN_DATA",
                 "table_query_unknown_source",
             ),
+            (
+                "The column name or association \"TRKORR\" is ambiguous, which means it occurs in multiple tables.",
+                TableQueryErrorKind::AmbiguousColumn,
+                "TRKORR",
+                "table_query_ambiguous_column",
+            ),
+            (
+                "The client field \"MANDT\" cannot be specified in the ON condition. Client handling is performed by the compiler.",
+                TableQueryErrorKind::ClientFieldInJoin,
+                "MANDT",
+                "table_query_client_field_in_join",
+            ),
+            (
+                "The type of \"AS4DATE\" or the result type of the function \"AS4DATE\" and the type of \"'x'\" are not compatible for the operation in question.",
+                TableQueryErrorKind::TypeMismatch,
+                "AS4DATE",
+                "table_query_type_mismatch",
+            ),
+            (
+                "Incorrect table name or table alias name \"X\".",
+                TableQueryErrorKind::UnknownAlias,
+                "X",
+                "table_query_unknown_alias",
+            ),
+            (
+                "The field \"AS4USER\" from the SELECT list is missing in the GROUP BY clause.",
+                TableQueryErrorKind::MissingGroupBy,
+                "AS4USER",
+                "table_query_missing_group_by",
+            ),
         ];
 
         for (message, expected_kind, expected_identifier, expected_code) in cases {
@@ -417,6 +535,88 @@ mod tests {
         };
         assert_eq!(query.suggestions, vec!["EVENT_ID"]);
         assert!(error.hint().unwrap().contains("EVENT_ID"));
+    }
+
+    fn diagnosed(
+        kind: TableQueryErrorKind,
+        identifier: &str,
+        suggestions: &[&str],
+        column_type: Option<&str>,
+    ) -> TableError {
+        TableError::Query {
+            query: Box::new(TableQueryError {
+                kind,
+                entity: None,
+                identifier: Some(identifier.to_owned()),
+                suggestions: suggestions.iter().map(|&s| s.to_owned()).collect(),
+                column_type: column_type.map(str::to_owned),
+                message: String::new(),
+            }),
+            source: Box::new(http_error("")),
+        }
+    }
+
+    #[test]
+    fn hints_use_what_the_diagnosis_found() {
+        let ambiguous = diagnosed(
+            TableQueryErrorKind::AmbiguousColumn,
+            "TRKORR",
+            &["E071~TRKORR", "E070~TRKORR"],
+            None,
+        );
+        assert!(
+            ambiguous
+                .hint()
+                .unwrap()
+                .ends_with("qualify it: E071~TRKORR or E070~TRKORR.")
+        );
+        let mismatch = diagnosed(
+            TableQueryErrorKind::TypeMismatch,
+            "AS4DATE",
+            &[],
+            Some("DATS, length 8"),
+        );
+        assert!(
+            mismatch
+                .hint()
+                .unwrap()
+                .starts_with("AS4DATE is DATS, length 8.")
+        );
+        let alias = diagnosed(TableQueryErrorKind::UnknownAlias, "X", &["T", "E071"], None);
+        assert!(alias.hint().unwrap().contains(": T, E071."));
+    }
+
+    #[test]
+    fn an_unknown_column_in_a_known_table_names_its_metadata_command() {
+        let TableError::Query { mut query, source } =
+            diagnosed(TableQueryErrorKind::UnknownColumn, "ZZZ", &[], None)
+        else {
+            unreachable!()
+        };
+        query.entity = Some("ZSAMPLE_LOG".to_owned());
+        let error = TableError::Query { query, source };
+        assert!(
+            error
+                .hint()
+                .unwrap()
+                .starts_with("ZSAMPLE_LOG has no column like that")
+        );
+        assert_eq!(
+            error.suggested_command().as_deref(),
+            Some("fractal table metadata ZSAMPLE_LOG")
+        );
+    }
+
+    #[test]
+    fn closest_names_keep_their_labels_and_drop_far_ones() {
+        let names = closest_names(
+            "OBJNAME",
+            [
+                ("OBJ_NAME", "O~OBJ_NAME".to_owned()),
+                ("TRKORR", "O~TRKORR".to_owned()),
+            ],
+        );
+        assert_eq!(names, vec!["O~OBJ_NAME"]);
     }
 
     #[test]

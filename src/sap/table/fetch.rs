@@ -1,8 +1,11 @@
 use reqwest::header::{HeaderMap, HeaderValue};
 
 use super::{
-    TableColumn, TableDataResult, TableError, TableFieldMetadata, TableMetadata,
-    error::classify_query_error, parse_table_data,
+    TableColumn, TableDataResult, TableError, TableFieldMetadata, TableMetadata, TableQueryError,
+    TableQueryErrorKind,
+    error::{classify_query_error, closest_names},
+    parse_table_data,
+    statement::{QuerySource, candidate_sources, column_qualifier, query_sources},
 };
 use crate::sap::{
     adt_version::AdtVersion,
@@ -13,6 +16,8 @@ use crate::sap::{
 const DDIC_PREVIEW_PATH: &str = "/sap/bc/adt/datapreview/ddic";
 const FREESTYLE_PREVIEW_PATH: &str = "/sap/bc/adt/datapreview/freestyle";
 const MAX_PREVIEW_ROWS: usize = 5_000;
+/// The most tables a failed query's diagnosis reads fields for.
+const MAX_DIAGNOSED_SOURCES: usize = 4;
 
 const SQL_BREAK_KEYWORDS: [&str; 13] = [
     "INNER JOIN",
@@ -257,6 +262,125 @@ pub async fn run_query(
     let mut result = parse_table_data(&xml)?;
     apply_local_page(&mut result, options.offset, options.limit);
     Ok(result)
+}
+
+/// [`run_query`] for a statement the caller wrote: a refusal SAP explains
+/// poorly is diagnosed from the statement and the fields of its tables.
+///
+/// # Errors
+///
+/// As [`run_query`].
+pub async fn run_caller_query(
+    sap: &mut SapClient,
+    query: &str,
+    options: &QueryOptions,
+) -> Result<TableDataResult, TableError> {
+    let mut error = match run_query(sap, query, options).await {
+        Ok(result) => return Ok(result),
+        Err(error) => error,
+    };
+    if let TableError::Query {
+        query: diagnosis, ..
+    } = &mut error
+    {
+        diagnose_query_error(sap, query, diagnosis).await;
+    }
+    Err(error)
+}
+
+/// Adds what SAP's message leaves out, from the statement and the fields of
+/// the tables it reads. Runs only after a refusal; a field read that fails just
+/// leaves the error as SAP put it.
+async fn diagnose_query_error(sap: &mut SapClient, statement: &str, error: &mut TableQueryError) {
+    let sources = query_sources(statement);
+    let Some(identifier) = error.identifier.clone() else {
+        return;
+    };
+    match error.kind {
+        TableQueryErrorKind::UnknownAlias => {
+            error.suggestions = sources
+                .iter()
+                .map(|source| source.reference().to_owned())
+                .collect();
+        }
+        TableQueryErrorKind::UnknownColumn => {
+            let qualifier = column_qualifier(statement, &identifier);
+            let candidates = candidate_sources(&sources, qualifier.as_deref());
+            let fields = read_source_fields(sap, &candidates).await;
+            if fields.is_empty() {
+                return;
+            }
+            let qualify = candidates.len() > 1;
+            error.suggestions = closest_names(
+                &identifier,
+                fields.iter().flat_map(|(source, fields)| {
+                    fields.iter().map(move |field| {
+                        let name = field.name.to_ascii_uppercase();
+                        let label = if qualify {
+                            format!("{}~{name}", source.reference())
+                        } else {
+                            name
+                        };
+                        (field.name.as_str(), label)
+                    })
+                }),
+            );
+            if let [(source, _)] = fields.as_slice() {
+                error.entity = Some(source.name.clone());
+            }
+        }
+        TableQueryErrorKind::AmbiguousColumn => {
+            let fields = read_source_fields(sap, &sources.iter().collect::<Vec<_>>()).await;
+            error.suggestions = fields
+                .iter()
+                .filter(|(_, fields)| has_field(fields, &identifier))
+                .map(|(source, _)| format!("{}~{identifier}", source.reference()))
+                .collect();
+        }
+        TableQueryErrorKind::TypeMismatch => {
+            let qualifier = column_qualifier(statement, &identifier);
+            let candidates = candidate_sources(&sources, qualifier.as_deref());
+            error.column_type = read_source_fields(sap, &candidates)
+                .await
+                .iter()
+                .flat_map(|(_, fields)| fields)
+                .find(|field| field.name.eq_ignore_ascii_case(&identifier))
+                .and_then(describe_type);
+        }
+        TableQueryErrorKind::InvalidSyntax
+        | TableQueryErrorKind::UnknownSource
+        | TableQueryErrorKind::ClientFieldInJoin
+        | TableQueryErrorKind::MissingGroupBy => {}
+    }
+}
+
+/// The fields of each source that could be read, up to a small cap.
+async fn read_source_fields<'a>(
+    sap: &mut SapClient,
+    sources: &[&'a QuerySource],
+) -> Vec<(&'a QuerySource, Vec<TableFieldMetadata>)> {
+    let mut read = Vec::new();
+    for source in sources.iter().take(MAX_DIAGNOSED_SOURCES) {
+        if let Ok(fields) = get_entity_fields(sap, &source.name).await {
+            read.push((*source, fields));
+        }
+    }
+    read
+}
+
+fn has_field(fields: &[TableFieldMetadata], name: &str) -> bool {
+    fields
+        .iter()
+        .any(|field| field.name.eq_ignore_ascii_case(name))
+}
+
+fn describe_type(field: &TableFieldMetadata) -> Option<String> {
+    let kind = field.col_type.as_ref().or(field.sap_type.as_ref())?;
+    Some(
+        field
+            .length
+            .map_or_else(|| kind.clone(), |length| format!("{kind}, length {length}")),
+    )
 }
 
 async fn post_ddic_preview(
