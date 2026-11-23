@@ -136,6 +136,7 @@ impl ReportableError for AdtSourceReplacementError {
             Self::PackageNotAllowed(error) => error.code(),
             Self::StagedByAnother(error) => error.code(),
             Self::Replacement { source, .. } => source.code(),
+            Self::Session(error) if error.is_transport_refusal() => error.code(),
             Self::Session(
                 AdtEditSessionError::LockFailed { .. }
                 | AdtEditSessionError::LockHandleMissing { .. },
@@ -229,7 +230,8 @@ impl ReportableError for AdtSourceReplacementError {
             Self::LockedSourceRead(error) | Self::PreviewSourceRead(error) => {
                 error.suggested_command()
             }
-            Self::Replacement { .. } | Self::Validation(_) | Self::Session(_) => None,
+            Self::Session(error) => error.suggested_command(),
+            Self::Replacement { .. } | Self::Validation(_) => None,
         }
     }
 }

@@ -24,6 +24,20 @@
   `--column` (counted from 1) replaces `--symbol`, and `--include` names a class include. It
   reads the inactive version by default, since SAP looks the name up in the text it is sent.
 
+### Changed
+
+- **A write SAP refuses over its transport now names the request holding the object**, with its
+  owner and description, and suggests `fractal transport show` on it. This covers `edit set`,
+  `edit patch`, `edit set-xml`, `undo`, `edit discard` and the transport step of
+  `edit activate`.
+  - Every such refusal has one code, **`edit_transport_refused`**, whichever step SAP refused
+    at; it replaces the step's own lock or write failure code in that case.
+  - With no `--transport`, SAP answers only "Parameter corrNr could not be found"; the hint now
+    says which request to name.
+  - Naming a task gets its request back, and naming another request says which one already
+    holds the object, and whether it belongs to someone else.
+  - An object no open request holds yet points at `fractal transport list`.
+
 ## 0.13.0
 
 ### Added

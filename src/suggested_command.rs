@@ -62,6 +62,12 @@ pub fn transport_list() -> String {
     "fractal transport list".to_owned()
 }
 
+/// Shows one request, its tasks and the objects it holds.
+#[must_use]
+pub fn transport_show(request: &str) -> String {
+    format!("fractal transport show {request}")
+}
+
 /// Lists every repository kind the CLI accepts.
 #[must_use]
 pub fn object_kinds() -> String {

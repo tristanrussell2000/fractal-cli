@@ -8,6 +8,7 @@ use super::{
     editable_source::{
         AdtSourceReadError, AdtSourceReadResult, EditableAdtSourceIdentity, read_adt_source,
     },
+    transport_check::{TransportRefusal, explain_refusal, is_transport_refusal},
 };
 use crate::reportable_error::{ReportableError, sap_http_status};
 
@@ -16,12 +17,16 @@ const LOCK_RESULT_MEDIA_TYPE: &str =
     "application/vnd.sap.as+xml; charset=UTF-8; dataname=com.sap.adt.lock.Result";
 const CLASS_INCLUDE_MEDIA_TYPE: &str = "application/vnd.sap.adt.oo.classincludes+xml";
 
+/// The code of every write SAP refused over its transport, whichever step it was.
+pub const TRANSPORT_REFUSED: &str = "edit_transport_refused";
+
 /// A failure in the reusable native ADT lock/write/unlock session machinery.
 #[derive(Debug, Error)]
 pub enum AdtEditSessionError {
     #[error("could not acquire an ADT edit lock: {source}")]
     LockFailed {
         transport: Option<String>,
+        refusal: Option<Box<TransportRefusal>>,
         #[source]
         source: SapClientError,
     },
@@ -30,6 +35,7 @@ pub enum AdtEditSessionError {
     #[error("could not write source through its ADT lock: {source}")]
     SourceWriteFailed {
         transport: Option<String>,
+        refusal: Option<Box<TransportRefusal>>,
         #[source]
         source: SapClientError,
     },
@@ -39,6 +45,7 @@ pub enum AdtEditSessionError {
     IncludeCreateFailed {
         include: ClassInclude,
         transport: Option<String>,
+        refusal: Option<Box<TransportRefusal>>,
         #[source]
         source: SapClientError,
     },
@@ -55,10 +62,24 @@ impl AdtEditSessionError {
             Self::LockHandleMissing { .. } => None,
         }
     }
+
+    /// Whether SAP refused this over the transport named, or the lack of one.
+    #[must_use]
+    pub fn is_transport_refusal(&self) -> bool {
+        match self {
+            Self::LockFailed { source, .. }
+            | Self::SourceWriteFailed { source, .. }
+            | Self::IncludeCreateFailed { source, .. } => is_transport_refusal(source),
+            Self::LockHandleMissing { .. } | Self::UnlockFailed(_) => false,
+        }
+    }
 }
 
 impl ReportableError for AdtEditSessionError {
     fn code(&self) -> &'static str {
+        if self.is_transport_refusal() {
+            return TRANSPORT_REFUSED;
+        }
         match self {
             Self::LockFailed { .. } => "edit_lock_failed",
             Self::LockHandleMissing { .. } => "edit_lock_response_invalid",
@@ -74,26 +95,53 @@ impl ReportableError for AdtEditSessionError {
 
     fn hint(&self) -> Option<String> {
         Some(match self {
-            Self::LockFailed { transport, source } => {
-                transport_failure_hint(transport.as_deref(), source).unwrap_or_else(|| {
+            Self::LockFailed {
+                transport,
+                refusal,
+                source,
+            } => refusal
+                .as_ref()
+                .and_then(|refusal| refusal.hint())
+                .or_else(|| transport_failure_hint(transport.as_deref(), source))
+                .unwrap_or_else(|| {
                     "Close any editor or process holding the object lock, then retry the source operation."
                         .to_owned()
-                })
-            }
+                }),
             Self::LockHandleMissing { .. } => {
                 "SAP accepted the lock request but returned an unexpected ADT lock payload."
                     .to_owned()
             }
-            Self::SourceWriteFailed { transport, source }
+            Self::SourceWriteFailed {
+                transport,
+                refusal,
+                source,
+            }
             | Self::IncludeCreateFailed {
-                transport, source, ..
-            } => transport_failure_hint(transport.as_deref(), source)
+                transport,
+                refusal,
+                source,
+                ..
+            } => refusal
+                .as_ref()
+                .and_then(|refusal| refusal.hint())
+                .or_else(|| transport_failure_hint(transport.as_deref(), source))
                 .or_else(|| source.hint())?,
             Self::UnlockFailed(_) => {
                 "The source operation may have succeeded, but the SAP lock may remain; close or unlock the object before retrying."
                     .to_owned()
             }
         })
+    }
+
+    fn suggested_command(&self) -> Option<String> {
+        match self {
+            Self::LockFailed { refusal, .. }
+            | Self::SourceWriteFailed { refusal, .. }
+            | Self::IncludeCreateFailed { refusal, .. } => refusal
+                .as_ref()
+                .and_then(|refusal| refusal.suggested_command()),
+            _ => None,
+        }
     }
 }
 
@@ -130,12 +178,10 @@ pub(super) async fn acquire_adt_object_lock(
     object_uri: &str,
     transport: Option<&str>,
 ) -> Result<AdtObjectLock, AdtEditSessionError> {
-    let response = request_adt_object_lock(sap, object_uri, None)
-        .await
-        .map_err(|source| AdtEditSessionError::LockFailed {
-            transport: transport.map(str::to_owned),
-            source,
-        })?;
+    let response = match request_adt_object_lock(sap, object_uri, None).await {
+        Ok(response) => response,
+        Err(source) => return Err(lock_failed(sap, object_uri, transport, source).await),
+    };
     into_lock(&response, transport)
 }
 
@@ -179,12 +225,10 @@ pub(super) async fn attach_adt_object_to_transport(
     object_uri: &str,
     transport: &str,
 ) -> Result<(), AdtEditSessionError> {
-    let response = request_adt_object_lock(sap, object_uri, Some(transport))
-        .await
-        .map_err(|source| AdtEditSessionError::LockFailed {
-            transport: Some(transport.to_owned()),
-            source,
-        })?;
+    let response = match request_adt_object_lock(sap, object_uri, Some(transport)).await {
+        Ok(response) => response,
+        Err(source) => return Err(lock_failed(sap, object_uri, Some(transport), source).await),
+    };
     let lock = into_lock(&response, Some(transport))?;
     release_adt_object_lock(sap, object_uri, &lock).await
 }
@@ -204,13 +248,44 @@ pub(super) async fn write_adt_source(
     if let Some(transport) = &lock.transport {
         query.push(("corrNr", transport));
     }
-    sap.put_text(&identity.source_uri, &query, source, headers)
+    match sap
+        .put_text(&identity.source_uri, &query, source, headers)
         .await
-        .map(|_| ())
-        .map_err(|source| AdtEditSessionError::SourceWriteFailed {
+    {
+        Ok(_) => Ok(()),
+        Err(source) => Err(AdtEditSessionError::SourceWriteFailed {
+            refusal: explain_refusal(
+                sap,
+                &identity.source_uri,
+                lock.transport(),
+                &source,
+                stateful_session_headers(),
+            )
+            .await,
             transport: lock.transport.clone(),
             source,
-        })
+        }),
+    }
+}
+
+async fn lock_failed(
+    sap: &mut SapClient,
+    object_uri: &str,
+    transport: Option<&str>,
+    source: SapClientError,
+) -> AdtEditSessionError {
+    AdtEditSessionError::LockFailed {
+        refusal: explain_refusal(
+            sap,
+            object_uri,
+            transport,
+            &source,
+            stateful_session_headers(),
+        )
+        .await,
+        transport: transport.map(str::to_owned),
+        source,
+    }
 }
 
 /// Creates one of a class's includes under the class's lock.
@@ -239,19 +314,30 @@ pub(super) async fn create_class_include(
         r#"<?xml version="1.0" encoding="UTF-8"?><class:abapClassInclude xmlns:class="http://www.sap.com/adt/oo/classes" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="dummy" class:includeType="{}"/>"#,
         include.as_str()
     );
-    sap.post_text(
-        &format!("{}/includes", class_uri.trim_end_matches('/')),
-        &query,
-        Some(&body),
-        headers,
-    )
-    .await
-    .map(|_| ())
-    .map_err(|source| AdtEditSessionError::IncludeCreateFailed {
-        include,
-        transport: lock.transport.clone(),
-        source,
-    })
+    match sap
+        .post_text(
+            &format!("{}/includes", class_uri.trim_end_matches('/')),
+            &query,
+            Some(&body),
+            headers,
+        )
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(source) => Err(AdtEditSessionError::IncludeCreateFailed {
+            include,
+            refusal: explain_refusal(
+                sap,
+                class_uri,
+                lock.transport(),
+                &source,
+                stateful_session_headers(),
+            )
+            .await,
+            transport: lock.transport.clone(),
+            source,
+        }),
+    }
 }
 
 pub(super) async fn read_adt_source_in_stateful_session(

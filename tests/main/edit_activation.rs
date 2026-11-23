@@ -546,8 +546,58 @@ async fn transport_attachment_failure_stops_before_activation() {
         error,
         AdtSourceActivationError::TransportAttachment(_)
     ));
-    assert_eq!(error.code(), "edit_activation_transport_failed");
+    assert_eq!(error.code(), "edit_transport_refused");
     assert!(error.hint().unwrap().contains("AB1K900999"));
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn a_transport_refusal_names_the_request_the_check_reports() {
+    let server = MockServer::start().await;
+    mount_inputs_until_activation(&server).await;
+    Mock::given(method("POST"))
+        .and(path(OBJECT_URI))
+        .and(query_param("_action", "LOCK"))
+        .and(query_param("corrNr", "A4HK900783"))
+        .respond_with(ResponseTemplate::new(500).set_body_string(
+            "<error><message>Object R3TR CLAS ZCL_SAMPLE is already locked in request A4HK900781 of user DEVUSER2</message></error>",
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/sap/bc/adt/cts/transportchecks"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/transport_check/held.xml"
+            ))),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut client = SapClient::new(&profile(server.uri()), "password".to_owned()).unwrap();
+    let error = activate_adt_source(
+        &mut client,
+        &EditPolicy::namespaces_only(&["Z*"]),
+        &activation_request(Some("A4HK900783")),
+        None,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), "edit_transport_refused");
+    let hint = error.hint().unwrap();
+    assert!(
+        hint.starts_with("A4HK900783 is a task of request A4HK900781"),
+        "{hint}"
+    );
+    assert!(hint.contains("someone else's"), "{hint}");
+    assert_eq!(
+        error.suggested_command().as_deref(),
+        Some("fractal transport show A4HK900781")
+    );
     server.verify().await;
 }
 

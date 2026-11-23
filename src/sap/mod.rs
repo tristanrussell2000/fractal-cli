@@ -45,6 +45,7 @@ pub mod table;
 pub mod table_undo;
 pub mod table_write;
 pub mod transport;
+pub mod transport_check;
 pub mod undo;
 pub mod versions;
 pub mod worklist;

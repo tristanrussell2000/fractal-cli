@@ -231,6 +231,7 @@ impl ReportableError for MetadataObjectActivationError {
             } => Some(suggested_command::object_search(object_type, name)),
             Self::PackageNotAllowed(error) => error.suggested_command(),
             Self::ActivationRequest { source, .. } => source.suggested_command(),
+            Self::TransportAttachment(error) => error.suggested_command(),
             _ => None,
         }
     }

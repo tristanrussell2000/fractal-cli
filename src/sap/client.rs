@@ -219,6 +219,12 @@ impl SapClient {
         })
     }
 
+    /// The SAP user this client logs on as.
+    #[must_use]
+    pub fn username(&self) -> &str {
+        &self.username
+    }
+
     /// Records where the password came from, so a 401 can name it: a stale
     /// environment variable outranks the keychain without saying so.
     #[must_use]

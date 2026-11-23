@@ -183,6 +183,7 @@ impl ReportableError for AdtSourceActivationError {
             Self::InactiveSourceRead(_) => "edit_activation_inactive_read_failed",
             Self::Precheck(_) => "edit_activation_precheck_failed",
             Self::PrecheckRejected { .. } => "edit_activation_precheck_rejected",
+            Self::TransportAttachment(error) if error.is_transport_refusal() => error.code(),
             Self::TransportAttachment(_) => "edit_activation_transport_failed",
             Self::ActivationRequest { .. } => "edit_activation_request_failed",
             Self::ActivationResponseInvalid(_) => "edit_activation_response_invalid",
@@ -282,11 +283,11 @@ impl ReportableError for AdtSourceActivationError {
             Self::InactiveSourceRead(error) | Self::BeforeImageUnreadable { source: error, .. } => {
                 error.suggested_command()
             }
+            Self::TransportAttachment(error) => error.suggested_command(),
             Self::Journal(_)
             | Self::Validation(_)
             | Self::InactiveVersionProbe(_)
             | Self::Precheck(_)
-            | Self::TransportAttachment(_)
             | Self::ActivationResponseInvalid(_)
             | Self::ActivationRefused { .. } => None,
         }

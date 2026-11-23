@@ -207,7 +207,8 @@ impl ReportableError for AdtSourcePatchError {
             Self::LockedSourceRead(error) | Self::PreviewSourceRead(error) => {
                 error.suggested_command()
             }
-            Self::Patch { .. } | Self::Validation(_) | Self::Session(_) => None,
+            Self::Session(error) => error.suggested_command(),
+            Self::Patch { .. } | Self::Validation(_) => None,
         }
     }
 }

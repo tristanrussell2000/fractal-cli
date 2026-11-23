@@ -309,6 +309,7 @@ fn contract() -> Vec<Expectation> {
             error: Box::new(AdtSourcePatchError::Session(
                 AdtEditSessionError::LockFailed {
                     transport: None,
+                    refusal: None,
                     source: http(
                         SapHttpErrorKind::Other,
                         StatusCode::CONFLICT,
@@ -647,6 +648,7 @@ fn transport_retry_advice_stays_in_prose() {
     // must reach the caller as a hint and never as an executable field.
     let error = AdtSourcePatchError::Session(AdtEditSessionError::LockFailed {
         transport: Some("AB1K900575".to_owned()),
+        refusal: None,
         source: http(
             SapHttpErrorKind::Other,
             StatusCode::CONFLICT,

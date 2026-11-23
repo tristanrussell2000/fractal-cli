@@ -1411,6 +1411,8 @@ mod tests {
             suggested_command::binding_show("ZSAMPLE_UI_O4"),
             suggested_command::package_items("ZSAMPLE_PKG"),
             suggested_command::dump_show_latest(),
+            suggested_command::transport_list(),
+            suggested_command::transport_show("A4HK900101"),
         ];
 
         for command in commands {

@@ -152,6 +152,7 @@ impl ReportableError for AdtObjectDeletionError {
             Self::PackageNotAllowed(error) => error.code(),
             Self::UsageCheck(_) => "edit_delete_usage_check_failed",
             Self::ObjectInUse { .. } => "edit_delete_object_in_use",
+            Self::Session(error) if error.is_transport_refusal() => error.code(),
             Self::Session(_) => "edit_delete_lock_failed",
             Self::BindingPublished { .. } => "edit_delete_binding_published",
             Self::DeleteRequest { .. } => "edit_delete_request_failed",
@@ -234,6 +235,7 @@ impl ReportableError for AdtObjectDeletionError {
             Self::BindingPublished { identity, .. } => {
                 Some(suggested_command::binding_show(&identity.name))
             }
+            Self::Session(error) => error.suggested_command(),
             _ => None,
         }
     }

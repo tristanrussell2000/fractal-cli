@@ -30,8 +30,8 @@ use super::{
     adt_version::AdtVersion,
     client::{SapClient, SapClientError},
     edit_session::{
-        AdtEditSessionError, AdtObjectLock, acquire_adt_object_lock, release_adt_object_lock,
-        stateful_session_headers,
+        AdtEditSessionError, AdtObjectLock, TRANSPORT_REFUSED, acquire_adt_object_lock,
+        release_adt_object_lock, stateful_session_headers,
     },
     editable_source::{
         AdtEditTargetValidationError, EditableAdtSourceTargetError, canonicalize_transport_request,
@@ -47,6 +47,7 @@ use super::{
     },
     object_family::AdtObjectFamily,
     repository_kind::{AdtObjectType, RepositoryKind},
+    transport_check::{TransportRefusal, explain_refusal, is_transport_refusal},
 };
 use crate::{
     reportable_error::{ReportableError, sap_http_status},
@@ -229,8 +230,13 @@ pub enum MetadataObjectWriteError {
     BlankDocument,
     #[error("ADT edit session failed while writing: {0}")]
     Session(#[source] AdtEditSessionError),
-    #[error("the ADT write request failed: {0}")]
-    Write(#[source] SapClientError),
+    #[error("the ADT write request failed: {source}")]
+    Write {
+        #[source]
+        source: SapClientError,
+        /// Who holds the object, when SAP refused the write over its transport.
+        refusal: Option<Box<TransportRefusal>>,
+    },
     /// SAP refused the write for want of a description.
     ///
     /// Its own read-back does not include one on a freshly created shell, so
@@ -259,8 +265,10 @@ impl ReportableError for MetadataObjectWriteError {
             Self::StagedByAnother(error) => error.code(),
             Self::Stale(error) => error.code(),
             Self::BlankDocument => "blank_xml_document",
+            Self::Session(error) if error.is_transport_refusal() => error.code(),
             Self::Session(_) => "edit_xml_lock_failed",
-            Self::Write(_) => "edit_xml_write_failed",
+            Self::Write { source, .. } if is_transport_refusal(source) => TRANSPORT_REFUSED,
+            Self::Write { .. } => "edit_xml_write_failed",
             Self::DescriptionMissing(_) => "edit_xml_description_missing",
             Self::Read { .. } => "edit_xml_verification_failed",
         }
@@ -270,7 +278,9 @@ impl ReportableError for MetadataObjectWriteError {
         match self {
             Self::AbandonedLock(primary) => primary.status(),
             Self::Session(error) => error.status(),
-            Self::Write(error) | Self::DescriptionMissing(error) => sap_http_status(Some(error)),
+            Self::Write { source: error, .. } | Self::DescriptionMissing(error) => {
+                sap_http_status(Some(error))
+            }
             Self::Read { source, .. } => sap_http_status(Some(source)),
             _ => None,
         }
@@ -291,9 +301,13 @@ impl ReportableError for MetadataObjectWriteError {
                     .to_owned()
             }
             Self::Session(error) => return error.hint(),
-            Self::Write(error) => format!(
+            Self::Write { source, refusal } => format!(
                 "The object was not changed. {}",
-                error.hint().unwrap_or_default()
+                refusal
+                    .as_ref()
+                    .and_then(|refusal| refusal.hint())
+                    .or_else(|| source.hint())
+                    .unwrap_or_default()
             ),
             Self::DescriptionMissing(_) => {
                 "Add adtcore:description=\"...\" to the root element and write again. A newly created shell stores no description, so the document `object xml` returns has none, and SAP refuses to save without one."
@@ -310,6 +324,11 @@ impl ReportableError for MetadataObjectWriteError {
         match self {
             Self::AbandonedLock(primary) => primary.suggested_command(),
             Self::StagedByAnother(error) => error.suggested_command(),
+            Self::Write {
+                refusal: Some(refusal),
+                ..
+            } => refusal.suggested_command(),
+            Self::Session(error) => error.suggested_command(),
             Self::Read { .. } => Some(suggested_command::object_xml("<the object uri>")),
             _ => None,
         }
@@ -709,16 +728,27 @@ async fn write_locked_xml(
         query.push(("corrNr", transport));
     }
 
-    sap.put_text(&identity.object_uri, &query, xml, headers)
+    let Err(error) = sap
+        .put_text(&identity.object_uri, &query, xml, headers)
         .await
-        .map(|_| ())
-        .map_err(|error| {
-            if reports_a_missing_description(&error) {
-                MetadataObjectWriteError::DescriptionMissing(error)
-            } else {
-                MetadataObjectWriteError::Write(error)
-            }
-        })
+    else {
+        return Ok(());
+    };
+    if reports_a_missing_description(&error) {
+        return Err(MetadataObjectWriteError::DescriptionMissing(error));
+    }
+    let refusal = explain_refusal(
+        sap,
+        &identity.object_uri,
+        lock.transport(),
+        &error,
+        stateful_session_headers(),
+    )
+    .await;
+    Err(MetadataObjectWriteError::Write {
+        source: error,
+        refusal,
+    })
 }
 
 /// Whether SAP refused the write only because it carried no description.

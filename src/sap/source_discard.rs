@@ -144,6 +144,7 @@ impl ReportableError for AdtInactiveSourceDiscardError {
             Self::AbandonedLock(primary) => primary.code(),
             Self::Validation(error) => error.code(),
             Self::PackageNotAllowed(error) => error.code(),
+            Self::Session(error) if error.is_transport_refusal() => error.code(),
             Self::Session(
                 AdtEditSessionError::LockFailed { .. }
                 | AdtEditSessionError::LockHandleMissing { .. },
@@ -239,8 +240,8 @@ impl ReportableError for AdtInactiveSourceDiscardError {
             | Self::InactiveSourceRead(error)
             | Self::RestoredSourceRead(error) => error.suggested_command(),
             Self::RestoredSourceActivation(error) => error.suggested_command(),
+            Self::Session(error) => error.suggested_command(),
             Self::Validation(_)
-            | Self::Session(_)
             | Self::InactiveVersionProbe(_)
             | Self::NoInactiveVersion { .. } => None,
         }
