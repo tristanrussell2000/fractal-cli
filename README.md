@@ -51,8 +51,18 @@ fractal --help
 
 ### Update or uninstall
 
-Run the installer or MSI for the new version over the old one. On Windows, uninstall from
-Apps & features. On macOS and Linux, delete the `fractal` binary from the install directory.
+A copy installed by the shell or PowerShell installer updates itself:
+
+```sh
+fractal self check               # is there a newer release?
+fractal self update              # install the latest
+fractal self update --to 0.13.0  # install a specific release, older or newer
+```
+
+`self update` downloads that release's installer and runs it into the directory this copy was
+installed to. An MSI install, or a copy built from source, cannot update itself: run the newer
+MSI or installer over it instead. On Windows, uninstall from Apps & features. On macOS and Linux,
+delete the `fractal` binary from the install directory.
 
 Uninstalling does not remove your saved profiles or any stored passwords, including a
 plaintext `credentials.toml` if you made one. Use `fractal auth remove <name>` for each
@@ -171,6 +181,7 @@ fractal test       <run ABAP Unit tests: exit 0 green, 1 not green, 2 could not 
 fractal dump       list | show
 fractal atc        <run the ABAP Test Cockpit: exit 0 passed, 1 findings or incomplete, 2 could not run>
 fractal guard      install
+fractal self       check | update
 ```
 
 Every command and subcommand accepts `--help`.
@@ -357,6 +368,9 @@ git push origin v0.2.0
 
 The workflow builds every supported target, creates the installers and checksums, and
 attaches them to a GitHub Release for that tag.
+
+`fractal self update` finds releases through the `repository` field in `Cargo.toml` and runs the
+release's `fractal-installer.sh` or `fractal-installer.ps1`, so keep both of those as they are.
 
 Supported targets:
 

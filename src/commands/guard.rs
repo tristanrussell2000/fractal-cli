@@ -63,6 +63,8 @@ pub(super) const ASKED: &[&str] = &[
     // Runs test code as the user; dangerous tests may change data.
     "fractal test",
     "fractal auth",
+    // Downloads and runs a release's installer over this copy of Fractal.
+    "fractal self update",
 ];
 
 /// The flag that turns off the recovery net, which no declarative rule can see.

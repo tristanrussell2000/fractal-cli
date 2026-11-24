@@ -166,6 +166,31 @@ pub enum Command {
         #[command(subcommand)]
         command: DumpCommand,
     },
+    /// Check for and install new releases of Fractal itself.
+    #[command(name = "self")]
+    SelfManage {
+        #[command(subcommand)]
+        command: SelfCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SelfCommand {
+    /// Say whether a newer release exists. Changes nothing.
+    Check,
+    /// Replace this copy of Fractal with the latest release, or the one --to names.
+    ///
+    /// Downloads that release's installer from GitHub and runs it into the
+    /// directory this copy was installed to. Only a copy installed by the
+    /// shell or PowerShell installer can update itself.
+    Update(SelfUpdateArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct SelfUpdateArgs {
+    /// The release to install instead of the latest, such as 0.13.0; may be older.
+    #[arg(long, value_name = "VERSION")]
+    pub(crate) to: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1413,6 +1438,7 @@ mod tests {
             suggested_command::dump_show_latest(),
             suggested_command::transport_list(),
             suggested_command::transport_show("A4HK900101"),
+            suggested_command::self_check(),
         ];
 
         for command in commands {

@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`fractal self update`** replaces this copy of Fractal with the latest release, or with
+  `--to <VERSION>` a specific one, older or newer. It downloads that release's installer from
+  GitHub and runs it into the directory this copy was installed to. Only a copy installed by the
+  shell or PowerShell installer can do this; any other (an MSI install, a build from source) is
+  refused with `self_update_unmanaged`, naming where the installer's copy is, if there is one.
+  An unknown version is `self_update_version_not_found`; a failed install,
+  `self_update_install_failed`, with the installer's output.
+- **`fractal self check`** says whether a newer release exists. It changes nothing and works for
+  any copy.
+- `fractal guard` asks before `fractal self update`; `fractal self check` is not guarded.
+
 ## 0.14.0
 
 ### Added

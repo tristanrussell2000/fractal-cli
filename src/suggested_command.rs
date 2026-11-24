@@ -68,6 +68,12 @@ pub fn transport_show(request: &str) -> String {
     format!("fractal transport show {request}")
 }
 
+/// Says whether a newer Fractal release exists.
+#[must_use]
+pub fn self_check() -> String {
+    "fractal self check".to_owned()
+}
+
 /// Lists every repository kind the CLI accepts.
 #[must_use]
 pub fn object_kinds() -> String {

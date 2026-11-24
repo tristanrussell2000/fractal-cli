@@ -25,6 +25,7 @@ pub mod object_versions;
 pub mod package;
 pub mod package_lifecycle;
 pub mod query;
+pub mod self_update;
 pub mod system;
 pub mod table;
 pub mod table_write;

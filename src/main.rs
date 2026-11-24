@@ -6,8 +6,8 @@ mod reported;
 use clap::Parser;
 use cli::{
     AuthCommand, BindingCommand, Cli, Command, DumpCommand, EditCommand, GuardCommand,
-    InternalCommand, JournalCommand, ObjectCommand, PackageCommand, SystemCommand, TableCommand,
-    TransportCommand,
+    InternalCommand, JournalCommand, ObjectCommand, PackageCommand, SelfCommand, SystemCommand,
+    TableCommand, TransportCommand,
 };
 use commands::auth::{
     auth_list, auth_login, auth_password, auth_remove, auth_set, print_auth_list, print_auth_login,
@@ -39,6 +39,7 @@ use commands::object_delete::{object_delete, print_object_delete};
 use commands::object_show::{object_show, print_object_show};
 use commands::package::{package_items, package_tree, print_package_items, print_package_tree};
 use commands::query::{print_query, query};
+use commands::self_update::{print_self_check, print_self_update, self_check, self_update};
 use commands::system::{print_system_list, print_system_test, system_list, system_test};
 use commands::table::{print_table_data, print_table_metadata, table_data, table_metadata};
 use commands::table_write::{print_table_set, table_set};
@@ -404,6 +405,12 @@ async fn main() {
             )
             .await
         }
+        Command::SelfManage {
+            command: SelfCommand::Check,
+        } => run_and_print_with_async(self_check, print_self_check, output).await,
+        Command::SelfManage {
+            command: SelfCommand::Update(args),
+        } => run_and_print_with_async(|| self_update(args), print_self_update, output).await,
         Command::Dump {
             command: DumpCommand::List(args),
         } => {

@@ -123,6 +123,9 @@ fn what_it_changes(rule: &str) -> &'static str {
             "deletes the local record of what Fractal changed, which is the only way back from an operation SAP will not reverse"
         }
         "fractal auth" => "changes stored SAP credentials",
+        "fractal self update" => {
+            "downloads a Fractal release's installer from GitHub and runs it over this copy of Fractal"
+        }
         "fractal table set" | "fractal table insert" | "fractal table remove" => {
             "changes rows of a SAP table, committed with --execute and rolled back otherwise"
         }
@@ -384,6 +387,18 @@ mod tests {
             panic!("expected an ask");
         };
         assert!(!plain.contains("--no-journal"), "{plain}");
+    }
+
+    #[test]
+    fn updating_fractal_is_asked_about_and_checking_is_not() {
+        let HookDecision::Ask(reason) = decide("fractal self update --to 0.13.0", false) else {
+            panic!("expected an ask");
+        };
+        assert!(reason.contains("runs it over this copy of Fractal"));
+        assert!(matches!(
+            decide("fractal self check", false),
+            HookDecision::NoOpinion
+        ));
     }
 
     #[test]
